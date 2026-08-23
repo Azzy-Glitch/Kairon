@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/backend/">
+    <Project Path="backend/AIDIP.Backend.csproj" />
+  </Folder>
+  <Folder Name="/sdk/">
+    <Project Path="sdk/AIDIP.SDK/AIDIP.SDK.csproj" />
+  </Folder>
+  <Folder Name="/demo/">
+    <Project Path="demo/AIDIP.DemoApp/AIDIP.DemoApp.csproj" />
+  </Folder>
+</Solution>

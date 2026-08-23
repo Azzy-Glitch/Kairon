@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="../sdk/AIDIP.SDK/AIDIP.SDK.csproj" />
+  <Project Path="AIDIP.Backend.csproj" />
+</Solution>
