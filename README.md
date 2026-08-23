@@ -1,4 +1,4 @@
-# AIDIP — AI DevOps Intelligence Platform
+#Kairon
 
 ## Quick Start
 

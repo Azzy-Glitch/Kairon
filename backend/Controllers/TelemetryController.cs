@@ -33,16 +33,22 @@ public class TelemetryController : ControllerBase
             StatusCode = dto.StatusCode,
             DurationMs = dto.Duration,
             ErrorMessage = dto.Error,
-            Timestamp = dto.Timestamp
+            ErrorType = dto.ExceptionType,
+            StackTrace = dto.StackTrace,
+            Environment = string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
+            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : dto.Timestamp
         };
 
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync(cancellationToken);
 
+        // Keep this response compatible with AIDIP.SDK.Models.TelemetryResponse
+        // without introducing a backend-to-SDK project dependency.
         return Ok(new
         {
-            id = incident.Id,
-            status = "recorded"
+            success = true,
+            message = "Telemetry recorded.",
+            telemetryId = incident.Id.ToString()
         });
     }
 
@@ -55,7 +61,10 @@ public class TelemetryController : ControllerBase
             CpuPercent = dto.CpuPercent,
             MemoryPercent = dto.MemoryPercent,
             ResponseTimeMs = dto.ResponseTimeMs,
-            Timestamp = DateTime.UtcNow
+            RequestCount = dto.RequestCount,
+            ErrorCount = dto.ErrorCount,
+            Environment = string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
+            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : dto.Timestamp
         };
 
         _db.Metrics.Add(metric);
