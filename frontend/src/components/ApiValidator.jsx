@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import API from '../api';
+import { devopsApi } from '../api/index';
 import { IconLink, IconSparkles, IconCheck, IconAlertTriangle, IconCopy, IconTerminal } from './Icons';
 import { useToast } from './Toast';
 
@@ -62,14 +62,11 @@ export default function ApiValidator() {
 
     setLoading(true);
     try {
-      const response = await API.post('/validate-api', {
-        expected: parsedExp,
-        actual: parsedAct
-      });
-      setRes(response.data);
+      const data = await devopsApi.validateApi(parsedExp, parsedAct);
+      setRes(data);
       addToast('API contract validated successfully', 'success');
     } catch (e) {
-      addToast(e.response?.data?.message || e.message || 'Validation request failed', 'error');
+      addToast(e.message || 'Validation request failed', 'error');
     } finally {
       setLoading(false);
     }

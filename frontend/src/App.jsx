@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import ErrorAnalyzer from './components/ErrorAnalyzer';
 import ApiValidator from './components/ApiValidator';
 import Predictor from './components/Predictor';
@@ -6,40 +6,36 @@ import Recommender from './components/Recommender';
 import AuditHistory from './components/AuditHistory';
 import DashboardOverview from './components/DashboardOverview';
 import TelemetryMonitor from './components/TelemetryMonitor';
+import SreDashboard from './components/sre/SreDashboard';
+import DemoRunner from './components/sre/DemoRunner';
 import { ToastProvider } from './components/Toast';
-import { 
-  IconDashboard, 
-  IconBug, 
-  IconLink, 
-  IconPredict, 
-  IconSparkles, 
-  IconHistory, 
-  IconServer, 
-  IconShield 
+import { useHealth } from './hooks/useDemo';
+import {
+  IconDashboard,
+  IconBug,
+  IconLink,
+  IconPredict,
+  IconSparkles,
+  IconHistory,
+  IconServer,
+  IconShield,
+  IconZap
 } from './components/Icons';
-import API from './api';
 import './index.css';
+// The SRE operator styles live in their own file so the original theme stays readable. Imported
+// here rather than via a CSS @import, which would have to precede every other rule to be valid.
+import './styles/sre.css';
 
 export default function App() {
-  const [tab, setTab] = useState('overview');
-  const [backendOnline, setBackendOnline] = useState(true);
-  const [aiOnline, setAiOnline] = useState(true);
+  const [tab, setTab] = useState('sre');
 
-  useEffect(() => {
-    const checkHealth = async () => {
-      try {
-        await API.get('/health');
-        setBackendOnline(true);
-      } catch (e) {
-        setBackendOnline(false);
-      }
-    };
-    checkHealth();
-    const interval = setInterval(checkHealth, 15000);
-    return () => clearInterval(interval);
-  }, []);
+  // Component-level health, so the header can say *which* subsystem is down rather than just
+  // showing a red dot (frontend PRD section 18).
+  const { health } = useHealth();
 
   const tabs = [
+    { id: 'sre', label: 'SRE Command', icon: <IconShield className="w-4 h-4 text-cyan-400" /> },
+    { id: 'demo', label: 'Incident Simulation', icon: <IconZap className="w-4 h-4 text-amber-400" /> },
     { id: 'overview', label: 'Overview', icon: <IconDashboard className="w-4 h-4" /> },
     { id: 'error', label: 'Incident Triage', icon: <IconBug className="w-4 h-4 text-rose-400" /> },
     { id: 'api', label: 'API Drift Guard', icon: <IconLink className="w-4 h-4 text-cyan-400" /> },
@@ -59,14 +55,14 @@ export default function App() {
         {/* Top Navigation Bar */}
         <header className="navbar">
           <div className="nav-container">
-            <div className="brand-section" onClick={() => setTab('overview')}>
+            <div className="brand-section" onClick={() => setTab('sre')}>
               <div className="brand-logo-badge">
                 <IconShield className="w-6 h-6 text-cyan-400" />
               </div>
               <div className="brand-text">
                 <div className="brand-title-wrap">
                   <h1 className="brand-title">AIDIP</h1>
-                  <span className="version-pill">v2.4 Live</span>
+                  <span className="version-pill">Autonomous AI SRE</span>
                 </div>
                 <p className="brand-tagline">AI-Powered DevOps Telemetry & Reliability Platform</p>
               </div>
@@ -74,12 +70,22 @@ export default function App() {
 
             <div className="status-indicators">
               <div className="status-pill-badge">
-                <span className={`status-dot ${backendOnline ? 'online' : 'offline'}`}></span>
+                <span className={`status-dot ${health.backend ? 'online' : 'offline'}`}></span>
                 <span className="status-pill-text">API Core :8000</span>
               </div>
               <div className="status-pill-badge">
-                <span className={`status-dot ${aiOnline ? 'online' : 'offline'}`}></span>
-                <span className="status-pill-text">AI Microservice :8001</span>
+                <span className={`status-dot ${health.database ? 'online' : 'offline'}`}></span>
+                <span className="status-pill-text">Database</span>
+              </div>
+              <div className="status-pill-badge">
+                <span className={`status-dot ${health.aiService ? 'online' : 'offline'}`}></span>
+                <span className="status-pill-text">
+                  AI Microservice{health.aiMode && health.aiMode !== 'unknown' ? ` (${health.aiMode})` : ''}
+                </span>
+              </div>
+              <div className="status-pill-badge">
+                <span className={`status-dot ${health.detectionEnabled ? 'online' : 'offline'}`}></span>
+                <span className="status-pill-text">Detection</span>
               </div>
             </div>
           </div>
@@ -103,6 +109,8 @@ export default function App() {
 
         {/* Main Content Area */}
         <main className="main-content">
+          {tab === 'sre' && <SreDashboard />}
+          {tab === 'demo' && <DemoRunner />}
           {tab === 'overview' && <DashboardOverview onSelectTab={setTab} />}
           {tab === 'error' && <ErrorAnalyzer />}
           {tab === 'api' && <ApiValidator />}

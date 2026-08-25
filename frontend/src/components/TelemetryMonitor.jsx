@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import API from '../api';
+import { telemetryApi } from '../api/index';
 import { IconServer, IconRefresh, IconZap } from './Icons';
 import { useToast } from './Toast';
 
@@ -13,12 +13,12 @@ export default function TelemetryMonitor() {
   const load = async () => {
     setLoading(true);
     try {
-      const [iRes, mRes] = await Promise.all([
-        API.get(`/telemetry/incidents?projectId=${projectId}`),
-        API.get(`/telemetry/metrics?projectId=${projectId}`)
+      const [incidentRows, metricRows] = await Promise.all([
+        telemetryApi.getTelemetryIncidents(projectId),
+        telemetryApi.getMetrics(projectId)
       ]);
-      setIncidents(iRes.data);
-      setMetrics(mRes.data);
+      setIncidents(incidentRows);
+      setMetrics(metricRows);
     } catch (e) {
       addToast('Failed to load telemetry: ' + e.message, 'error');
     } finally {
@@ -28,11 +28,11 @@ export default function TelemetryMonitor() {
 
   const seed = async () => {
     try {
-      await API.post('/telemetry/incidents', {
+      await telemetryApi.postTelemetryIncident({
         projectId, endpoint: '/payment', method: 'POST',
         statusCode: 500, duration: 3200, error: 'Timeout', timestamp: new Date().toISOString()
       });
-      await API.post('/telemetry/metrics', {
+      await telemetryApi.postMetric({
         projectId, cpuPercent: 92.5, memoryPercent: 78.0, responseTimeMs: 1200
       });
       addToast('Test telemetry seeded', 'success');

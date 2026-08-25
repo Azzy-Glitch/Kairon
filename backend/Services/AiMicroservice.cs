@@ -1,4 +1,10 @@
+using AIDIP.Backend.Configuration;
 using AIDIP.Backend.DTOs;
+using AIDIP.Backend.DTOs.Sre;
+using AIDIP.Backend.Services.Audit;
+using AIDIP.Backend.Services.Remediation;
+using Microsoft.Extensions.Options;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
@@ -8,6 +14,7 @@ public class AiMicroservice : IAiMicroservice
 {
     private readonly HttpClient _httpClient;
     private readonly IConfiguration _configuration;
+    private readonly AiOrchestrationOptions _aiOptions;
     private readonly ILogger<AiMicroservice> _logger;
     private readonly bool _mockMode;
 
@@ -17,13 +24,17 @@ public class AiMicroservice : IAiMicroservice
 
     public bool IsAvailable => _isAvailable || (DateTime.UtcNow - _lastFailure) > RecoveryCooldown;
 
+    public string Mode => _mockMode ? "mock" : "live";
+
     public AiMicroservice(
         HttpClient httpClient,
         IConfiguration configuration,
+        IOptions<AiOrchestrationOptions> aiOptions,
         ILogger<AiMicroservice> logger)
     {
         _httpClient = httpClient;
         _configuration = configuration;
+        _aiOptions = aiOptions.Value;
         _logger = logger;
         _mockMode = configuration.GetValue<bool>("AiService:MockMode", false);
     }
@@ -124,6 +135,103 @@ public class AiMicroservice : IAiMicroservice
         }
     }
 
+    // --- Autonomous SRE investigation (PRD section 9) ---
+
+    public async Task<InvestigationResultDto> InvestigateAsync(
+        EvidencePackageDto evidence,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+
+        if (_mockMode)
+            return GetMockInvestigation(evidence);
+
+        if (!IsAvailable)
+            throw new AiUnavailableException("AI service is in a failed state and is cooling down");
+
+        var attempts = Math.Max(1, _aiOptions.MaxRetries + 1);
+        Exception? last = null;
+
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var stopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(_aiOptions.TimeoutSeconds));
+
+                var result = await PostAsync<InvestigationResultDto>("/analyze", evidence, timeout.Token);
+
+                if (result is null || string.IsNullOrWhiteSpace(result.RootCause))
+                {
+                    // A structurally empty answer is a malformed answer. Rejecting it is what
+                    // stops model noise from being written into incident state (AI PRD section 8).
+                    throw new AiUnavailableException("AI service returned an empty or unusable investigation result");
+                }
+
+                _isAvailable = true;
+
+                _logger.LogInformation(
+                    "AI investigation for {IncidentKey} succeeded in {Ms}ms on attempt {Attempt} (provider={Provider}, model={Model}, confidence={Confidence})",
+                    evidence.Incident.IncidentKey, stopwatch.ElapsedMilliseconds, attempt,
+                    result.Provider ?? "unknown", result.Model ?? "unknown", result.Confidence);
+
+                return Normalize(result);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Caller-initiated cancellation is not a service failure; do not trip the breaker.
+                throw;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+                _logger.LogWarning(
+                    "AI investigation attempt {Attempt}/{Attempts} for {IncidentKey} failed after {Ms}ms: {Error}",
+                    attempt, attempts, evidence.Incident.IncidentKey, stopwatch.ElapsedMilliseconds,
+                    Redaction.Describe(ex));
+
+                if (attempt < attempts)
+                {
+                    // Bounded linear backoff. Never retries indefinitely (AI PRD section 12).
+                    await Task.Delay(TimeSpan.FromMilliseconds(250 * attempt), cancellationToken);
+                }
+            }
+        }
+
+        _isAvailable = false;
+        _lastFailure = DateTime.UtcNow;
+
+        throw new AiUnavailableException(
+            $"AI investigation failed after {attempts} attempt(s): {Redaction.Describe(last!)}", last!);
+    }
+
+    /// <summary>
+    /// Clamps and defaults whatever the AI service returned. The service validates its own schema,
+    /// but the backend does not trust that as a guarantee - this is the second gate.
+    /// </summary>
+    private static InvestigationResultDto Normalize(InvestigationResultDto result)
+    {
+        result.Confidence = Math.Clamp(result.Confidence, 0, 1);
+        result.Severity = string.IsNullOrWhiteSpace(result.Severity) ? "medium" : result.Severity.ToLowerInvariant();
+        result.EstimatedRisk = string.IsNullOrWhiteSpace(result.EstimatedRisk) ? "medium" : result.EstimatedRisk.ToLowerInvariant();
+        result.ContributingFactors ??= new List<string>();
+        result.Evidence ??= new List<string>();
+        result.AffectedComponents ??= new List<string>();
+        result.Recommendations ??= new List<AiRecommendationDto>();
+
+        foreach (var rec in result.Recommendations)
+        {
+            rec.RiskLevel = string.IsNullOrWhiteSpace(rec.RiskLevel) ? "medium" : rec.RiskLevel.ToLowerInvariant();
+            rec.Action = rec.Action?.Trim() ?? string.Empty;
+        }
+
+        return result;
+    }
+
     private class SuggestFixesResponse
     {
         public List<FixSuggestionDto> Suggestions { get; set; } = new();
@@ -174,4 +282,74 @@ public class AiMicroservice : IAiMicroservice
     {
         new FixSuggestionDto { Path = "mock", Explanation = "Mock: Cast string to integer using parseInt()" }
     };
+
+    /// <summary>
+    /// Deterministic mock investigation (AI PRD section 13). It reads the actual evidence so the
+    /// demo shows real numbers, but it never calls a provider and needs no credentials.
+    /// </summary>
+    private static InvestigationResultDto GetMockInvestigation(EvidencePackageDto evidence)
+    {
+        var signals = evidence.CorrelatedSignals;
+        var hasRetryStorm = signals.Any(s => s.Metric == "retries");
+        var hasCpu = signals.Any(s => s.Metric == "cpu");
+        var hasLatency = signals.Any(s => s.Metric == "latency");
+        var hasErrors = signals.Any(s => s.Metric is "errorRate" or "errors");
+
+        var rootCause = hasRetryStorm
+            ? "Controlled retry loop causing repeated downstream requests, saturating worker threads."
+            : hasCpu && hasLatency
+                ? "CPU saturation is driving request latency above the configured threshold."
+                : hasErrors
+                    ? "A repeating downstream failure is driving the error rate above threshold."
+                    : "Resource pressure on the affected service.";
+
+        var recommendation = hasRetryStorm
+            ? new AiRecommendationDto
+            {
+                Action = DemoToolNames.DisableDemoRetryLoop,
+                Reason = "Retry volume is the leading signal; every other metric follows it.",
+                ExpectedOutcome = "Retry count returns to baseline and CPU utilization decreases.",
+                RiskLevel = "low"
+            }
+            : hasCpu
+                ? new AiRecommendationDto
+                {
+                    Action = DemoToolNames.ReduceDemoWorkerConcurrency,
+                    Reason = "Worker concurrency is above what the service can sustain at this load.",
+                    ExpectedOutcome = "CPU utilization drops back under the threshold.",
+                    RiskLevel = "low"
+                }
+                : new AiRecommendationDto
+                {
+                    Action = DemoToolNames.RunHealthCheck,
+                    Reason = "Evidence is insufficient for a targeted action; confirm current state first.",
+                    ExpectedOutcome = "Fresh health data for the affected service.",
+                    RiskLevel = "low"
+                };
+
+        return new InvestigationResultDto
+        {
+            Summary = $"{evidence.Incident.Service} is degraded: {string.Join("; ", evidence.Incident.Symptoms.Take(3))}",
+            RootCause = rootCause,
+            ContributingFactors = signals.Select(s => s.Symptom).Take(5).ToList(),
+            Evidence = signals
+                .Select(s => $"{s.Metric} {s.Observed}{s.Unit} vs threshold {s.Threshold}{s.Unit}")
+                .Take(6)
+                .ToList(),
+            Confidence = hasRetryStorm ? 0.92 : 0.74,
+            Severity = evidence.Incident.Severity.ToLowerInvariant(),
+            AffectedComponents = new List<string>
+            {
+                evidence.Incident.AffectedComponent,
+                evidence.Incident.Service
+            }.Where(c => !string.IsNullOrWhiteSpace(c)).Distinct().ToList(),
+            PredictedFailure = hasRetryStorm
+                ? "Request backlog will continue growing and order processing latency will keep increasing."
+                : "Degradation will continue and begin affecting dependent endpoints.",
+            EstimatedRisk = evidence.Incident.Severity.ToLowerInvariant() is "critical" or "high" ? "high" : "medium",
+            Recommendations = new List<AiRecommendationDto> { recommendation },
+            Provider = "mock",
+            Model = "deterministic-mock"
+        };
+    }
 }

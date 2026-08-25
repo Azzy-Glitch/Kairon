@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import API from '../api';
+import { devopsApi } from '../api/index';
 import { IconSparkles, IconShield, IconZap, IconCopy, IconCheck, IconTerminal } from './Icons';
 import { useToast } from './Toast';
 
@@ -32,11 +32,11 @@ export default function Recommender() {
     }
     setLoading(true);
     try {
-      const response = await API.post('/recommend', { context: ctx });
-      setRes(response.data);
+      const data = await devopsApi.recommend(ctx);
+      setRes(data);
       addToast('Architecture advisory generated', 'success');
     } catch (e) {
-      addToast(e.response?.data?.message || e.message || 'Recommendation failed', 'error');
+      addToast(e.message || 'Recommendation failed', 'error');
     } finally {
       setLoading(false);
     }

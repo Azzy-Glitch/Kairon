@@ -1,4 +1,4 @@
-<Solution>
+﻿<Solution>
   <Folder Name="/backend/">
     <Project Path="backend/AIDIP.Backend.csproj" />
   </Folder>
@@ -7,5 +7,9 @@
   </Folder>
   <Folder Name="/demo/">
     <Project Path="demo/AIDIP.DemoApp/AIDIP.DemoApp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AIDIP.Backend.Tests/AIDIP.Backend.Tests.csproj" />
+    <Project Path="tests/AIDIP.SDK.Tests/AIDIP.SDK.Tests.csproj" />
   </Folder>
 </Solution>

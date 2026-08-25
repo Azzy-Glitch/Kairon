@@ -20,6 +20,8 @@ builder.Host.UseSerilog();
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<ValidationFilter>();
+    // Gates the approve/reject/cancel endpoints when SreSecurity:RequireOperatorKey is enabled.
+    options.Filters.Add<OperatorAuthorizationFilter>();
 });
 
 builder.Services.AddEndpointsApiExplorer();
@@ -37,6 +39,9 @@ builder.Services.AddScoped<IContextEngine, ContextEngine>();
 
 // AI service + HttpClient
 builder.Services.AddAiServices(builder.Configuration);
+
+// Autonomous AI SRE control plane
+builder.Services.AddAutonomousSre(builder.Configuration);
 
 // Health checks
 builder.Services.AddHealthChecks()

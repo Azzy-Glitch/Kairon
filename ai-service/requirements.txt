@@ -2,3 +2,6 @@ fastapi
 uvicorn
 httpx
 python-dotenv
+pydantic>=2
+pytest
+pytest-asyncio

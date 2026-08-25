@@ -1,4 +1,4 @@
-﻿namespace AIDIP.Backend.DTOs;
+namespace AIDIP.Backend.DTOs;
 
 public class MetricDto
 {
@@ -12,6 +12,14 @@ public class MetricDto
     public long ErrorCount { get; set; }
     public string Environment { get; set; } = "Development";
     public Dictionary<string, double>? CustomMetrics { get; set; }
+
+    // Autonomous SRE signals. All optional, so existing callers that post only CPU/memory keep
+    // working exactly as before.
+    public long? RetryCount { get; set; }
+    public long? QueueDepth { get; set; }
+    public string? Application { get; set; }
+    public string? Service { get; set; }
+    public string? Component { get; set; }
 }
 
 public class CreateMetricRequest
@@ -23,4 +31,9 @@ public class CreateMetricRequest
     public long ErrorCount { get; set; }
     public string Environment { get; set; } = "Development";
     public Dictionary<string, double>? CustomMetrics { get; set; }
+    public long? RetryCount { get; set; }
+    public long? QueueDepth { get; set; }
+    public string? Application { get; set; }
+    public string? Service { get; set; }
+    public string? Component { get; set; }
 }

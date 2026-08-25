@@ -2,6 +2,7 @@ using AIDIP.Backend.DTOs;
 using AIDIP.Backend.Infrastructure;
 using AIDIP.Backend.Models;
 using AIDIP.Backend.Services;
+using AIDIP.Backend.Services.Orchestration;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -13,11 +14,16 @@ public class TelemetryController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly IContextEngine _context;
+    private readonly IIncidentProcessingQueue _queue;
 
-    public TelemetryController(AppDbContext db, IContextEngine context)
+    public TelemetryController(
+        AppDbContext db,
+        IContextEngine context,
+        IIncidentProcessingQueue queue)
     {
         _db = db;
         _context = context;
+        _queue = queue;
     }
 
     [HttpPost("incidents")]
@@ -36,11 +42,20 @@ public class TelemetryController : ControllerBase
             ErrorType = dto.ExceptionType,
             StackTrace = dto.StackTrace,
             Environment = string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
-            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : dto.Timestamp
+            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : dto.Timestamp,
+            // The SDK has always sent ApplicationName; persisting it (and the service name) is what
+            // lets detection and correlation attribute this row to a service.
+            Application = string.IsNullOrWhiteSpace(dto.ApplicationName) ? null : dto.ApplicationName,
+            Service = string.IsNullOrWhiteSpace(dto.Service) ? dto.ApplicationName : dto.Service
         };
 
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync(cancellationToken);
+
+        // Detection runs on a background worker. Ingestion returns as soon as the row is durable;
+        // it never waits for correlation or for an AI call (PRD section 6).
+        _queue.TryEnqueue(new IncidentWorkItem(
+            WorkItemKind.EvaluateDetection, incident.ProjectId, incident.Environment, incident.Service));
 
         // Keep this response compatible with AIDIP.SDK.Models.TelemetryResponse
         // without introducing a backend-to-SDK project dependency.
@@ -53,7 +68,9 @@ public class TelemetryController : ControllerBase
     }
 
     [HttpPost("metrics")]
-    public async Task<IActionResult> CreateMetric([FromBody] MetricDto dto)
+    public async Task<IActionResult> CreateMetric(
+        [FromBody] MetricDto dto,
+        CancellationToken cancellationToken)
     {
         var metric = new Metric
         {
@@ -63,12 +80,21 @@ public class TelemetryController : ControllerBase
             ResponseTimeMs = dto.ResponseTimeMs,
             RequestCount = dto.RequestCount,
             ErrorCount = dto.ErrorCount,
+            RetryCount = dto.RetryCount,
+            QueueDepth = dto.QueueDepth,
+            Application = dto.Application,
+            Service = dto.Service,
+            Component = dto.Component,
             Environment = string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
             Timestamp = dto.Timestamp == default ? DateTime.UtcNow : dto.Timestamp
         };
 
         _db.Metrics.Add(metric);
-        await _db.SaveChangesAsync();
+        await _db.SaveChangesAsync(cancellationToken);
+
+        _queue.TryEnqueue(new IncidentWorkItem(
+            WorkItemKind.EvaluateDetection, metric.ProjectId, metric.Environment, metric.Service));
+
         return Ok(new { status = "recorded" });
     }
 

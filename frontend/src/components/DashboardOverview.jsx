@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import API from '../api';
+import { devopsApi } from '../api/index';
 import { IconDashboard, IconBug, IconLink, IconPredict, IconSparkles, IconServer, IconShield, IconZap } from './Icons';
 
 export default function DashboardOverview({ onSelectTab }) {
@@ -17,8 +17,8 @@ export default function DashboardOverview({ onSelectTab }) {
     const loadStats = async () => {
       setLoading(true);
       try {
-        const res = await API.get('/stats');
-        setStats(res.data);
+        const data = await devopsApi.getStats();
+        setStats(data);
       } catch (e) {
         // Fallback demo numbers
       } finally {

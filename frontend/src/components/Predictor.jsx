@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import API from '../api';
+import { devopsApi } from '../api/index';
 import { IconPredict, IconSparkles, IconAlertTriangle, IconTerminal } from './Icons';
 import { useToast } from './Toast';
 
@@ -43,14 +43,11 @@ export default function Predictor() {
 
     setLoading(true);
     try {
-      const response = await API.post('/predict', {
-        recent_logs: logList,
-        current_log: cur
-      });
-      setRes(response.data);
+      const data = await devopsApi.predict(logList, cur);
+      setRes(data);
       addToast('Failure risk calculated', 'success');
     } catch (e) {
-      addToast(e.response?.data?.message || e.message || 'Prediction failed', 'error');
+      addToast(e.message || 'Prediction failed', 'error');
     } finally {
       setLoading(false);
     }

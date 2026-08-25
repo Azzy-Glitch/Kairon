@@ -1,5 +1,12 @@
 namespace AIDIP.Backend.Models;
 
+/// <summary>
+/// A single request-scoped telemetry record captured by the AIDIP SDK. One row per instrumented
+/// HTTP call. This is intentionally NOT the Autonomous SRE incident aggregate - see
+/// <see cref="AIDIP.Backend.Models.Sre.SreIncident"/> for that. Keeping this type unchanged is
+/// what preserves the existing SDK contract, the /api/telemetry endpoints, and the Telemetry
+/// Monitor screen (PRD section 15).
+/// </summary>
 public class Incident
 {
     public Guid Id { get; set; }
@@ -18,8 +25,12 @@ public class Incident
     public bool Resolved { get; set; }
     public string? MetadataJson { get; set; }
 
-    //public static implicit operator Incident(Incident v)
-    //{
-    //    throw new NotImplementedException();
-    //}
+    // --- Autonomous SRE additions (nullable, additive). The SDK already sends
+    // ApplicationName; persisting it lets detection and correlation attribute
+    // telemetry to a service without guessing.
+    public string? Application { get; set; }
+    public string? Service { get; set; }
+
+    /// <summary>Set when this telemetry row has been folded into an SreIncident.</summary>
+    public Guid? SreIncidentId { get; set; }
 }

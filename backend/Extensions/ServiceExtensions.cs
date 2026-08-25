@@ -1,4 +1,14 @@
-﻿using AIDIP.Backend.Services;
+using AIDIP.Backend.Configuration;
+using AIDIP.Backend.Services;
+using AIDIP.Backend.Services.Audit;
+using AIDIP.Backend.Services.Correlation;
+using AIDIP.Backend.Services.Demo;
+using AIDIP.Backend.Services.Detection;
+using AIDIP.Backend.Services.Evidence;
+using AIDIP.Backend.Services.Orchestration;
+using AIDIP.Backend.Services.Remediation;
+using AIDIP.Backend.Services.Remediation.Tools;
+using AIDIP.Backend.Services.Verification;
 
 namespace AIDIP.Backend.Extensions;
 
@@ -11,6 +21,79 @@ public static class ServiceExtensions
             client.BaseAddress = new Uri(configuration["AiService:BaseUrl"] ?? "http://localhost:8000");
             client.Timeout = TimeSpan.FromSeconds(configuration.GetValue<int>("AiService:TimeoutSeconds", 30));
         });
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the Autonomous AI SRE control plane: detection, correlation, evidence, AI
+    /// orchestration, remediation, verification and audit (PRD section 4.2).
+    /// </summary>
+    public static IServiceCollection AddAutonomousSre(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.Configure<DetectionOptions>(configuration.GetSection(DetectionOptions.SectionName));
+        services.Configure<RemediationOptions>(configuration.GetSection(RemediationOptions.SectionName));
+        services.Configure<VerificationOptions>(configuration.GetSection(VerificationOptions.SectionName));
+        services.Configure<AiOrchestrationOptions>(configuration.GetSection(AiOrchestrationOptions.SectionName));
+        services.Configure<SreSecurityOptions>(configuration.GetSection(SreSecurityOptions.SectionName));
+        services.Configure<DemoEnvironmentOptions>(configuration.GetSection(DemoEnvironmentOptions.SectionName));
+
+        // --- Detection. Every rule is registered explicitly; adding a rule is one line here and
+        // one class, and nothing else in the pipeline changes.
+        services.AddSingleton<IDetectionCooldownStore, InMemoryDetectionCooldownStore>();
+        services.AddScoped<IDetectionRule, CpuThresholdRule>();
+        services.AddScoped<IDetectionRule, MemoryThresholdRule>();
+        services.AddScoped<IDetectionRule, LatencyThresholdRule>();
+        services.AddScoped<IDetectionRule, ErrorRateRule>();
+        services.AddScoped<IDetectionRule, RetryStormRule>();
+        services.AddScoped<IDetectionRule, RequestBurstRule>();
+        services.AddScoped<IDetectionRule, MetricDeviationRule>();
+        services.AddScoped<IDetectionRule, RepeatedErrorsRule>();
+        services.AddScoped<IDetectionRule, QueueBacklogRule>();
+        services.AddScoped<IDetectionEngine, DetectionEngine>();
+
+        services.AddScoped<ICorrelationEngine, CorrelationEngine>();
+        services.AddScoped<IEvidenceCollector, EvidenceCollector>();
+
+        // --- Audit.
+        services.AddScoped<IAuditService, AuditService>();
+        services.AddScoped<IIncidentKeyGenerator, IncidentKeyGenerator>();
+
+        // --- Remediation. The registry is built from the registered tools, which is what makes
+        // "only a registered tool can execute" structurally true rather than a convention.
+        services.AddScoped<IRemediationTool, RestartDemoServiceTool>();
+        services.AddScoped<IRemediationTool, ClearDemoCacheTool>();
+        services.AddScoped<IRemediationTool, DisableDemoRetryLoopTool>();
+        services.AddScoped<IRemediationTool, ReduceDemoWorkerConcurrencyTool>();
+        services.AddScoped<IRemediationTool, ResetDemoFailureSimulationTool>();
+        services.AddScoped<IRemediationTool, RunHealthCheckTool>();
+        services.AddScoped<IRemediationToolRegistry, RemediationToolRegistry>();
+        services.AddScoped<IRemediationToolRegistryAccessor, RemediationToolRegistryAccessor>();
+        services.AddScoped<IRemediationPolicy, RemediationPolicy>();
+        services.AddScoped<IRemediationExecutor, RemediationExecutor>();
+
+        services.AddScoped<IVerificationService, VerificationService>();
+
+        // --- Orchestration.
+        services.AddSingleton<IIncidentProcessingQueue, IncidentProcessingQueue>();
+        services.AddScoped<IIncidentOrchestrator, IncidentOrchestrator>();
+        services.AddScoped<IIncidentQueryService, IncidentQueryService>();
+
+        // --- Demo environment. The simulator is a singleton because it holds the scenario state.
+        services.AddSingleton<ILocalDemoSimulator, LocalDemoSimulator>();
+        services.AddHttpClient<IDemoEnvironmentClient, DemoEnvironmentClient>((provider, client) =>
+        {
+            var options = configuration.GetSection(DemoEnvironmentOptions.SectionName).Get<DemoEnvironmentOptions>()
+                          ?? new DemoEnvironmentOptions();
+
+            client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/') + "/");
+            client.Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds);
+        });
+
+        // --- Background workers. This is what keeps AI off the ingestion path.
+        services.AddHostedService<IncidentProcessingWorker>();
+        services.AddHostedService<DetectionSweepWorker>();
+        services.AddHostedService<DemoSimulationWorker>();
 
         return services;
     }

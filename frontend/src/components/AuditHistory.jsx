@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import API from '../api';
+import { devopsApi } from '../api/index';
 import { IconHistory, IconTrash, IconRefresh, IconBug, IconLink, IconPredict, IconSparkles, IconCopy, IconCheck } from './Icons';
 import { useToast } from './Toast';
 
@@ -13,8 +13,8 @@ export default function AuditHistory() {
   const fetchHistory = async () => {
     setLoading(true);
     try {
-      const response = await API.get('/history');
-      setHistory(response.data || []);
+      const data = await devopsApi.getHistory();
+      setHistory(data || []);
     } catch (e) {
       addToast('Failed to fetch history', 'warning');
     } finally {
@@ -25,7 +25,7 @@ export default function AuditHistory() {
   const clearHistory = async () => {
     if (!window.confirm('Are you sure you want to clear all telemetry history?')) return;
     try {
-      await API.delete('/history');
+      await devopsApi.clearHistory();
       setHistory([]);
       setSelectedItem(null);
       addToast('Incident audit log cleared', 'info');

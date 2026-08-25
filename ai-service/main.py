@@ -1,78 +1,127 @@
-import os, json, re
-from fastapi import FastAPI
-from pydantic import BaseModel
-from fastapi.middleware.cors import CORSMiddleware
-import httpx
+"""AIDIP AI service.
+
+FastAPI front end over the provider-independent intelligence layer in the `aidip` package.
+
+Every endpoint the original service exposed is still here with the same route and the same
+request/response shape (AI PRD section 21), plus the new structured `/analyze` contract the
+Autonomous SRE backend consumes.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+
 from dotenv import load_dotenv
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from aidip.config import AiConfig
+from aidip.schemas import (
+    ContextReq,
+    EvidencePackage,
+    InvestigationResult,
+    LogReq,
+    MismatchReq,
+    PredictReq,
+)
+from aidip.providers import available_providers
+from aidip.service import AiService, AiServiceError
 
 load_dotenv()
-app = FastAPI()
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("aidip.api")
+
+app = FastAPI(
+    title="AIDIP AI Service",
+    description="Provider-independent AI intelligence layer for AIDIP Autonomous AI SRE.",
+    version="2.0.0",
+)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-QWEN_KEY = os.getenv("QWEN_API_KEY", "")
-QWEN_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+CONFIG = AiConfig.from_env()
+SERVICE = AiService(CONFIG)
 
-class LogReq(BaseModel):
-    log: str
+logger.info(
+    "AI service starting: provider=%s effective=%s model=%s mock=%s",
+    CONFIG.provider, CONFIG.effective_provider, CONFIG.model, CONFIG.effective_provider == "mock",
+)
 
-class PredictReq(BaseModel):
-    recent_logs: list
-    current_log: str
 
-class ContextReq(BaseModel):
-    context: str
+@app.exception_handler(AiServiceError)
+async def ai_service_error_handler(_: Request, exc: AiServiceError) -> JSONResponse:
+    """Turns a controlled AI failure into a clean, secret-free HTTP error."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": str(exc), "code": exc.code},
+    )
 
-class MismatchReq(BaseModel):
-    mismatches: list
 
-def extract_json(text: str):
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```json\s*|^```\s*|\s*```$", "", text, flags=re.MULTILINE)
-    return json.loads(text)
+# --- Health and configuration ---
 
-async def qwen_chat(system: str, user: str):
-    if not QWEN_KEY or QWEN_KEY == "your-key":
-        if "root_cause" in system:
-            return {"root_cause": "Mock: Null reference before initialization", "severity": "high", "severity_score": 78, "fixes": ["Add null check", "Initialize default value"], "prevention": "Use TypeScript interfaces"}
-        elif "risk_level" in system:
-            return {"failure_risk_score": 65, "risk_level": "moderate", "reasoning": "Mock: Timeout cascade pattern suggests downstream service degradation"}
-        elif "recommendations" in system:
-            return {"recommendations": [{"category": "performance", "suggestion": "Mock: Add Redis caching for session store"}, {"category": "security", "suggestion": "Mock: Add rate limiting to /login"}]}
-        else:
-            return {"suggestions": [{"path": "mock", "explanation": "Mock: Cast string to integer using parseInt()"}]}
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(
-            QWEN_URL,
-            headers={"Authorization": f"Bearer {QWEN_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": "qwen-plus",
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user}
-                ],
-                "temperature": 0.2
-            }
-        )
-        return extract_json(r.json()["choices"][0]["message"]["content"])
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "healthy", "service": "aidip-ai", "mode": SERVICE.mode}
+
+
+@app.get("/providers")
+async def providers() -> dict:
+    """Describes provider configuration. Reports whether keys are present, never what they are."""
+    return {
+        "available": available_providers(),
+        "configured": CONFIG.public_dict(),
+    }
+
+
+# --- Autonomous SRE investigation (AI PRD section 15) ---
+
+
+@app.post("/analyze", response_model=InvestigationResult)
+async def analyze(evidence: EvidencePackage) -> InvestigationResult:
+    """Evidence package in, validated structured investigation out.
+
+    The result is advisory. Any recommendation it contains names a tool the backend supplied and
+    still has to pass backend policy and human approval before anything runs.
+    """
+    return await SERVICE.investigate(evidence)
+
+
+# --- Existing endpoints. Routes and payload shapes unchanged. ---
+
 
 @app.post("/analyze-error")
-async def analyze(req: LogReq):
-    system = 'You are an expert debugger. ALWAYS respond with valid JSON only: {"root_cause":"string","severity":"low|medium|high|critical","severity_score":0-100,"fixes":["string"],"prevention":"string"}'
-    return await qwen_chat(system, f"Analyze this error:{req.log}")
+async def analyze_error(req: LogReq) -> dict:
+    return await SERVICE.analyze_error(req.log)
+
 
 @app.post("/predict")
-async def predict(req: PredictReq):
-    system = 'You are a reliability analyst. ALWAYS respond with valid JSON only: {"failure_risk_score":0-100,"risk_level":"low|moderate|high","reasoning":"string"}'
-    return await qwen_chat(system, "Recent logs:" + "".join(req.recent_logs) + f"Current:{req.current_log}")
+async def predict(req: PredictReq) -> dict:
+    return await SERVICE.predict(req.recent_logs, req.current_log)
+
 
 @app.post("/recommend")
-async def recommend(req: ContextReq):
-    system = 'You are a senior engineer. ALWAYS respond with valid JSON only: {"recommendations":[{"category":"performance|security|maintainability","suggestion":"string"}]}'
-    return await qwen_chat(system, f"Context:{req.context}")
+async def recommend(req: ContextReq) -> dict:
+    return await SERVICE.recommend(req.context)
+
 
 @app.post("/suggest-fixes")
-async def suggest_fixes(req: MismatchReq):
-    system = 'You are an API designer. ALWAYS respond with valid JSON only: {"suggestions":[{"path":"string","explanation":"string"}]}'
-    return await qwen_chat(system, f"Fix these mismatches:{json.dumps(req.mismatches)}")
+async def suggest_fixes(req: MismatchReq) -> dict:
+    return await SERVICE.suggest_fixes(req.mismatches)
+
+
+# --- Backwards-compatible helper ---
+#
+# The original module exposed extract_json at module scope. It is re-exported so anything that
+# imported it from here keeps working; the implementation now lives in aidip.validation.
+
+from aidip.validation import extract_json  # noqa: E402  (re-export, must follow app setup)
+
+__all__ = ["app", "extract_json", "SERVICE", "CONFIG"]

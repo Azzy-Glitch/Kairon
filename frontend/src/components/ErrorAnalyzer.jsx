@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import API from '../api';
+import { devopsApi } from '../api/index';
 import { IconBug, IconSparkles, IconCopy, IconCheck, IconAlertTriangle, IconTerminal } from './Icons';
 import { useToast } from './Toast';
 
@@ -42,11 +42,11 @@ export default function ErrorAnalyzer() {
     }
     setLoading(true);
     try {
-      const response = await API.post('/analyze-error', { log });
-      setRes(response.data);
+      const data = await devopsApi.analyzeError(log);
+      setRes(data);
       addToast('Incident analyzed successfully', 'success');
     } catch (e) {
-      addToast(e.response?.data?.message || e.message || 'Failed to analyze error', 'error');
+      addToast(e.message || 'Failed to analyze error', 'error');
     } finally {
       setLoading(false);
     }

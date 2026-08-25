@@ -75,3 +75,8 @@ coverage/
 
 # Runtime logs
 backend/logs/
+
+# The provider configuration template is documentation, not a credential file. It carries no real
+# key and needs to be tracked, so it is exempted from the .env.* rule above.
+!.env.example
+!ai-service/.env.example
