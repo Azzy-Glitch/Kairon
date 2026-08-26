@@ -10,7 +10,16 @@ public enum WorkItemKind
     EvaluateDetection = 0,
 
     /// <summary>Run AI investigation and produce recommendations for one incident.</summary>
-    ProcessIncident = 1
+    ProcessIncident = 1,
+
+    /// <summary>
+    /// Execute an approved remediation action and verify recovery. Split out from the approve
+    /// request itself: execute (up to ExecutionTimeoutSeconds) plus verify (settle + up to
+    /// MaxWaitSeconds) can take well over a minute, and running that inline on the HTTP request's
+    /// own cancellation token meant a client timeout or a closed tab silently orphaned the incident
+    /// in "Verifying" forever - the same reason ProcessIncident already runs off the request thread.
+    /// </summary>
+    ExecuteRemediation = 2
 }
 
 public record IncidentWorkItem(
@@ -18,7 +27,8 @@ public record IncidentWorkItem(
     Guid ProjectId,
     string Environment,
     string? Service = null,
-    Guid? IncidentId = null);
+    Guid? IncidentId = null,
+    Guid? ActionId = null);
 
 /// <summary>
 /// The seam that keeps AI off the telemetry ingestion path (PRD section 6: "AI calls must never

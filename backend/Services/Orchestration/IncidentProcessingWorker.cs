@@ -66,6 +66,10 @@ public class IncidentProcessingWorker : BackgroundService
                 await orchestrator.InvestigateAsync(item.IncidentId.Value, cancellationToken);
                 break;
 
+            case WorkItemKind.ExecuteRemediation when item.IncidentId.HasValue && item.ActionId.HasValue:
+                await orchestrator.ExecuteAndVerifyAsync(item.IncidentId.Value, item.ActionId.Value, cancellationToken);
+                break;
+
             default:
                 _logger.LogWarning("Ignoring malformed work item {Kind}", item.Kind);
                 break;

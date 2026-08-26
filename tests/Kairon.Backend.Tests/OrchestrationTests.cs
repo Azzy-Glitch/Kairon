@@ -274,6 +274,12 @@ public class OrchestrationTests : IDisposable
         var action = await _h.Db.RemediationActions.FirstAsync(a => a.IncidentId == incident.Id);
         await _h.CreateOrchestrator().ApproveAsync(incident.Id, action.Id, "alice", "looks right");
 
+        // Execute + verify run off the request thread in production (queued for the incident
+        // processing worker - see WorkItemKind.ExecuteRemediation); the test drives that step
+        // directly rather than draining the queue, the same way InvestigateAsync above is called
+        // directly instead of going through DetectAndCorrelateAsync's enqueue.
+        await _h.CreateOrchestrator().ExecuteAndVerifyAsync(incident.Id, action.Id);
+
         var updated = await _h.Db.SreIncidents
             .Include(i => i.Actions)
             .Include(i => i.Verifications)
@@ -302,6 +308,7 @@ public class OrchestrationTests : IDisposable
 
         var action = await _h.Db.RemediationActions.FirstAsync(a => a.IncidentId == incident.Id);
         await _h.CreateOrchestrator().ApproveAsync(incident.Id, action.Id, "alice", null);
+        await _h.CreateOrchestrator().ExecuteAndVerifyAsync(incident.Id, action.Id);
 
         var updated = await _h.Db.SreIncidents.FirstAsync(i => i.Id == incident.Id);
 
@@ -318,6 +325,7 @@ public class OrchestrationTests : IDisposable
         await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
         var action = await _h.Db.RemediationActions.FirstAsync(a => a.IncidentId == incident.Id);
         await _h.CreateOrchestrator().ApproveAsync(incident.Id, action.Id, "alice", null);
+        await _h.CreateOrchestrator().ExecuteAndVerifyAsync(incident.Id, action.Id);
 
         var updated = await _h.Db.SreIncidents.Include(i => i.Verifications).FirstAsync(i => i.Id == incident.Id);
 

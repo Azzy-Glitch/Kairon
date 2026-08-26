@@ -36,6 +36,14 @@ public interface IIncidentOrchestrator
     Task<RemediationAction?> ApproveAsync(
         Guid incidentId, Guid actionId, string approvedBy, string? note, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Executes an approved action and verifies recovery. Runs off the request thread (queued by
+    /// <see cref="ApproveAsync"/>, processed by <see cref="IncidentProcessingWorker"/>) because the
+    /// combined execute+verify wait can exceed a minute - the same reason investigation is queued
+    /// rather than run inline.
+    /// </summary>
+    Task ExecuteAndVerifyAsync(Guid incidentId, Guid actionId, CancellationToken cancellationToken = default);
+
     Task<RemediationAction?> RejectAsync(
         Guid incidentId, Guid actionId, string rejectedBy, string? reason, CancellationToken cancellationToken = default);
 
@@ -465,6 +473,50 @@ public class IncidentOrchestrator : IIncidentOrchestrator
 
         await _db.SaveChangesAsync(cancellationToken);
 
+        // Execute + verify happen off the request thread (see ExecuteAndVerifyAsync): the combined
+        // wait can run past a minute, and this endpoint returning quickly is what lets the operator
+        // watch progress by polling instead of holding a connection open that a client timeout or a
+        // closed tab would silently cancel mid-verification.
+        var queued = _queue.TryEnqueue(new IncidentWorkItem(
+            WorkItemKind.ExecuteRemediation, incident.ProjectId, incident.Environment, incident.Service,
+            incident.Id, action.Id));
+
+        if (!queued)
+        {
+            // The queue only drops under sustained overload (PRD section 21's bounded-queue
+            // requirement). Approval is still recorded - nothing unsafe happened - but the operator
+            // needs to know execution did not start rather than watching a stalled "Remediating".
+            _logger.LogError(
+                "Remediation queue is full; {Key} action {Action} approved but not yet queued for execution",
+                incident.IncidentKey, action.ActionKey);
+        }
+
+        return action;
+    }
+
+    /// <summary>
+    /// Executes an approved action and verifies recovery (moved off <see cref="ApproveAsync"/> - see
+    /// that method and <see cref="WorkItemKind.ExecuteRemediation"/> for why). Reloads the incident
+    /// itself since this runs in the worker's own scope, not the approval request's.
+    /// </summary>
+    public async Task ExecuteAndVerifyAsync(Guid incidentId, Guid actionId, CancellationToken cancellationToken = default)
+    {
+        var incident = await LoadAsync(incidentId, cancellationToken);
+        if (incident is null)
+        {
+            _logger.LogWarning("ExecuteAndVerifyAsync called for unknown incident {IncidentId}", incidentId);
+            return;
+        }
+
+        var action = incident.Actions.FirstOrDefault(a => a.Id == actionId);
+        if (action is null || action.Status != RemediationStatus.Approved)
+        {
+            _logger.LogWarning(
+                "ExecuteAndVerifyAsync: action {ActionId} on {Key} is not in Approved state (found {Status}); skipping",
+                actionId, incident.IncidentKey, action?.Status.ToString() ?? "missing");
+            return;
+        }
+
         var result = await _executor.ExecuteAsync(incident, action, cancellationToken);
 
         if (!result.Success)
@@ -480,7 +532,7 @@ public class IncidentOrchestrator : IIncidentOrchestrator
                 error: result.Error);
 
             await _db.SaveChangesAsync(cancellationToken);
-            return action;
+            return;
         }
 
         incident.RemediationState = RemediationStatus.Executed;
@@ -545,7 +597,6 @@ public class IncidentOrchestrator : IIncidentOrchestrator
         }
 
         await _db.SaveChangesAsync(cancellationToken);
-        return action;
     }
 
     public async Task<RemediationAction?> RejectAsync(
