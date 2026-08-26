@@ -50,6 +50,27 @@ export function useDashboard({ pollMs = DEFAULT_INTERVAL } = {}) {
   return async;
 }
 
+/**
+ * Full detail (diagnosis, prediction, recommendations, actions) for a bounded set of incidents.
+ *
+ * The list endpoint is deliberately lean, so aggregate views (AI Insights, Remediation Center) that
+ * need per-incident detail fetch it themselves - capped at `limit` so an aggregate view's request
+ * volume stays bounded no matter how large the incident history grows.
+ */
+export function useIncidentDetails(incidents, { limit = 20 } = {}) {
+  const ids = useMemo(() => (incidents || []).slice(0, limit).map((i) => i.id), [incidents, limit]);
+  const key = ids.join(',');
+
+  const loader = useCallback(async () => {
+    if (ids.length === 0) return [];
+    const results = await Promise.allSettled(ids.map((id) => incidentsApi.getIncident(id)));
+    return results.filter((r) => r.status === 'fulfilled').map((r) => r.value).filter(Boolean);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  return useAsync(loader, { isEmpty: (data) => !data || data.length === 0, deps: [key] });
+}
+
 export function useRemediationTools() {
   const loader = useCallback(() => incidentsApi.getTools(), []);
   return useAsync(loader, { isEmpty: (data) => !data || data.length === 0, deps: [] });

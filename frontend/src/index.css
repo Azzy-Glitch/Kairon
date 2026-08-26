@@ -205,13 +205,13 @@ body {
 .tab-btn {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 16px;
+  gap: 6px;
+  padding: 8px 12px;
   background: transparent;
   border: none;
   color: var(--text-muted);
   border-radius: var(--radius-md);
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;

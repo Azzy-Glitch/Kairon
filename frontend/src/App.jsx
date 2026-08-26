@@ -1,31 +1,42 @@
 import React, { useState } from 'react';
-import ErrorAnalyzer from './components/ErrorAnalyzer';
-import ApiValidator from './components/ApiValidator';
-import Predictor from './components/Predictor';
-import Recommender from './components/Recommender';
 import AuditHistory from './components/AuditHistory';
-import DashboardOverview from './components/DashboardOverview';
 import TelemetryMonitor from './components/TelemetryMonitor';
 import SreDashboard from './components/sre/SreDashboard';
 import DemoRunner from './components/sre/DemoRunner';
+import ServicesPage from './components/sre/ServicesPage';
+import AiInsightsPage from './components/sre/AiInsightsPage';
+import RemediationCenterPage from './components/sre/RemediationCenterPage';
+import AnalyticsPage from './components/sre/AnalyticsPage';
+import DeveloperTools from './components/sre/DeveloperTools';
+import SettingsPage from './components/sre/SettingsPage';
 import { ToastProvider } from './components/Toast';
 import { useHealth } from './hooks/useDemo';
 import {
   IconDashboard,
-  IconBug,
-  IconLink,
+  IconAlertTriangle,
   IconPredict,
   IconSparkles,
   IconHistory,
   IconServer,
   IconShield,
-  IconZap
+  IconZap,
+  IconTerminal,
+  IconSettings
 } from './components/Icons';
 import './index.css';
 // The SRE operator styles live in their own file so the original theme stays readable. Imported
 // here rather than via a CSS @import, which would have to precede every other rule to be valid.
 import './styles/sre.css';
 
+/**
+ * Navigation (frontend PRD section 5): Overview, Incidents, Services, Observability, AI Insights,
+ * Remediation, History, Analytics, Demo Center, Developer Tools, Settings.
+ *
+ * "Overview" and "Incidents" are deliberately one screen (SreDashboard) rather than two - it already
+ * shows system health tiles, the incident feed and the detail pane together, and splitting a working,
+ * tested screen in two for a naming technicality is exactly the unnecessary rewrite the PRD's
+ * compatibility rules (sections 5, 50) warn against.
+ */
 export default function App() {
   const [tab, setTab] = useState('sre');
 
@@ -34,15 +45,16 @@ export default function App() {
   const { health } = useHealth();
 
   const tabs = [
-    { id: 'sre', label: 'SRE Command', icon: <IconShield className="w-4 h-4 text-cyan-400" /> },
-    { id: 'demo', label: 'Incident Simulation', icon: <IconZap className="w-4 h-4 text-amber-400" /> },
-    { id: 'overview', label: 'Overview', icon: <IconDashboard className="w-4 h-4" /> },
-    { id: 'error', label: 'Incident Triage', icon: <IconBug className="w-4 h-4 text-rose-400" /> },
-    { id: 'api', label: 'API Drift Guard', icon: <IconLink className="w-4 h-4 text-cyan-400" /> },
-    { id: 'predict', label: 'Risk Radar', icon: <IconPredict className="w-4 h-4 text-purple-400" /> },
-    { id: 'rec', label: 'Arch Advisor', icon: <IconSparkles className="w-4 h-4 text-amber-400" /> },
-    { id: 'history', label: 'Audit History', icon: <IconHistory className="w-4 h-4 text-emerald-400" /> },
-    { id: 'telemetry', label: 'Telemetry Monitor', icon: <IconServer className="w-4 h-4 text-sky-400" /> }
+    { id: 'sre', label: 'Overview', icon: <IconShield className="w-4 h-4 text-cyan-400" /> },
+    { id: 'services', label: 'Services', icon: <IconDashboard className="w-4 h-4 text-sky-400" /> },
+    { id: 'telemetry', label: 'Observability', icon: <IconServer className="w-4 h-4 text-sky-400" /> },
+    { id: 'ai-insights', label: 'AI Insights', icon: <IconSparkles className="w-4 h-4 text-amber-400" /> },
+    { id: 'remediation', label: 'Remediation', icon: <IconZap className="w-4 h-4 text-emerald-400" /> },
+    { id: 'history', label: 'History', icon: <IconHistory className="w-4 h-4 text-emerald-400" /> },
+    { id: 'analytics', label: 'Analytics', icon: <IconPredict className="w-4 h-4 text-purple-400" /> },
+    { id: 'demo', label: 'Demo Center', icon: <IconAlertTriangle className="w-4 h-4 text-rose-400" /> },
+    { id: 'devtools', label: 'Developer Tools', icon: <IconTerminal className="w-4 h-4 text-slate-400" /> },
+    { id: 'settings', label: 'Settings', icon: <IconSettings className="w-4 h-4 text-slate-400" /> }
   ];
 
   return (
@@ -110,14 +122,15 @@ export default function App() {
         {/* Main Content Area */}
         <main className="main-content">
           {tab === 'sre' && <SreDashboard />}
-          {tab === 'demo' && <DemoRunner />}
-          {tab === 'overview' && <DashboardOverview onSelectTab={setTab} />}
-          {tab === 'error' && <ErrorAnalyzer />}
-          {tab === 'api' && <ApiValidator />}
-          {tab === 'predict' && <Predictor />}
-          {tab === 'rec' && <Recommender />}
-          {tab === 'history' && <AuditHistory />}
+          {tab === 'services' && <ServicesPage />}
           {tab === 'telemetry' && <TelemetryMonitor />}
+          {tab === 'ai-insights' && <AiInsightsPage />}
+          {tab === 'remediation' && <RemediationCenterPage />}
+          {tab === 'history' && <AuditHistory />}
+          {tab === 'analytics' && <AnalyticsPage />}
+          {tab === 'demo' && <DemoRunner />}
+          {tab === 'devtools' && <DeveloperTools />}
+          {tab === 'settings' && <SettingsPage />}
         </main>
 
         {/* Footer */}
