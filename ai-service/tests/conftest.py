@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from aidip.config import AiConfig  # noqa: E402
-from aidip.schemas import (  # noqa: E402
+from kairon.config import AiConfig  # noqa: E402
+from kairon.schemas import (  # noqa: E402
     AvailableAction,
     CorrelatedSignal,
     EvidencePackage,
@@ -43,7 +43,7 @@ def retry_storm_evidence() -> EvidencePackage:
             incident_id="11111111-1111-1111-1111-111111111111",
             incident_key="INC-0001",
             title="OrderProcessingService Service Degradation",
-            application="AIDIP.DemoApp",
+            application="Kairon.DemoApp",
             service="OrderProcessingService",
             environment="Demo",
             severity="High",

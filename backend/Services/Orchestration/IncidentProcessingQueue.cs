@@ -1,8 +1,8 @@
 using System.Threading.Channels;
-using AIDIP.Backend.Configuration;
+using Kairon.Backend.Configuration;
 using Microsoft.Extensions.Options;
 
-namespace AIDIP.Backend.Services.Orchestration;
+namespace Kairon.Backend.Services.Orchestration;
 
 public enum WorkItemKind
 {

@@ -1,6 +1,6 @@
-"""AIDIP AI service.
+"""Kairon AI service.
 
-FastAPI front end over the provider-independent intelligence layer in the `aidip` package.
+FastAPI front end over the provider-independent intelligence layer in the `kairon` package.
 
 Every endpoint the original service exposed is still here with the same route and the same
 request/response shape (AI PRD section 21), plus the new structured `/analyze` contract the
@@ -19,8 +19,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from aidip.config import AiConfig
-from aidip.schemas import (
+from kairon.config import AiConfig
+from kairon.schemas import (
     ContextReq,
     EvidencePackage,
     InvestigationResult,
@@ -28,8 +28,8 @@ from aidip.schemas import (
     MismatchReq,
     PredictReq,
 )
-from aidip.providers import available_providers
-from aidip.service import AiService, AiServiceError
+from kairon.providers import available_providers
+from kairon.service import AiService, AiServiceError
 
 load_dotenv()
 
@@ -37,11 +37,11 @@ logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
-logger = logging.getLogger("aidip.api")
+logger = logging.getLogger("kairon.api")
 
 app = FastAPI(
-    title="AIDIP AI Service",
-    description="Provider-independent AI intelligence layer for AIDIP Autonomous AI SRE.",
+    title="Kairon AI Service",
+    description="Provider-independent AI intelligence layer for Kairon Autonomous AI SRE.",
     version="2.0.0",
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -69,7 +69,7 @@ async def ai_service_error_handler(_: Request, exc: AiServiceError) -> JSONRespo
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "healthy", "service": "aidip-ai", "mode": SERVICE.mode}
+    return {"status": "healthy", "service": "kairon-ai", "mode": SERVICE.mode}
 
 
 @app.get("/providers")
@@ -120,8 +120,8 @@ async def suggest_fixes(req: MismatchReq) -> dict:
 # --- Backwards-compatible helper ---
 #
 # The original module exposed extract_json at module scope. It is re-exported so anything that
-# imported it from here keeps working; the implementation now lives in aidip.validation.
+# imported it from here keeps working; the implementation now lives in kairon.validation.
 
-from aidip.validation import extract_json  # noqa: E402  (re-export, must follow app setup)
+from kairon.validation import extract_json  # noqa: E402  (re-export, must follow app setup)
 
 __all__ = ["app", "extract_json", "SERVICE", "CONFIG"]

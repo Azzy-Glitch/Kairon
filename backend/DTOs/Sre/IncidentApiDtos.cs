@@ -1,4 +1,4 @@
-namespace AIDIP.Backend.DTOs.Sre;
+namespace Kairon.Backend.DTOs.Sre;
 
 // Operator-facing DTOs. These are what the React dashboard consumes; entities are never
 // serialized directly, so the storage shape can change without breaking the frontend.

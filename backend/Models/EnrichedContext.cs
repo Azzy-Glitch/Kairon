@@ -1,4 +1,4 @@
-namespace AIDIP.Backend.Models;
+namespace Kairon.Backend.Models;
 
 public class EnrichedContext
 {

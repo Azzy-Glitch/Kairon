@@ -61,7 +61,7 @@ export default function App() {
               </div>
               <div className="brand-text">
                 <div className="brand-title-wrap">
-                  <h1 className="brand-title">AIDIP</h1>
+                  <h1 className="brand-title">Kairon</h1>
                   <span className="version-pill">Autonomous AI SRE</span>
                 </div>
                 <p className="brand-tagline">AI-Powered DevOps Telemetry & Reliability Platform</p>
@@ -122,7 +122,7 @@ export default function App() {
 
         {/* Footer */}
         <footer className="footer-bar">
-          <span>AIDIP DevOps Intelligence Platform &bull; Built for High Reliability & Incident Remediation</span>
+          <span>Kairon DevOps Intelligence Platform &bull; Built for High Reliability & Incident Remediation</span>
           <div className="footer-links">
             <span>FastAPI Python Engine</span>
             <span>&bull;</span>

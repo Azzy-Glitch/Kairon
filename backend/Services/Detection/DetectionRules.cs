@@ -1,7 +1,7 @@
-using AIDIP.Backend.Models;
-using AIDIP.Backend.Models.Sre;
+using Kairon.Backend.Models;
+using Kairon.Backend.Models.Sre;
 
-namespace AIDIP.Backend.Services.Detection;
+namespace Kairon.Backend.Services.Detection;
 
 /// <summary>
 /// A deterministic detection rule (PRD section 7). Rules run before any AI reasoning and are the

@@ -1,7 +1,7 @@
-using AIDIP.Backend.DTOs;
+using Kairon.Backend.DTOs;
 using System.Text.Json;
 
-namespace AIDIP.Backend.Services;
+namespace Kairon.Backend.Services;
 
 public class ContractValidator : IContractValidator
 {

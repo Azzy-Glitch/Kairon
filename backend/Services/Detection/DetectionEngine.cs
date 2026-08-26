@@ -1,12 +1,12 @@
 using System.Collections.Concurrent;
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Models;
-using AIDIP.Backend.Models.Sre;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models;
+using Kairon.Backend.Models.Sre;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
-namespace AIDIP.Backend.Services.Detection;
+namespace Kairon.Backend.Services.Detection;
 
 public interface IDetectionEngine
 {

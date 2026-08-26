@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="../sdk/Kairon.SDK/Kairon.SDK.csproj" />
+  <Project Path="Kairon.Backend.csproj" />
+</Solution>

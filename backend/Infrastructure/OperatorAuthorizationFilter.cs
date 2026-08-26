@@ -1,10 +1,10 @@
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.DTOs;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.DTOs;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.Extensions.Options;
 
-namespace AIDIP.Backend.Infrastructure;
+namespace Kairon.Backend.Infrastructure;
 
 /// <summary>
 /// Marks an endpoint that changes remediation state - approve, reject, cancel, execute. When

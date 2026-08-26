@@ -1,7 +1,7 @@
-﻿using AIDIP.Backend.DTOs;
+﻿using Kairon.Backend.DTOs;
 using System.Text.Json;
 
-namespace AIDIP.Backend.Infrastructure;
+namespace Kairon.Backend.Infrastructure;
 
 public class ErrorHandlingMiddleware
 {

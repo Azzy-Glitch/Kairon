@@ -1,6 +1,6 @@
-using AIDIP.Backend.Models.Sre;
+using Kairon.Backend.Models.Sre;
 
-namespace AIDIP.Backend.Services.Remediation;
+namespace Kairon.Backend.Services.Remediation;
 
 /// <summary>
 /// A strongly typed, registered remediation capability (PRD section 11).

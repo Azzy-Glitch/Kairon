@@ -1,14 +1,14 @@
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.DTOs;
-using AIDIP.Backend.DTOs.Sre;
-using AIDIP.Backend.Services.Audit;
-using AIDIP.Backend.Services.Remediation;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.DTOs;
+using Kairon.Backend.DTOs.Sre;
+using Kairon.Backend.Services.Audit;
+using Kairon.Backend.Services.Remediation;
 using Microsoft.Extensions.Options;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
-namespace AIDIP.Backend.Services;
+namespace Kairon.Backend.Services;
 
 public class AiMicroservice : IAiMicroservice
 {

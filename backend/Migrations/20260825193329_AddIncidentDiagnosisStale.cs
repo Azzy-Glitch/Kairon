@@ -2,7 +2,7 @@
 
 #nullable disable
 
-namespace AIDIP.Backend.Migrations
+namespace Kairon.Backend.Migrations
 {
     /// <inheritdoc />
     public partial class AddIncidentDiagnosisStale : Migration

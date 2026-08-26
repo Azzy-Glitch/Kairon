@@ -1,4 +1,4 @@
-namespace AIDIP.Backend.Models.Sre;
+namespace Kairon.Backend.Models.Sre;
 
 /// <summary>
 /// A typed, registry-bound remediation action (PRD section 13). The AI can only *propose* one of

@@ -1,7 +1,7 @@
-using AIDIP.Backend.Models.Sre;
-using AIDIP.Backend.Services.Demo;
+using Kairon.Backend.Models.Sre;
+using Kairon.Backend.Services.Demo;
 
-namespace AIDIP.Backend.Services.Remediation.Tools;
+namespace Kairon.Backend.Services.Remediation.Tools;
 
 /// <summary>
 /// Shared plumbing for the demo remediation tools (PRD section 11). Every tool is a thin, fixed

@@ -1,8 +1,8 @@
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Models;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models;
 using Microsoft.EntityFrameworkCore;
 
-namespace AIDIP.Backend.Services;
+namespace Kairon.Backend.Services;
 
 public interface IContextEngine
 {

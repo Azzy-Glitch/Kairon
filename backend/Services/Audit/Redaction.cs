@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace AIDIP.Backend.Services.Audit;
+namespace Kairon.Backend.Services.Audit;
 
 /// <summary>
 /// Secret-safe logging (PRD section 19). Anything that reaches a log line, an audit row, or an

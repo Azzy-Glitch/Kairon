@@ -1,8 +1,8 @@
-using AIDIP.Backend.Models;
-using AIDIP.Backend.Models.Sre;
+using Kairon.Backend.Models;
+using Kairon.Backend.Models.Sre;
 using Microsoft.EntityFrameworkCore;
 
-namespace AIDIP.Backend.Infrastructure;
+namespace Kairon.Backend.Infrastructure;
 
 public class AppDbContext : DbContext
 {

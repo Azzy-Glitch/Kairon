@@ -1,7 +1,7 @@
 import client, { request } from './client';
 
 /**
- * The original AIDIP analysis endpoints: Error Analyzer, API Drift Guard, Risk Radar, Arch
+ * The original Kairon analysis endpoints: Error Analyzer, API Drift Guard, Risk Radar, Arch
  * Advisor, Audit History and Statistics.
  *
  * Every route here is unchanged (frontend PRD section 2 and 22). The service layer exists so the

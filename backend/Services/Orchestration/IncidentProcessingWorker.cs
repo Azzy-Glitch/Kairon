@@ -1,7 +1,7 @@
-using AIDIP.Backend.Services.Audit;
-using AIDIP.Backend.Services.Demo;
+using Kairon.Backend.Services.Audit;
+using Kairon.Backend.Services.Demo;
 
-namespace AIDIP.Backend.Services.Orchestration;
+namespace Kairon.Backend.Services.Orchestration;
 
 /// <summary>
 /// Drains the incident processing queue. This is where detection, correlation and AI investigation

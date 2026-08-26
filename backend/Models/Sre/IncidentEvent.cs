@@ -1,4 +1,4 @@
-namespace AIDIP.Backend.Models.Sre;
+namespace Kairon.Backend.Models.Sre;
 
 /// <summary>
 /// Immutable audit-trail entry (PRD section 14). One row per meaningful thing that happened to

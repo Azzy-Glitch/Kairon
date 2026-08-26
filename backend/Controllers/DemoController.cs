@@ -1,9 +1,9 @@
-using AIDIP.Backend.DTOs;
-using AIDIP.Backend.Services.Demo;
-using AIDIP.Backend.Services.Orchestration;
+using Kairon.Backend.DTOs;
+using Kairon.Backend.Services.Demo;
+using Kairon.Backend.Services.Orchestration;
 using Microsoft.AspNetCore.Mvc;
 
-namespace AIDIP.Backend.Controllers;
+namespace Kairon.Backend.Controllers;
 
 /// <summary>
 /// Drives the deterministic competition demo (frontend PRD section 14). One button starts the

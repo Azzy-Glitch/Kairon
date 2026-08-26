@@ -51,7 +51,7 @@ export function toOperatorError(error) {
     kind: 'offline',
     status: null,
     code: 'BACKEND_UNREACHABLE',
-    message: 'Cannot reach the AIDIP backend. Check that it is running on port 8000.'
+    message: 'Cannot reach the Kairon backend. Check that it is running on port 8000.'
   };
 }
 

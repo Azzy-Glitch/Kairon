@@ -1,12 +1,12 @@
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.DTOs.Sre;
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Models.Sre;
-using AIDIP.Backend.Services.Remediation;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.DTOs.Sre;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models.Sre;
+using Kairon.Backend.Services.Remediation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
-namespace AIDIP.Backend.Services.Evidence;
+namespace Kairon.Backend.Services.Evidence;
 
 /// <summary>
 /// Builds the bounded evidence package handed to the AI service (PRD section 10). The bounds are

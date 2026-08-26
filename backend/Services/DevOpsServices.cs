@@ -1,10 +1,10 @@
-using AIDIP.Backend.DTOs;
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Models;
+using Kairon.Backend.DTOs;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 
-namespace AIDIP.Backend.Services;
+namespace Kairon.Backend.Services;
 
 public class DevOpsService : IDevOpsService
 {
@@ -25,7 +25,7 @@ public class DevOpsService : IDevOpsService
         _contractValidator = contractValidator;
         _db = db;
         _logger = logger;
-        _defaultProjectId = Guid.TryParse(configuration["AIDIP:ProjectId"], out var id) ? id : Guid.Empty;
+        _defaultProjectId = Guid.TryParse(configuration["Kairon:ProjectId"], out var id) ? id : Guid.Empty;
     }
 
     public async Task<ErrorAnalysisResponse> AnalyzeErrorAsync(ErrorAnalysisRequest request, CancellationToken cancellationToken = default)

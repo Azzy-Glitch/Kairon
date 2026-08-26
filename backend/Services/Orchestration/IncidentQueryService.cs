@@ -1,12 +1,12 @@
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.DTOs.Sre;
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Models.Sre;
-using AIDIP.Backend.Services.Remediation;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.DTOs.Sre;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models.Sre;
+using Kairon.Backend.Services.Remediation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
-namespace AIDIP.Backend.Services.Orchestration;
+namespace Kairon.Backend.Services.Orchestration;
 
 /// <summary>
 /// Read side of the SRE layer. Entities are never serialized straight to the dashboard; everything

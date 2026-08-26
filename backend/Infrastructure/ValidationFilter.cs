@@ -1,8 +1,8 @@
-﻿using AIDIP.Backend.DTOs;
+﻿using Kairon.Backend.DTOs;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 
-namespace AIDIP.Backend.Infrastructure;
+namespace Kairon.Backend.Infrastructure;
 
 public class ValidationFilter : IActionFilter
 {

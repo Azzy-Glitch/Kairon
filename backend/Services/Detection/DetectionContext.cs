@@ -1,8 +1,8 @@
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.Models;
-using AIDIP.Backend.Models.Sre;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.Models;
+using Kairon.Backend.Models.Sre;
 
-namespace AIDIP.Backend.Services.Detection;
+namespace Kairon.Backend.Services.Detection;
 
 /// <summary>
 /// Everything a detection rule is allowed to look at. Rules are pure functions of this context,

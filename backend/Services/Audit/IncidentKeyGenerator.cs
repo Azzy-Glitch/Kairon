@@ -1,7 +1,7 @@
-using AIDIP.Backend.Infrastructure;
+using Kairon.Backend.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 
-namespace AIDIP.Backend.Services.Audit;
+namespace Kairon.Backend.Services.Audit;
 
 /// <summary>
 /// Produces the short human-facing keys operators actually say out loud ("INC-0007", "ACT-0003").

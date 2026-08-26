@@ -1,4 +1,4 @@
-namespace AIDIP.Backend.Models.Sre;
+namespace Kairon.Backend.Models.Sre;
 
 /// <summary>
 /// Post-remediation verification against fresh telemetry (backend PRD section 13, frontend PRD

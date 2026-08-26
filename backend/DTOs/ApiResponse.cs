@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace AIDIP.Backend.DTOs;
+namespace Kairon.Backend.DTOs;
 
 public class ApiResponse<T>
 {

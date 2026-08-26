@@ -1,6 +1,6 @@
-using AIDIP.Backend.Extensions;
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Services;
+using Kairon.Backend.Extensions;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Services;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 
@@ -11,7 +11,7 @@ Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
     .Enrich.FromLogContext()
     .WriteTo.Console()
-    .WriteTo.File("logs/aidip-.txt", rollingInterval: RollingInterval.Day)
+    .WriteTo.File("logs/kairon-.txt", rollingInterval: RollingInterval.Day)
     .CreateLogger();
 
 builder.Host.UseSerilog();

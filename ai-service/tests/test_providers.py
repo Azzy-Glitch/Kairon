@@ -6,12 +6,12 @@ import asyncio
 
 import pytest
 
-from aidip.config import AiConfig, is_placeholder
-from aidip.providers import PROVIDERS, available_providers, create_provider
-from aidip.providers.base import AIProvider, ProviderError
-from aidip.providers.gemini import GeminiProvider
-from aidip.providers.mock import MockProvider
-from aidip.providers.openai_compatible import GroqProvider, QwenProvider
+from kairon.config import AiConfig, is_placeholder
+from kairon.providers import PROVIDERS, available_providers, create_provider
+from kairon.providers.base import AIProvider, ProviderError
+from kairon.providers.gemini import GeminiProvider
+from kairon.providers.mock import MockProvider
+from kairon.providers.openai_compatible import GroqProvider, QwenProvider
 
 
 class TestProviderSelection:

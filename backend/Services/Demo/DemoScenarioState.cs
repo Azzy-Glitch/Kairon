@@ -1,4 +1,4 @@
-namespace AIDIP.Backend.Services.Demo;
+namespace Kairon.Backend.Services.Demo;
 
 /// <summary>
 /// The controlled order-processing retry-loop scenario from PRD section 20. Phases are explicit so
@@ -37,7 +37,7 @@ public class DemoStateDto
     public bool UsingLocalSimulator { get; set; }
 
     public string Service { get; set; } = "OrderProcessingService";
-    public string Application { get; set; } = "AIDIP.DemoApp";
+    public string Application { get; set; } = "Kairon.DemoApp";
     public Guid ProjectId { get; set; }
     public string Environment { get; set; } = "Demo";
 }

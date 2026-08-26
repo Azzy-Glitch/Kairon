@@ -1,7 +1,7 @@
-namespace AIDIP.Backend.Models.Sre;
+namespace Kairon.Backend.Models.Sre;
 
 /// <summary>
-/// Lifecycle states for an SRE incident, per the AIDIP Autonomous AI SRE PRD (§5).
+/// Lifecycle states for an SRE incident, per the Kairon Autonomous AI SRE PRD (§5).
 /// The happy path runs Detected -> ... -> Resolved; Failed/Rejected/Cancelled are
 /// terminal failure paths reachable from most working states.
 /// </summary>

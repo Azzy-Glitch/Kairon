@@ -37,7 +37,7 @@ const sampleIncident = (overrides = {}) => ({
   id: 'i1',
   incidentKey: 'INC-0001',
   title: 'OrderProcessingService Service Degradation',
-  application: 'AIDIP.DemoApp',
+  application: 'Kairon.DemoApp',
   service: 'OrderProcessingService',
   environment: 'Demo',
   severity: 'High',
@@ -130,7 +130,7 @@ describe('IncidentFeed', () => {
         query={query({
           isError: true,
           isSuccess: false,
-          error: { kind: 'offline', message: 'Cannot reach the AIDIP backend.' }
+          error: { kind: 'offline', message: 'Cannot reach the Kairon backend.' }
         })}
         incidents={[]}
         selectedId={null}

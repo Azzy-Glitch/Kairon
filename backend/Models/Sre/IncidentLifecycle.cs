@@ -1,4 +1,4 @@
-namespace AIDIP.Backend.Models.Sre;
+namespace Kairon.Backend.Models.Sre;
 
 /// <summary>
 /// Raised when a caller attempts a lifecycle transition the state machine forbids (PRD section 5:

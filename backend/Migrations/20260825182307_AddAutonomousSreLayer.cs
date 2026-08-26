@@ -3,7 +3,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
-namespace AIDIP.Backend.Migrations
+namespace Kairon.Backend.Migrations
 {
     /// <inheritdoc />
     public partial class AddAutonomousSreLayer : Migration

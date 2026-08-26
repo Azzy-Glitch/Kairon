@@ -1,9 +1,9 @@
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Models.Sre;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models.Sre;
 using Microsoft.EntityFrameworkCore;
 
-namespace AIDIP.Backend.Services.Audit;
+namespace Kairon.Backend.Services.Audit;
 
 /// <summary>
 /// Writes the incident audit trail (PRD section 14). Every meaningful thing that happens to an

@@ -1,10 +1,10 @@
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Models.Sre;
-using AIDIP.Backend.Services.Audit;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models.Sre;
+using Kairon.Backend.Services.Audit;
 using Microsoft.Extensions.Options;
 
-namespace AIDIP.Backend.Services.Remediation;
+namespace Kairon.Backend.Services.Remediation;
 
 public interface IRemediationExecutor
 {

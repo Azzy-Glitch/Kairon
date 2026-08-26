@@ -1,4 +1,4 @@
-﻿namespace AIDIP.Backend.DTOs;
+﻿namespace Kairon.Backend.DTOs;
 
 public class IncidentDto
 {

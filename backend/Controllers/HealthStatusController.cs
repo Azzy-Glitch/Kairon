@@ -1,11 +1,11 @@
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.DTOs.Sre;
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Services;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.DTOs.Sre;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
-namespace AIDIP.Backend.Controllers;
+namespace Kairon.Backend.Controllers;
 
 /// <summary>
 /// Component-level health for the operator UI. The existing /api/health probe is untouched;

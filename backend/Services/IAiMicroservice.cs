@@ -1,7 +1,7 @@
-using AIDIP.Backend.DTOs;
-using AIDIP.Backend.DTOs.Sre;
+using Kairon.Backend.DTOs;
+using Kairon.Backend.DTOs.Sre;
 
-namespace AIDIP.Backend.Services;
+namespace Kairon.Backend.Services;
 
 /// <summary>
 /// The backend's only view of AI. Everything model-specific (Qwen, Gemini, Groq, prompts,

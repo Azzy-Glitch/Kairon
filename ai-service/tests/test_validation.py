@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from aidip.schemas import AvailableAction, EvidencePackage
-from aidip.validation import (
+from kairon.schemas import AvailableAction, EvidencePackage
+from kairon.validation import (
     AiResponseError,
     extract_json,
     validate_error_analysis,

@@ -1,17 +1,17 @@
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.DTOs.Sre;
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Models.Sre;
-using AIDIP.Backend.Services.Audit;
-using AIDIP.Backend.Services.Correlation;
-using AIDIP.Backend.Services.Detection;
-using AIDIP.Backend.Services.Evidence;
-using AIDIP.Backend.Services.Remediation;
-using AIDIP.Backend.Services.Verification;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.DTOs.Sre;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models.Sre;
+using Kairon.Backend.Services.Audit;
+using Kairon.Backend.Services.Correlation;
+using Kairon.Backend.Services.Detection;
+using Kairon.Backend.Services.Evidence;
+using Kairon.Backend.Services.Remediation;
+using Kairon.Backend.Services.Verification;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
-namespace AIDIP.Backend.Services.Orchestration;
+namespace Kairon.Backend.Services.Orchestration;
 
 /// <summary>
 /// Drives an incident through the lifecycle:

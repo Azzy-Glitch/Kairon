@@ -1,4 +1,4 @@
-namespace AIDIP.Backend.Models.Sre;
+namespace Kairon.Backend.Models.Sre;
 
 /// <summary>
 /// A bounded, persisted snapshot of the evidence package handed to the AI service (PRD section 10).

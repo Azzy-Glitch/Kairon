@@ -1,9 +1,9 @@
-namespace AIDIP.Backend.Models;
+namespace Kairon.Backend.Models;
 
 /// <summary>
-/// A single request-scoped telemetry record captured by the AIDIP SDK. One row per instrumented
+/// A single request-scoped telemetry record captured by the Kairon SDK. One row per instrumented
 /// HTTP call. This is intentionally NOT the Autonomous SRE incident aggregate - see
-/// <see cref="AIDIP.Backend.Models.Sre.SreIncident"/> for that. Keeping this type unchanged is
+/// <see cref="Kairon.Backend.Models.Sre.SreIncident"/> for that. Keeping this type unchanged is
 /// what preserves the existing SDK contract, the /api/telemetry endpoints, and the Telemetry
 /// Monitor screen (PRD section 15).
 /// </summary>

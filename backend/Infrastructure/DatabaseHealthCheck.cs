@@ -1,6 +1,6 @@
 ﻿using Microsoft.Extensions.Diagnostics.HealthChecks;
 
-namespace AIDIP.Backend.Infrastructure;
+namespace Kairon.Backend.Infrastructure;
 
 public class DatabaseHealthCheck : IHealthCheck
 {

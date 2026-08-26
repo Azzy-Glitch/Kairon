@@ -1,12 +1,12 @@
-using AIDIP.Backend.DTOs;
-using AIDIP.Backend.DTOs.Sre;
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Models.Sre;
-using AIDIP.Backend.Services.Audit;
-using AIDIP.Backend.Services.Orchestration;
+using Kairon.Backend.DTOs;
+using Kairon.Backend.DTOs.Sre;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models.Sre;
+using Kairon.Backend.Services.Audit;
+using Kairon.Backend.Services.Orchestration;
 using Microsoft.AspNetCore.Mvc;
 
-namespace AIDIP.Backend.Controllers;
+namespace Kairon.Backend.Controllers;
 
 /// <summary>
 /// The operator API for the Autonomous SRE lifecycle. Entirely additive - every pre-existing

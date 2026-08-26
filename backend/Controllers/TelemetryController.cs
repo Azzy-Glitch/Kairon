@@ -1,12 +1,12 @@
-using AIDIP.Backend.DTOs;
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Models;
-using AIDIP.Backend.Services;
-using AIDIP.Backend.Services.Orchestration;
+using Kairon.Backend.DTOs;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models;
+using Kairon.Backend.Services;
+using Kairon.Backend.Services.Orchestration;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace AIDIP.Backend.Controllers;
+namespace Kairon.Backend.Controllers;
 
 [ApiController]
 [Route("api/telemetry")]
@@ -57,7 +57,7 @@ public class TelemetryController : ControllerBase
         _queue.TryEnqueue(new IncidentWorkItem(
             WorkItemKind.EvaluateDetection, incident.ProjectId, incident.Environment, incident.Service));
 
-        // Keep this response compatible with AIDIP.SDK.Models.TelemetryResponse
+        // Keep this response compatible with Kairon.SDK.Models.TelemetryResponse
         // without introducing a backend-to-SDK project dependency.
         return Ok(new
         {

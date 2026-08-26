@@ -1,8 +1,8 @@
-using AIDIP.Backend.DTOs;
-using AIDIP.Backend.Services;
+using Kairon.Backend.DTOs;
+using Kairon.Backend.Services;
 using Microsoft.AspNetCore.Mvc;
 
-namespace AIDIP.Backend.Controllers;
+namespace Kairon.Backend.Controllers;
 
 [ApiController]
 [Route("api")]

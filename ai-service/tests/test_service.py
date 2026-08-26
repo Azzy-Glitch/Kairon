@@ -9,10 +9,10 @@ import asyncio
 
 import pytest
 
-from aidip.config import AiConfig
-from aidip.providers.base import AIProvider, ProviderError
-from aidip.providers.mock import MockProvider
-from aidip.service import AiService, AiServiceError
+from kairon.config import AiConfig
+from kairon.providers.base import AIProvider, ProviderError
+from kairon.providers.mock import MockProvider
+from kairon.service import AiService, AiServiceError
 
 
 class _StubProvider(AIProvider):

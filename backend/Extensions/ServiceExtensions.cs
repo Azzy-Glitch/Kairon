@@ -1,16 +1,16 @@
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.Services;
-using AIDIP.Backend.Services.Audit;
-using AIDIP.Backend.Services.Correlation;
-using AIDIP.Backend.Services.Demo;
-using AIDIP.Backend.Services.Detection;
-using AIDIP.Backend.Services.Evidence;
-using AIDIP.Backend.Services.Orchestration;
-using AIDIP.Backend.Services.Remediation;
-using AIDIP.Backend.Services.Remediation.Tools;
-using AIDIP.Backend.Services.Verification;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.Services;
+using Kairon.Backend.Services.Audit;
+using Kairon.Backend.Services.Correlation;
+using Kairon.Backend.Services.Demo;
+using Kairon.Backend.Services.Detection;
+using Kairon.Backend.Services.Evidence;
+using Kairon.Backend.Services.Orchestration;
+using Kairon.Backend.Services.Remediation;
+using Kairon.Backend.Services.Remediation.Tools;
+using Kairon.Backend.Services.Verification;
 
-namespace AIDIP.Backend.Extensions;
+namespace Kairon.Backend.Extensions;
 
 public static class ServiceExtensions
 {

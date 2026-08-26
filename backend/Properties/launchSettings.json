@@ -1,6 +1,6 @@
 {
   "profiles": {
-    "AIDIP.Backend": {
+    "Kairon.Backend": {
       "commandName": "Project",
       "launchBrowser": false,
       "applicationUrl": "http://localhost:8000",

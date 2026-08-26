@@ -1,9 +1,9 @@
 using System.Net.Http.Json;
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.Services.Audit;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.Services.Audit;
 using Microsoft.Extensions.Options;
 
-namespace AIDIP.Backend.Services.Demo;
+namespace Kairon.Backend.Services.Demo;
 
 /// <summary>
 /// The only channel through which remediation can affect the demo environment (PRD section 20:
@@ -52,7 +52,7 @@ public class DemoEnvironmentClient : IDemoEnvironmentClient
             timeout.CancelAfter(TimeSpan.FromSeconds(_options.TimeoutSeconds));
 
             var response = await _http.PostAsJsonAsync(
-                $"aidip-control/{command}", new { }, timeout.Token);
+                $"kairon-control/{command}", new { }, timeout.Token);
 
             if (response.IsSuccessStatusCode)
             {
@@ -91,7 +91,7 @@ public class DemoEnvironmentClient : IDemoEnvironmentClient
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(_options.TimeoutSeconds));
 
-            var state = await _http.GetFromJsonAsync<DemoStateDto>("aidip-control/state", timeout.Token);
+            var state = await _http.GetFromJsonAsync<DemoStateDto>("kairon-control/state", timeout.Token);
             if (state is not null)
             {
                 state.UsingLocalSimulator = false;

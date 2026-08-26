@@ -1,8 +1,8 @@
-using AIDIP.Backend.Configuration;
-using AIDIP.Backend.Models.Sre;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.Models.Sre;
 using Microsoft.Extensions.Options;
 
-namespace AIDIP.Backend.Services.Remediation;
+namespace Kairon.Backend.Services.Remediation;
 
 public class PolicyDecision
 {

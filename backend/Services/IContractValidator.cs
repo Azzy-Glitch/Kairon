@@ -1,6 +1,6 @@
-using AIDIP.Backend.DTOs;
+using Kairon.Backend.DTOs;
 
-namespace AIDIP.Backend.Services;
+namespace Kairon.Backend.Services;
 
 public interface IContractValidator
 {

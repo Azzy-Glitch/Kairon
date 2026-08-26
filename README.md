@@ -1,4 +1,4 @@
-# Kairon — AIDIP Autonomous AI SRE
+# Kairon — Autonomous AI SRE
 
 An AI site-reliability platform that runs the full incident loop and stops at the one place it
 should: before anything executes.
@@ -32,7 +32,7 @@ cd frontend
 npm install && npm run dev      # http://localhost:5173
 
 # 4. Demo application (optional - see "The demo" below)
-cd demo/AIDIP.DemoApp
+cd demo/Kairon.DemoApp
 dotnet run                      # http://localhost:5080
 ```
 
@@ -222,7 +222,7 @@ the frontend.
 ## Running the tests
 
 ```bash
-dotnet test AIDIP.slnx        # 232 tests: backend + SDK
+dotnet test Kairon.slnx        # 232 tests: backend + SDK
 cd ai-service && pytest       # 91 tests, no API key required
 cd frontend && npm test       # 57 tests
 ```
@@ -305,17 +305,17 @@ curl http://localhost:8000/api/incidents/{id}/timeline
 Two lines in a host application:
 
 ```csharp
-builder.Services.AddAIDIP(options =>
+builder.Services.AddKairon(options =>
 {
     options.Endpoint = "http://localhost:8000";
     options.ProjectId = Guid.Parse("...");
     options.ServiceName = "OrderProcessingService";
 });
 
-app.UseAIDIP();
+app.UseKairon();
 ```
 
-The SDK never turns an AIDIP outage into an application outage. Sends are bounded, timed out,
+The SDK never turns an Kairon outage into an application outage. Sends are bounded, timed out,
 cancellation-aware, and fail open: every failure path returns a result rather than throwing. The
 outbound queue is bounded and drops the oldest item under pressure rather than growing.
 
@@ -335,8 +335,8 @@ backend/          Control plane. Detection, correlation, orchestration, remediat
   Models/Sre/     Incident aggregate, lifecycle state machine, detection signals
   Services/       Detection · Correlation · Evidence · Remediation · Verification · Audit · Orchestration · Demo
 ai-service/       FastAPI intelligence layer
-  aidip/          Config, schemas, validation, prompts, service
-  aidip/providers/  Qwen · Gemini · Groq · Mock behind one contract
+  kairon/          Config, schemas, validation, prompts, service
+  kairon/providers/  Qwen · Gemini · Groq · Mock behind one contract
 sdk/              Telemetry collection only
 frontend/src/
   api/            HTTP service layer - no component calls axios directly

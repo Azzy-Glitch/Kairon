@@ -53,7 +53,7 @@ export default function TelemetryMonitor() {
           </div>
           <div>
             <h3>Live Telemetry Monitor</h3>
-            <p className="section-desc">Raw incidents and metrics captured automatically by the AIDIP SDK, straight from the Telemetry API</p>
+            <p className="section-desc">Raw incidents and metrics captured automatically by the Kairon SDK, straight from the Telemetry API</p>
           </div>
         </div>
 

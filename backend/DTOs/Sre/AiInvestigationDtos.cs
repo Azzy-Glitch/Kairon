@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace AIDIP.Backend.DTOs.Sre;
+namespace Kairon.Backend.DTOs.Sre;
 
 // The wire contract between the backend and the FastAPI AI service (AI PRD sections 6, 7, 15).
 // snake_case on the wire, because that is what the existing Python service speaks.

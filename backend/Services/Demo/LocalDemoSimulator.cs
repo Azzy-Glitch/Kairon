@@ -1,8 +1,8 @@
-using AIDIP.Backend.Infrastructure;
-using AIDIP.Backend.Models;
+using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models;
 using Microsoft.EntityFrameworkCore;
 
-namespace AIDIP.Backend.Services.Demo;
+namespace Kairon.Backend.Services.Demo;
 
 /// <summary>
 /// An in-process, controlled simulation of the demo order-processing service (PRD section 20).
@@ -88,7 +88,7 @@ public class LocalDemoSimulator : ILocalDemoSimulator
     }
 
     private Guid ProjectId =>
-        Guid.TryParse(_configuration["AIDIP:ProjectId"], out var id)
+        Guid.TryParse(_configuration["Kairon:ProjectId"], out var id)
             ? id
             : Guid.Empty;
 

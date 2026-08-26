@@ -1,9 +1,9 @@
-namespace AIDIP.Backend.Models.Sre;
+namespace Kairon.Backend.Models.Sre;
 
 /// <summary>
-/// The AIDIP Autonomous AI SRE incident aggregate (PRD section 5).
+/// The Kairon Autonomous AI SRE incident aggregate (PRD section 5).
 ///
-/// This is deliberately a different concept from <see cref="AIDIP.Backend.Models.Incident"/>:
+/// This is deliberately a different concept from <see cref="Kairon.Backend.Models.Incident"/>:
 /// that type is a single request-scoped telemetry record (one failed HTTP call), and it stays
 /// exactly as it is so the SDK contract and existing frontend screens keep working. An
 /// <see cref="SreIncident"/> aggregates many of those telemetry rows plus correlated metrics

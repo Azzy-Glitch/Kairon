@@ -1,4 +1,4 @@
-namespace AIDIP.Backend.Models.Sre;
+namespace Kairon.Backend.Models.Sre;
 
 /// <summary>
 /// A deterministic detection result (PRD section 7). Signals are produced before any AI reasoning,

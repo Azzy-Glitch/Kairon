@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace AIDIP.Backend.Services;
+namespace Kairon.Backend.Services;
 
 /// <summary>
 /// One serializer configuration for everything the SRE layer persists or sends. Having a single
