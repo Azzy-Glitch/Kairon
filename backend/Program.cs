@@ -2,6 +2,7 @@ using Kairon.Backend.Extensions;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.OpenApi;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -25,7 +26,15 @@ builder.Services.AddControllers(options =>
 });
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "Kairon Backend",
+        Version = "v1",
+        Description = "Kairon — Autonomous AI SRE backend API: detection, correlation, AI investigation and remediation."
+    });
+});
 
 // Database
 builder.Services.AddDbContext<AppDbContext>(options =>
