@@ -10,4 +10,12 @@
     <ProjectReference Include="..\..\sdk\Kairon.SDK\Kairon.SDK.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Same Serilog packages/version as backend/Kairon.Backend.csproj, so the KAIRON Agent's
+         log tailer only has to understand one text format across the whole solution. -->
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+  </ItemGroup>
+
 </Project>

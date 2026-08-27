@@ -2,6 +2,7 @@ using Kairon.Backend.DTOs;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models;
 using Kairon.Backend.Services;
+using Kairon.Backend.Services.Audit;
 using Kairon.Backend.Services.Orchestration;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -96,6 +97,46 @@ public class TelemetryController : ControllerBase
             WorkItemKind.EvaluateDetection, metric.ProjectId, metric.Environment, metric.Service));
 
         return Ok(new { status = "recorded" });
+    }
+
+    /// <summary>
+    /// Ingests a normalized event from the KAIRON Agent - a log pattern match or a process
+    /// lifecycle/resource event (docs/OBSERVABILITY_MIGRATION.md). This is the one ingestion
+    /// path that carries raw, free-text content the reporter did not necessarily redact itself
+    /// (a log line can contain anything), so - unlike CreateIncident/CreateMetric, whose fields
+    /// are already structured - the message is scrubbed here before it is ever persisted.
+    /// </summary>
+    [HttpPost("events")]
+    public async Task<IActionResult> CreateEvent(
+        [FromBody] AgentEventDto dto,
+        CancellationToken cancellationToken)
+    {
+        var agentEvent = new AgentEvent
+        {
+            ProjectId = dto.ProjectId,
+            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : dto.Timestamp,
+            EventType = dto.EventType,
+            Environment = string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
+            Application = dto.Application,
+            Service = dto.Service,
+            Component = dto.Component,
+            Severity = string.IsNullOrWhiteSpace(dto.Severity) ? "Info" : dto.Severity,
+            Message = Redaction.Scrub(dto.Message) ?? string.Empty,
+            Source = dto.Source,
+            OccurrenceCount = Math.Max(1, dto.OccurrenceCount),
+            MetadataJson = dto.MetadataJson
+        };
+
+        _db.AgentEvents.Add(agentEvent);
+        await _db.SaveChangesAsync(cancellationToken);
+
+        // Same detection-evaluation trigger CreateIncident/CreateMetric already use - no new
+        // work item kind needed, the sweep and this enqueue both just ask detection to look
+        // again for this project/environment/service.
+        _queue.TryEnqueue(new IncidentWorkItem(
+            WorkItemKind.EvaluateDetection, agentEvent.ProjectId, agentEvent.Environment, agentEvent.Service));
+
+        return Ok(new { success = true, message = "Event recorded.", eventId = agentEvent.Id.ToString() });
     }
 
     [HttpGet("incidents")]

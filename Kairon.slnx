@@ -8,8 +8,12 @@
   <Folder Name="/demo/">
     <Project Path="demo/Kairon.DemoApp/Kairon.DemoApp.csproj" />
   </Folder>
+  <Folder Name="/agent/">
+    <Project Path="agent/Kairon.Agent/Kairon.Agent.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Kairon.Backend.Tests/Kairon.Backend.Tests.csproj" />
     <Project Path="tests/Kairon.SDK.Tests/Kairon.SDK.Tests.csproj" />
+    <Project Path="tests/Kairon.Agent.Tests/Kairon.Agent.Tests.csproj" />
   </Folder>
 </Solution>

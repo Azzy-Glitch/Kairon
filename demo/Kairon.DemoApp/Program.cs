@@ -1,7 +1,20 @@
 using Kairon.DemoApp;
 using Kairon.SDK;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// A real, rotating log file for the KAIRON Agent to tail (docs/OBSERVABILITY_MIGRATION.md).
+// Same sink packages and dated-daily-file rolling scheme as backend/Program.cs uses, so the
+// Agent's tailer only has to understand one log format across the whole solution.
+Log.Logger = new LoggerConfiguration()
+    .ReadFrom.Configuration(builder.Configuration)
+    .Enrich.FromLogContext()
+    .WriteTo.Console()
+    .WriteTo.File("logs/kairon-demo-.txt", rollingInterval: RollingInterval.Day)
+    .CreateLogger();
+
+builder.Host.UseSerilog();
 
 builder.Services.AddKairon(options =>
 {
@@ -64,7 +77,7 @@ app.MapGet("/api/slow", async () =>
 // The order-processing endpoint the whole demo revolves around. Healthy by default; once the
 // retry loop is enabled it fails slowly and retries, which is what produces the correlated
 // CPU / latency / error-rate / retry / queue signals.
-app.MapPost("/api/orders/process", async (DemoScenario scenario) =>
+app.MapPost("/api/orders/process", async (DemoScenario scenario, ILogger<Program> logger) =>
 {
     var outcome = scenario.ProcessOrder();
 
@@ -74,6 +87,14 @@ app.MapPost("/api/orders/process", async (DemoScenario scenario) =>
 
     if (outcome.Success)
         return Results.Ok(new { status = "processed", latencyMs = outcome.LatencyMs });
+
+    // A real multi-line log entry (message + a simulated stack trace), so the KAIRON Agent's log
+    // tailer has genuine repeated, multi-line content to group and deduplicate rather than a
+    // single one-off line - this fires on every failed order while the retry loop is active,
+    // which is exactly the volume the Agent's dedup/rate-limit exists to handle.
+    logger.LogError(
+        "Order processing failed: {Message}\n   at Kairon.DemoApp.DemoScenario.ProcessOrder() in DemoScenario.cs\n   at Kairon.DemoApp.Program.<>c.<<Main>$>b__0_6(DemoScenario scenario) in Program.cs:line 68",
+        outcome.Message);
 
     return Results.Json(
         new { status = "failed", retries = outcome.Retries, message = outcome.Message },

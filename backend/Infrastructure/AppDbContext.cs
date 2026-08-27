@@ -15,6 +15,9 @@ public class AppDbContext : DbContext
     public DbSet<Metric> Metrics { get; set; }
     public DbSet<Analysis> Analyses { get; set; }
 
+    // KAIRON Agent events - log/process signals (docs/OBSERVABILITY_MIGRATION.md).
+    public DbSet<AgentEvent> AgentEvents { get; set; }
+
     // Autonomous SRE sets (PRD section 16: additive, reusing the existing telemetry entities).
     public DbSet<SreIncident> SreIncidents { get; set; }
     public DbSet<IncidentEvent> IncidentEvents { get; set; }
@@ -54,6 +57,23 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => new { e.ProjectId, e.Type });
             entity.HasIndex(e => e.CreatedAt);
             entity.Property(e => e.OutputJson).HasMaxLength(16000);
+        });
+
+        modelBuilder.Entity<AgentEvent>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.Timestamp });
+            entity.HasIndex(e => e.EventType);
+            entity.HasIndex(e => e.Environment);
+            entity.Property(e => e.EventType).HasMaxLength(60).IsRequired();
+            entity.Property(e => e.Environment).HasMaxLength(100);
+            entity.Property(e => e.Application).HasMaxLength(200);
+            entity.Property(e => e.Service).HasMaxLength(200);
+            entity.Property(e => e.Component).HasMaxLength(200);
+            entity.Property(e => e.Severity).HasMaxLength(20);
+            entity.Property(e => e.Message).HasMaxLength(4000);
+            entity.Property(e => e.Source).HasMaxLength(500);
+            entity.Property(e => e.MetadataJson).HasMaxLength(4000);
         });
 
         modelBuilder.Entity<SreIncident>(entity =>
