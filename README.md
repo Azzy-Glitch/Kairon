@@ -15,6 +15,21 @@ validated by policy and approved by a named human before it can touch anything.
 
 ## Quick start
 
+### Integrated KAIRON product host
+
+The existing React dashboard is bundled with the control plane when it is published. On Windows,
+the publish output contains `KAIRON.exe`; run it with `--desktop` to start the local product host
+and open its dashboard:
+
+```powershell
+dotnet publish backend/AIDIP.Backend.csproj -c Release -r win-x64 --self-contained false
+backend/bin/Release/net10.0/win-x64/publish/KAIRON.exe --desktop --urls http://127.0.0.1:8000
+```
+
+This first product boundary still uses the repository's existing LocalDB and optional AI-service
+configuration. Removing those clean-machine prerequisites belongs to the persistence and Windows
+packaging milestones; they are not hidden or replaced by this integration.
+
 Run all four in separate terminals. Nothing needs an API key.
 
 ```bash

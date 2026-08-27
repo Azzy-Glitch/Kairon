@@ -26,6 +26,8 @@ builder.Services.AddControllers(options =>
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddSingleton<IProductUrlLauncher, ProductUrlLauncher>();
+builder.Services.AddHostedService<ProductDashboardLaunchService>();
 
 // Database
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -87,6 +89,11 @@ else
 app.UseSerilogRequestLogging();
 app.UseMiddleware<ErrorHandlingMiddleware>();
 
+// KAIRON.exe owns the existing React experience in packaged/local-product mode. API routes are
+// mapped below and every other non-file route falls back to the SPA entry point.
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.MapHealthChecks("/api/health");
 
 app.MapHealthChecks(
@@ -97,6 +104,7 @@ app.MapHealthChecks(
     });
 
 app.MapControllers();
+app.MapFallbackToFile("index.html");
 
 // Initialize database
 using (var scope = app.Services.CreateScope())

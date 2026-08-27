@@ -7,7 +7,9 @@ import axios from 'axios';
  * timeouts live in one place instead of being re-invented in each component (frontend PRD 16).
  */
 const client = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000/api',
+  // Production is hosted by KAIRON.exe, so the UI and API share an origin. Vite proxies this
+  // relative path during development; VITE_API_URL remains available for advanced deployments.
+  baseURL: import.meta.env.VITE_API_URL || '/api',
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' }
 });
@@ -51,7 +53,7 @@ export function toOperatorError(error) {
     kind: 'offline',
     status: null,
     code: 'BACKEND_UNREACHABLE',
-    message: 'Cannot reach the AIDIP backend. Check that it is running on port 8000.'
+    message: 'Cannot reach the KAIRON service. Restart KAIRON and try again.'
   };
 }
 

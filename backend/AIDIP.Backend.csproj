@@ -2,6 +2,8 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>KAIRON</AssemblyName>
+    <Product>KAIRON</Product>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>false</InvariantGlobalization>
@@ -25,5 +27,19 @@
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
   </ItemGroup>
+
+  <!-- The existing React application is the KAIRON product UI. Build and bundle it whenever the
+       backend is published; SkipFrontendBuild is available to packaging/CI jobs that built it. -->
+  <Target Name="BuildKaironFrontend" BeforeTargets="ComputeFilesToPublish">
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)\..\frontend" Command="npm run build"
+          Condition="'$(SkipFrontendBuild)' != 'true'" />
+    <!-- Resolve the files after the build. This also works from a clean checkout where dist did
+         not exist when MSBuild first evaluated this project. -->
+    <ItemGroup>
+      <Content Include="..\frontend\dist\**\*"
+               Link="wwwroot\%(RecursiveDir)%(Filename)%(Extension)"
+               CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
 
 </Project>
