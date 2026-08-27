@@ -1434,3 +1434,22 @@ body {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* Local Agent application inventory */
+.inventory-page { display: grid; gap: 1.25rem; }
+.inventory-heading { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.inventory-heading h2 { margin: 0; }
+.inventory-heading p { color: #64748b; margin: .35rem 0 0; }
+.monitoring-levels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.monitoring-levels article { border: 1px solid rgba(148,163,184,.25); border-radius: 12px; padding: 1rem; background: rgba(15,23,42,.55); display: grid; gap: .35rem; }
+.monitoring-levels span, .inventory-table small { color: #94a3b8; display: block; margin-top: .2rem; }
+.inventory-table-wrap { overflow-x: auto; border: 1px solid rgba(148,163,184,.2); border-radius: 12px; }
+.inventory-table { width: 100%; border-collapse: collapse; }
+.inventory-table th, .inventory-table td { padding: .85rem 1rem; text-align: left; border-bottom: 1px solid rgba(148,163,184,.15); }
+.inventory-table th { color: #94a3b8; font-size: .75rem; text-transform: uppercase; }
+.state-badge { border-radius: 999px; padding: .3rem .65rem; font-size: .75rem; white-space: nowrap; }
+.state-badge.healthy { color: #34d399; background: rgba(16,185,129,.12); }
+.state-badge.offline { color: #f87171; background: rgba(239,68,68,.12); }
+.empty-state { padding: 2rem; text-align: center; color: #94a3b8; border: 1px dashed rgba(148,163,184,.3); border-radius: 12px; }
+.error-state { color: #fca5a5; }
+@media (max-width: 760px) { .monitoring-levels { grid-template-columns: 1fr; } }

@@ -11,6 +11,8 @@ namespace AIDIP.Backend.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            var unboundedText = ActiveProvider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase)
+                ? "TEXT" : "nvarchar(max)";
             migrationBuilder.CreateTable(
                 name: "Analyses",
                 columns: table => new
@@ -18,8 +20,8 @@ namespace AIDIP.Backend.Migrations
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     ProjectId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     Type = table.Column<string>(type: "nvarchar(450)", nullable: false),
-                    Input = table.Column<string>(type: "nvarchar(max)", nullable: false),
-                    OutputJson = table.Column<string>(type: "nvarchar(max)", maxLength: 16000, nullable: false),
+                    Input = table.Column<string>(type: unboundedText, nullable: false),
+                    OutputJson = table.Column<string>(type: unboundedText, maxLength: 16000, nullable: false),
                     Score = table.Column<double>(type: "float", nullable: true),
                     CreatedAt = table.Column<DateTime>(type: "datetime2", nullable: false)
                 },
@@ -36,17 +38,17 @@ namespace AIDIP.Backend.Migrations
                     ProjectId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     Timestamp = table.Column<DateTime>(type: "datetime2", nullable: false),
                     Endpoint = table.Column<string>(type: "nvarchar(450)", nullable: false),
-                    Method = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    Method = table.Column<string>(type: unboundedText, nullable: false),
                     StatusCode = table.Column<int>(type: "int", nullable: false),
                     DurationMs = table.Column<long>(type: "bigint", nullable: false),
-                    ErrorType = table.Column<string>(type: "nvarchar(max)", nullable: true),
+                    ErrorType = table.Column<string>(type: unboundedText, nullable: true),
                     ErrorMessage = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true),
-                    StackTrace = table.Column<string>(type: "nvarchar(max)", maxLength: 8000, nullable: true),
-                    RequestId = table.Column<string>(type: "nvarchar(max)", nullable: true),
+                    StackTrace = table.Column<string>(type: unboundedText, maxLength: 8000, nullable: true),
+                    RequestId = table.Column<string>(type: unboundedText, nullable: true),
                     Environment = table.Column<string>(type: "nvarchar(450)", nullable: false),
-                    Severity = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    Severity = table.Column<string>(type: unboundedText, nullable: false),
                     Resolved = table.Column<bool>(type: "bit", nullable: false),
-                    MetadataJson = table.Column<string>(type: "nvarchar(max)", nullable: true)
+                    MetadataJson = table.Column<string>(type: unboundedText, nullable: true)
                 },
                 constraints: table =>
                 {

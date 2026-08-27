@@ -29,15 +29,16 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddSingleton<IProductUrlLauncher, ProductUrlLauncher>();
 builder.Services.AddHostedService<ProductDashboardLaunchService>();
 
-// Database
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(
-        builder.Configuration.GetConnectionString("DefaultConnection")));
+// Persistence is infrastructure-configurable: SQLite is Local Mode, SQL Server remains available
+// for centralized deployments. Application services only depend on AppDbContext.
+builder.Services.AddKaironPersistence(builder.Configuration);
 
 // Application services
 builder.Services.AddScoped<IDevOpsService, DevOpsService>();
 builder.Services.AddScoped<IContractValidator, ContractValidator>();
 builder.Services.AddScoped<IContextEngine, ContextEngine>();
+builder.Services.AddScoped<IAgentRegistrationService, AgentRegistrationService>();
+builder.Services.AddSingleton(TimeProvider.System);
 
 // AI service + HttpClient
 builder.Services.AddAiServices(builder.Configuration);
@@ -111,6 +112,13 @@ using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await dbContext.Database.MigrateAsync();
+    if (dbContext.Database.IsSqlite())
+    {
+        // WAL allows readers and the single backend writer to coexist predictably in Local Mode.
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys=ON;");
+        await dbContext.Database.ExecuteSqlRawAsync("PRAGMA busy_timeout=5000;");
+    }
 }
 
 app.Run();

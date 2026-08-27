@@ -139,6 +139,41 @@ namespace AIDIP.Backend.Migrations
                     b.ToTable("Incidents");
                 });
 
+            modelBuilder.Entity("AIDIP.Backend.Models.Machine", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<string>("AgentCredentialHash").IsRequired().HasMaxLength(128).HasColumnType("nvarchar(128)");
+                    b.Property<string>("AgentVersion").IsRequired().HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.Property<string>("Architecture").IsRequired().HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.Property<string>("HostName").IsRequired().HasMaxLength(255).HasColumnType("nvarchar(255)");
+                    b.Property<DateTime>("LastSeenAt").HasColumnType("datetime2");
+                    b.Property<string>("OperatingSystem").IsRequired().HasMaxLength(500).HasColumnType("nvarchar(500)");
+                    b.Property<DateTime>("RegisteredAt").HasColumnType("datetime2");
+                    b.HasKey("Id");
+                    b.HasIndex("LastSeenAt");
+                    b.ToTable("Machines");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.DiscoveredApplication", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<double>("CpuPercent").HasColumnType("float");
+                    b.Property<string>("Executable").IsRequired().HasMaxLength(2000).HasColumnType("nvarchar(2000)");
+                    b.Property<DateTime>("FirstSeenAt").HasColumnType("datetime2");
+                    b.Property<bool>("IsRunning").HasColumnType("bit");
+                    b.Property<DateTime>("LastSeenAt").HasColumnType("datetime2");
+                    b.Property<Guid>("MachineId").HasColumnType("uniqueidentifier");
+                    b.Property<long>("MemoryBytes").HasColumnType("bigint");
+                    b.Property<string>("Name").IsRequired().HasMaxLength(255).HasColumnType("nvarchar(255)");
+                    b.Property<int>("ProcessId").HasColumnType("int");
+                    b.Property<DateTime>("ProcessStartedAt").HasColumnType("datetime2");
+                    b.Property<string>("Runtime").IsRequired().HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.HasKey("Id");
+                    b.HasIndex("MachineId", "IsRunning");
+                    b.HasIndex("MachineId", "ProcessId", "ProcessStartedAt").IsUnique();
+                    b.ToTable("DiscoveredApplications");
+                });
+
             modelBuilder.Entity("AIDIP.Backend.Models.Metric", b =>
                 {
                     b.Property<Guid>("Id")
@@ -252,6 +287,19 @@ namespace AIDIP.Backend.Migrations
                     b.HasIndex("IncidentId", "Timestamp");
 
                     b.ToTable("IncidentEvents");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.DiscoveredApplication", b =>
+                {
+                    b.HasOne("AIDIP.Backend.Models.Machine", "Machine")
+                        .WithMany("Applications").HasForeignKey("MachineId")
+                        .OnDelete(DeleteBehavior.Cascade).IsRequired();
+                    b.Navigation("Machine");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.Machine", b =>
+                {
+                    b.Navigation("Applications");
                 });
 
             modelBuilder.Entity("AIDIP.Backend.Models.Sre.IncidentEvidence", b =>

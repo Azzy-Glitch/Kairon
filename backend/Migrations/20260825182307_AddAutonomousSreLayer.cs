@@ -11,6 +11,8 @@ namespace AIDIP.Backend.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            var unboundedText = ActiveProvider.Contains("Sqlite", StringComparison.OrdinalIgnoreCase)
+                ? "TEXT" : "nvarchar(max)";
             migrationBuilder.AddColumn<string>(
                 name: "Application",
                 table: "Metrics",
@@ -80,16 +82,16 @@ namespace AIDIP.Backend.Migrations
                     AffectedComponent = table.Column<string>(type: "nvarchar(300)", maxLength: 300, nullable: false),
                     AffectedEndpoint = table.Column<string>(type: "nvarchar(500)", maxLength: 500, nullable: false),
                     Title = table.Column<string>(type: "nvarchar(400)", maxLength: 400, nullable: false),
-                    SymptomsJson = table.Column<string>(type: "nvarchar(max)", maxLength: 8000, nullable: false),
-                    TelemetryReferencesJson = table.Column<string>(type: "nvarchar(max)", maxLength: 8000, nullable: false),
-                    CorrelatedMetricsJson = table.Column<string>(type: "nvarchar(max)", maxLength: 16000, nullable: false),
+                    SymptomsJson = table.Column<string>(type: unboundedText, maxLength: 8000, nullable: false),
+                    TelemetryReferencesJson = table.Column<string>(type: unboundedText, maxLength: 8000, nullable: false),
+                    CorrelatedMetricsJson = table.Column<string>(type: unboundedText, maxLength: 16000, nullable: false),
                     RootCause = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true),
                     Summary = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true),
-                    ContributingFactorsJson = table.Column<string>(type: "nvarchar(max)", maxLength: 8000, nullable: true),
+                    ContributingFactorsJson = table.Column<string>(type: unboundedText, maxLength: 8000, nullable: true),
                     Confidence = table.Column<double>(type: "float", nullable: true),
                     PredictedImpact = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true),
                     PredictedRisk = table.Column<string>(type: "nvarchar(50)", maxLength: 50, nullable: true),
-                    RecommendationsJson = table.Column<string>(type: "nvarchar(max)", maxLength: 16000, nullable: true),
+                    RecommendationsJson = table.Column<string>(type: unboundedText, maxLength: 16000, nullable: true),
                     RemediationState = table.Column<string>(type: "nvarchar(40)", maxLength: 40, nullable: false),
                     VerificationState = table.Column<string>(type: "nvarchar(40)", maxLength: 40, nullable: false),
                     FailureReason = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true),
@@ -119,7 +121,7 @@ namespace AIDIP.Backend.Migrations
                     Result = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
                     Message = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true),
                     Error = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true),
-                    DataJson = table.Column<string>(type: "nvarchar(max)", maxLength: 8000, nullable: true)
+                    DataJson = table.Column<string>(type: unboundedText, maxLength: 8000, nullable: true)
                 },
                 constraints: table =>
                 {
@@ -141,7 +143,7 @@ namespace AIDIP.Backend.Migrations
                     CollectedAt = table.Column<DateTime>(type: "datetime2", nullable: false),
                     Kind = table.Column<string>(type: "nvarchar(60)", maxLength: 60, nullable: false),
                     Summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
-                    PayloadJson = table.Column<string>(type: "nvarchar(max)", maxLength: 16000, nullable: false),
+                    PayloadJson = table.Column<string>(type: unboundedText, maxLength: 16000, nullable: false),
                     ItemCount = table.Column<int>(type: "int", nullable: false)
                 },
                 constraints: table =>
@@ -205,7 +207,7 @@ namespace AIDIP.Backend.Migrations
                     CompletedAt = table.Column<DateTime>(type: "datetime2", nullable: true),
                     Status = table.Column<string>(type: "nvarchar(40)", maxLength: 40, nullable: false),
                     Summary = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: false),
-                    ComparisonsJson = table.Column<string>(type: "nvarchar(max)", maxLength: 8000, nullable: false),
+                    ComparisonsJson = table.Column<string>(type: unboundedText, maxLength: 8000, nullable: false),
                     RecoveryScore = table.Column<double>(type: "float", nullable: false),
                     FailureReason = table.Column<string>(type: "nvarchar(500)", maxLength: 500, nullable: true)
                 },

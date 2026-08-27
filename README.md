@@ -26,9 +26,34 @@ dotnet publish backend/AIDIP.Backend.csproj -c Release -r win-x64 --self-contain
 backend/bin/Release/net10.0/win-x64/publish/KAIRON.exe --desktop --urls http://127.0.0.1:8000
 ```
 
-This first product boundary still uses the repository's existing LocalDB and optional AI-service
-configuration. Removing those clean-machine prerequisites belongs to the persistence and Windows
-packaging milestones; they are not hidden or replaced by this integration.
+Local Mode defaults to managed SQLite persistence and does not require LocalDB. SQL Server remains
+available by setting `Persistence__Provider=SqlServer` for centralized mode. The optional AI
+service configuration remains unchanged.
+
+### Local Mode persistence and Agent
+
+On first startup KAIRON creates `%LOCALAPPDATA%\KAIRON` with separate `data`, `logs`, `config`,
+`cache`, and `backups` directories. The SQLite database is created at
+`%LOCALAPPDATA%\KAIRON\data\kairon.db`, and EF migrations run automatically. An advanced/test
+deployment can override the file with `Persistence__DatabasePath`; ordinary users should not.
+
+Start the zero-code Agent after the backend:
+
+```powershell
+dotnet run --project agent/KAIRON.Agent.csproj
+```
+
+The Agent creates a durable random machine identity under the KAIRON config directory, registers
+through `/api/agent/register`, and sends bounded process/resource heartbeats through the backend
+API. It has no EF Core or database provider dependency and never opens `kairon.db`.
+
+Local and centralized persistence use the same `AppDbContext`, services, APIs, incident engine,
+SDK, and Agent. Only backend infrastructure registration differs:
+
+```text
+Persistence__Provider=SQLite    # default Local Mode
+Persistence__Provider=SqlServer # optional centralized mode; uses DefaultConnection
+```
 
 Run all four in separate terminals. Nothing needs an API key.
 
@@ -237,12 +262,12 @@ the frontend.
 ## Running the tests
 
 ```bash
-dotnet test AIDIP.slnx        # 232 tests: backend + SDK
+dotnet test AIDIP.slnx        # 241 tests: backend + SDK + Agent
 cd ai-service && pytest       # 91 tests, no API key required
-cd frontend && npm test       # 57 tests
+cd frontend && npm test       # 58 tests
 ```
 
-Total: **380 tests**, none requiring a credential or a network call.
+Total: **390 tests**, none requiring a credential or a network call.
 
 Several exist because the live demo found a real bug — the detection rate arithmetic, the
 sustained-breach guard, the verification window, the diagnosis-staleness gap, and a metric that

@@ -14,6 +14,8 @@ public class AppDbContext : DbContext
     public DbSet<Incident> Incidents { get; set; }
     public DbSet<Metric> Metrics { get; set; }
     public DbSet<Analysis> Analyses { get; set; }
+    public DbSet<Machine> Machines { get; set; }
+    public DbSet<DiscoveredApplication> DiscoveredApplications { get; set; }
 
     // Autonomous SRE sets (PRD section 16: additive, reusing the existing telemetry entities).
     public DbSet<SreIncident> SreIncidents { get; set; }
@@ -54,6 +56,29 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => new { e.ProjectId, e.Type });
             entity.HasIndex(e => e.CreatedAt);
             entity.Property(e => e.OutputJson).HasMaxLength(16000);
+        });
+
+        modelBuilder.Entity<Machine>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.HostName).HasMaxLength(255).IsRequired();
+            entity.Property(e => e.OperatingSystem).HasMaxLength(500);
+            entity.Property(e => e.Architecture).HasMaxLength(50);
+            entity.Property(e => e.AgentVersion).HasMaxLength(50);
+            entity.Property(e => e.AgentCredentialHash).HasMaxLength(128).IsRequired();
+            entity.HasIndex(e => e.LastSeenAt);
+        });
+
+        modelBuilder.Entity<DiscoveredApplication>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.MachineId, e.ProcessId, e.ProcessStartedAt }).IsUnique();
+            entity.HasIndex(e => new { e.MachineId, e.IsRunning });
+            entity.Property(e => e.Name).HasMaxLength(255).IsRequired();
+            entity.Property(e => e.Executable).HasMaxLength(2000);
+            entity.Property(e => e.Runtime).HasMaxLength(50);
+            entity.HasOne(e => e.Machine).WithMany(e => e.Applications).HasForeignKey(e => e.MachineId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<SreIncident>(entity =>

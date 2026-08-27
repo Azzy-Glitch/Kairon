@@ -12,6 +12,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.11" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.11" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
@@ -30,16 +31,15 @@
 
   <!-- The existing React application is the KAIRON product UI. Build and bundle it whenever the
        backend is published; SkipFrontendBuild is available to packaging/CI jobs that built it. -->
-  <Target Name="BuildKaironFrontend" BeforeTargets="ComputeFilesToPublish">
+  <Target Name="BuildKaironFrontend" AfterTargets="Publish">
     <Exec WorkingDirectory="$(MSBuildProjectDirectory)\..\frontend" Command="npm run build"
           Condition="'$(SkipFrontendBuild)' != 'true'" />
-    <!-- Resolve the files after the build. This also works from a clean checkout where dist did
-         not exist when MSBuild first evaluated this project. -->
     <ItemGroup>
-      <Content Include="..\frontend\dist\**\*"
-               Link="wwwroot\%(RecursiveDir)%(Filename)%(Extension)"
-               CopyToPublishDirectory="PreserveNewest" />
+      <KaironFrontendFile Include="..\frontend\dist\**\*" />
     </ItemGroup>
+    <Copy SourceFiles="@(KaironFrontendFile)"
+          DestinationFiles="@(KaironFrontendFile->'$(PublishDir)wwwroot\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
   </Target>
 
 </Project>

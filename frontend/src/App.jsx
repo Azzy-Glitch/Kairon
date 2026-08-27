@@ -8,6 +8,7 @@ import DashboardOverview from './components/DashboardOverview';
 import TelemetryMonitor from './components/TelemetryMonitor';
 import SreDashboard from './components/sre/SreDashboard';
 import DemoRunner from './components/sre/DemoRunner';
+import Applications from './components/Applications';
 import { ToastProvider } from './components/Toast';
 import { useHealth } from './hooks/useDemo';
 import {
@@ -37,6 +38,7 @@ export default function App() {
     { id: 'sre', label: 'SRE Command', icon: <IconShield className="w-4 h-4 text-cyan-400" /> },
     { id: 'demo', label: 'Incident Simulation', icon: <IconZap className="w-4 h-4 text-amber-400" /> },
     { id: 'overview', label: 'Overview', icon: <IconDashboard className="w-4 h-4" /> },
+    { id: 'applications', label: 'Applications', icon: <IconServer className="w-4 h-4 text-emerald-400" /> },
     { id: 'error', label: 'Incident Triage', icon: <IconBug className="w-4 h-4 text-rose-400" /> },
     { id: 'api', label: 'API Drift Guard', icon: <IconLink className="w-4 h-4 text-cyan-400" /> },
     { id: 'predict', label: 'Risk Radar', icon: <IconPredict className="w-4 h-4 text-purple-400" /> },
@@ -61,7 +63,7 @@ export default function App() {
               </div>
               <div className="brand-text">
                 <div className="brand-title-wrap">
-                  <h1 className="brand-title">AIDIP</h1>
+                  <h1 className="brand-title">KAIRON</h1>
                   <span className="version-pill">Autonomous AI SRE</span>
                 </div>
                 <p className="brand-tagline">AI-Powered DevOps Telemetry & Reliability Platform</p>
@@ -75,7 +77,7 @@ export default function App() {
               </div>
               <div className="status-pill-badge">
                 <span className={`status-dot ${health.database ? 'online' : 'offline'}`}></span>
-                <span className="status-pill-text">Database</span>
+                <span className="status-pill-text">Local Storage</span>
               </div>
               <div className="status-pill-badge">
                 <span className={`status-dot ${health.aiService ? 'online' : 'offline'}`}></span>
@@ -112,6 +114,7 @@ export default function App() {
           {tab === 'sre' && <SreDashboard />}
           {tab === 'demo' && <DemoRunner />}
           {tab === 'overview' && <DashboardOverview onSelectTab={setTab} />}
+          {tab === 'applications' && <Applications />}
           {tab === 'error' && <ErrorAnalyzer />}
           {tab === 'api' && <ApiValidator />}
           {tab === 'predict' && <Predictor />}
@@ -122,7 +125,7 @@ export default function App() {
 
         {/* Footer */}
         <footer className="footer-bar">
-          <span>AIDIP DevOps Intelligence Platform &bull; Built for High Reliability & Incident Remediation</span>
+          <span>KAIRON DevOps Intelligence Platform &bull; Built for High Reliability & Incident Remediation</span>
           <div className="footer-links">
             <span>FastAPI Python Engine</span>
             <span>&bull;</span>

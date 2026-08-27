@@ -310,7 +310,9 @@ public class IncidentQueryService : IIncidentQueryService
                 AiService = _ai.IsAvailable,
                 DetectionEnabled = _detection.Enabled,
                 RemediationEnabled = _remediation.Enabled,
-                AiMode = _ai.Mode
+                AiMode = _ai.Mode,
+                PersistenceProvider = _db.Database.ProviderName?.Contains("Sqlite", StringComparison.OrdinalIgnoreCase) == true
+                    ? "SQLite" : "SqlServer"
             }
         };
     }

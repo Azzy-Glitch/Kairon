@@ -230,6 +230,7 @@ public class SystemHealthDto
     public bool DetectionEnabled { get; set; }
     public bool RemediationEnabled { get; set; }
     public string AiMode { get; set; } = "unknown";
+    public string PersistenceProvider { get; set; } = "unknown";
 }
 
 public class RemediationToolDto

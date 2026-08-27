@@ -2,6 +2,9 @@
   <Folder Name="/backend/">
     <Project Path="backend/AIDIP.Backend.csproj" />
   </Folder>
+  <Folder Name="/agent/">
+    <Project Path="agent/KAIRON.Agent.csproj" />
+  </Folder>
   <Folder Name="/sdk/">
     <Project Path="sdk/AIDIP.SDK/AIDIP.SDK.csproj" />
   </Folder>
@@ -11,5 +14,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/AIDIP.Backend.Tests/AIDIP.Backend.Tests.csproj" />
     <Project Path="tests/AIDIP.SDK.Tests/AIDIP.SDK.Tests.csproj" />
+    <Project Path="tests/KAIRON.Agent.Tests/KAIRON.Agent.Tests.csproj" />
   </Folder>
 </Solution>
