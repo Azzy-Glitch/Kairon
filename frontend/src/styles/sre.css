@@ -858,6 +858,10 @@
 
 .service-card-head h4 { margin: 0; flex: 1; font-size: 15px; }
 
+.service-card-trend { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
+.service-card-trend-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); font-weight: 700; }
+.service-card-trend svg { display: block; width: 100%; height: 26px; }
+
 .service-dot {
   width: 8px;
   height: 8px;

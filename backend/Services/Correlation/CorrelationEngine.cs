@@ -137,24 +137,40 @@ public class CorrelationEngine : ICorrelationEngine
         List<DetectionSignal> signals,
         CancellationToken cancellationToken)
     {
-        var existingSymptoms = SreJson.Deserialize(incident.SymptomsJson, new List<string>());
         var existingSnapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
         var existingRefs = SreJson.Deserialize(incident.TelemetryReferencesJson, new List<Guid>());
 
-        var newSymptoms = signals.Select(s => s.Symptom).Where(s => !existingSymptoms.Contains(s)).ToList();
+        var newRuleCount = signals.Count(s => existingSnapshots.All(x => x.Rule != s.RuleId));
 
-        // Re-firing the same rule with the same numbers adds nothing an operator can use.
-        if (newSymptoms.Count == 0 && signals.All(s => existingSnapshots.Any(x => x.Symptom == s.Symptom)))
+        // A rule re-firing with the same reading it already reported adds nothing an operator can
+        // use. A rule re-firing with a genuinely different reading - or one that has not fired on
+        // this incident before - is real new information, but it replaces that rule's row rather
+        // than appending a duplicate. Without this, a long-running incident's Symptoms table grows
+        // one row per detection sweep forever, even though the number of distinct problems never
+        // changed (this was a real bug: a multi-hour incident accumulated dozens of near-identical
+        // "cpu" rows, one per re-evaluation, and its "N correlated signals" count climbed the same
+        // unbounded way).
+        if (signals.All(s => !ReadingChanged(existingSnapshots, s)))
             return false;
 
-        existingSymptoms.AddRange(newSymptoms);
-        existingSnapshots.AddRange(signals.Select(Snapshot));
+        foreach (var signal in signals)
+        {
+            var snapshot = Snapshot(signal);
+            var index = existingSnapshots.FindIndex(x => x.Rule == snapshot.Rule);
+            if (index >= 0)
+                existingSnapshots[index] = snapshot;
+            else
+                existingSnapshots.Add(snapshot);
+        }
+
         existingRefs.AddRange(signals.SelectMany(s => s.TelemetryReferences));
 
-        incident.SymptomsJson = SreJson.Serialize(existingSymptoms.Distinct().ToList());
         incident.CorrelatedMetricsJson = SreJson.Serialize(existingSnapshots);
+        // Derived from the same bounded, one-row-per-rule snapshot list, so the symptom text an
+        // operator reads always matches the Symptoms table exactly.
+        incident.SymptomsJson = SreJson.Serialize(existingSnapshots.Select(s => s.Symptom).ToList());
         incident.TelemetryReferencesJson = SreJson.Serialize(existingRefs.Distinct().ToList());
-        incident.SignalCount += signals.Count;
+        incident.SignalCount = existingSnapshots.Count;
         incident.UpdatedAt = DateTime.UtcNow;
 
         var escalated = signals.Max(s => s.Severity);
@@ -175,16 +191,19 @@ public class CorrelationEngine : ICorrelationEngine
         // into a multi-symptom service degradation, which is exactly what PRD section 8 asks for.
         incident.Title = BuildTitleFromSnapshots(existingSnapshots, incident.Service);
 
-        // An existing diagnosis was reached from less evidence than the incident now carries, so it
-        // is flagged rather than silently left to look current. Re-investigation stays an explicit
-        // operator action; correlation never rewrites a conclusion on its own.
-        if (!string.IsNullOrWhiteSpace(incident.RootCause) && newSymptoms.Count > 0)
+        // An existing diagnosis was reached from less evidence than the incident now carries - either
+        // a rule that has not fired before, or an existing one with a meaningfully different reading
+        // - so it is flagged rather than silently left to look current. Re-investigation stays an
+        // explicit operator action; correlation never rewrites a conclusion on its own. Reaching this
+        // point already means at least one signal was new-or-changed (the early return above covers
+        // the "nothing changed" case).
+        if (!string.IsNullOrWhiteSpace(incident.RootCause))
         {
             incident.DiagnosisStale = true;
 
             _logger.LogInformation(
-                "Incident {Key} diagnosis marked stale: {Count} new symptom(s) correlated in since it was produced",
-                incident.IncidentKey, newSymptoms.Count);
+                "Incident {Key} diagnosis marked stale: {New} new rule(s), {Changed} updated reading(s) correlated in since it was produced",
+                incident.IncidentKey, newRuleCount, signals.Count - newRuleCount);
         }
 
         _audit.Record(incident, IncidentEventTypes.Correlated, "correlation-engine",
@@ -214,6 +233,16 @@ public class CorrelationEngine : ICorrelationEngine
 
     private static DetectionSignal Dominant(List<DetectionSignal> signals) =>
         signals.OrderByDescending(s => s.Severity).ThenBy(s => s.DetectedAt).First();
+
+    /// <summary>Whether this signal's rule is new to the incident, or its reading has moved enough
+    /// to be worth recording again rather than being the same observation re-evaluated.</summary>
+    private static bool ReadingChanged(List<CorrelatedSignalSnapshot> existing, DetectionSignal signal)
+    {
+        var match = existing.FirstOrDefault(x => x.Rule == signal.RuleId);
+        if (match is null) return true;
+        if (match.Observed is null || signal.Observed is null) return match.Observed != signal.Observed;
+        return Math.Abs(match.Observed.Value - signal.Observed.Value) > 0.0001;
+    }
 
     private static CorrelatedSignalSnapshot Snapshot(DetectionSignal s) => new()
     {

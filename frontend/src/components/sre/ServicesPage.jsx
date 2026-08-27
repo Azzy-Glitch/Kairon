@@ -1,8 +1,10 @@
 import React, { useMemo } from 'react';
 import { SeverityBadge } from './Badges';
 import { AsyncView } from './StateViews';
+import Sparkline from './Sparkline';
 import { useIncidents } from '../../hooks/useIncidents';
 import { useDemo } from '../../hooks/useDemo';
+import { useServiceMetrics } from '../../hooks/useTelemetry';
 import { relativeTime, formatMetricValue, groupByService } from '../../services/incidentService';
 import { IconServer, IconShield } from '../Icons';
 
@@ -58,6 +60,14 @@ export default function ServicesPage() {
 function ServiceCard({ service, demoState }) {
   const healthy = service.health === 'Healthy';
 
+  // Real recent samples for this service specifically (server-side filtered), not a fabricated or
+  // system-wide trend. Renders nothing if the service has no recent metric rows.
+  const metrics = useServiceMetrics(service.name);
+  const cpuTrend = useMemo(
+    () => [...(metrics.data || [])].reverse().map((m) => m.cpuPercent),
+    [metrics.data]
+  );
+
   return (
     <div className={`service-card ${healthy ? 'service-healthy' : service.health === 'Critical' ? 'service-critical' : 'service-degraded'}`}>
       <div className="service-card-head">
@@ -65,6 +75,13 @@ function ServiceCard({ service, demoState }) {
         <h4>{service.name}</h4>
         <span className="service-health-label">{service.health}</span>
       </div>
+
+      {cpuTrend.length >= 2 && (
+        <div className="service-card-trend">
+          <span className="service-card-trend-label">CPU trend</span>
+          <Sparkline values={cpuTrend} width={220} height={26} color={healthy ? '#38bdf8' : '#fb7185'} />
+        </div>
+      )}
 
       <div className="service-card-stats">
         <div>

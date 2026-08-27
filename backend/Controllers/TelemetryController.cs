@@ -120,7 +120,11 @@ public class TelemetryController : ControllerBase
     }
 
     [HttpGet("metrics")]
-    public async Task<IActionResult> GetMetrics([FromQuery] string? projectId, CancellationToken ct)
+    public async Task<IActionResult> GetMetrics(
+        [FromQuery] string? projectId,
+        [FromQuery] string? service,
+        [FromQuery] int? limit,
+        CancellationToken ct)
     {
         var q = _db.Metrics.AsQueryable();
 
@@ -132,9 +136,18 @@ public class TelemetryController : ControllerBase
             q = q.Where(m => m.ProjectId == pid);
         }
 
+        // Optional: scope to one service, so a per-service trend (e.g. the Services page) does not
+        // have to filter a mixed-service result client-side.
+        if (!string.IsNullOrEmpty(service))
+            q = q.Where(m => m.Service == service);
+
+        var take = Math.Clamp(limit ?? 20, 1, 100);
+
+        // Newest-first, unchanged from the existing behaviour the Telemetry Monitor screen already
+        // depends on. A consumer that wants chronological order (e.g. a sparkline) reverses client-side.
         var result = await q
             .OrderByDescending(m => m.Timestamp)
-            .Take(20)
+            .Take(take)
             .ToListAsync(ct);
 
         return Ok(result);

@@ -10,8 +10,11 @@ export function getTelemetryIncidents(projectId) {
   return request(client.get('/telemetry/incidents', { params: projectId ? { projectId } : {} }));
 }
 
-export function getMetrics(projectId) {
-  return request(client.get('/telemetry/metrics', { params: projectId ? { projectId } : {} }));
+export function getMetrics(projectId, service) {
+  const params = {};
+  if (projectId) params.projectId = projectId;
+  if (service) params.service = service;
+  return request(client.get('/telemetry/metrics', { params }));
 }
 
 export function postTelemetryIncident(payload) {
