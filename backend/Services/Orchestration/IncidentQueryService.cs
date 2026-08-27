@@ -21,6 +21,10 @@ public interface IIncidentQueryService
 
     Task<List<IncidentEventDto>> GetTimelineAsync(Guid id, CancellationToken cancellationToken = default);
 
+    /// <summary>The most recent audit events across every incident, newest first - the Overview
+    /// page's activity feed (frontend PRD section 4).</summary>
+    Task<List<RecentActivityEventDto>> GetRecentActivityAsync(int limit, CancellationToken cancellationToken = default);
+
     Task<List<IncidentEvidenceDto>> GetEvidenceAsync(Guid id, CancellationToken cancellationToken = default);
 
     Task<SreDashboardDto> GetDashboardAsync(Guid? projectId, CancellationToken cancellationToken = default);
@@ -207,6 +211,33 @@ public class IncidentQueryService : IIncidentQueryService
         return events.Select(ToEventDto).ToList();
     }
 
+    public async Task<List<RecentActivityEventDto>> GetRecentActivityAsync(int limit, CancellationToken cancellationToken = default)
+    {
+        var events = await _db.IncidentEvents
+            .AsNoTracking()
+            .Include(e => e.Incident)
+            .OrderByDescending(e => e.Timestamp)
+            .Take(Math.Clamp(limit, 1, 100))
+            .ToListAsync(cancellationToken);
+
+        return events.Select(e => new RecentActivityEventDto
+        {
+            Id = e.Id,
+            Timestamp = e.Timestamp,
+            EventType = e.EventType,
+            Actor = e.Actor,
+            PreviousState = e.PreviousState,
+            NewState = e.NewState,
+            ActionId = e.ActionId,
+            Result = e.Result,
+            Message = e.Message,
+            Error = e.Error,
+            IncidentId = e.IncidentId,
+            IncidentKey = e.Incident?.IncidentKey ?? string.Empty,
+            IncidentTitle = e.Incident?.Title ?? string.Empty
+        }).ToList();
+    }
+
     public async Task<List<IncidentEvidenceDto>> GetEvidenceAsync(Guid id, CancellationToken cancellationToken = default)
     {
         var evidence = await _db.IncidentEvidence
@@ -267,6 +298,7 @@ public class IncidentQueryService : IIncidentQueryService
             AwaitingApproval = open.Count(i => i.Status == IncidentStatus.AwaitingApproval),
             Remediating = open.Count(i => i.Status is IncidentStatus.Remediating or IncidentStatus.Verifying),
             ResolvedLast24h = recent.Count(i => i.Status == IncidentStatus.Resolved && i.ResolvedAt >= since),
+            ActiveServiceCount = open.Select(i => i.Service).Distinct().Count(),
             SeverityDistribution = open
                 .GroupBy(i => i.Severity.ToString())
                 .ToDictionary(g => g.Key, g => g.Count()),
@@ -291,7 +323,7 @@ public class IncidentQueryService : IIncidentQueryService
                     : null,
                 QueueDepth = latest?.QueueDepth,
                 SampledAt = latest?.Timestamp,
-                Recent = recentMetrics.Select(m => new MetricSampleDto
+                Recent = recentMetrics.Select(m => new DashboardMetricSampleDto
                 {
                     Timestamp = m.Timestamp,
                     CpuPercent = m.CpuPercent,

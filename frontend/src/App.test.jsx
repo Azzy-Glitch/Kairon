@@ -19,6 +19,7 @@ vi.mock('./api/index', () => ({
     getTimeline: vi.fn().mockResolvedValue([]),
     getEvidence: vi.fn().mockResolvedValue(null),
     getDashboard: vi.fn().mockResolvedValue({}),
+    getRecentActivity: vi.fn().mockResolvedValue([]),
     getTools: vi.fn().mockResolvedValue([]),
     investigate: vi.fn().mockResolvedValue(null),
     approveAction: vi.fn().mockResolvedValue(null),

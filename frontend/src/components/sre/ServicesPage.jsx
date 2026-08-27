@@ -3,8 +3,7 @@ import { SeverityBadge } from './Badges';
 import { AsyncView } from './StateViews';
 import { useIncidents } from '../../hooks/useIncidents';
 import { useDemo } from '../../hooks/useDemo';
-import { relativeTime, formatMetricValue } from '../../services/incidentService';
-import { severityRank } from '../../types/incident';
+import { relativeTime, formatMetricValue, groupByService } from '../../services/incidentService';
 import { IconServer, IconShield } from '../Icons';
 
 /**
@@ -54,39 +53,6 @@ export default function ServicesPage() {
       </AsyncView>
     </div>
   );
-}
-
-function groupByService(incidents = []) {
-  const map = new Map();
-
-  for (const incident of incidents) {
-    const name = incident.service || 'Unknown service';
-    if (!map.has(name)) {
-      map.set(name, { name, incidents: [] });
-    }
-    map.get(name).incidents.push(incident);
-  }
-
-  return [...map.values()]
-    .map((svc) => {
-      const active = svc.incidents.filter((i) => !isTerminalStatus(i.status));
-      const worst = [...svc.incidents].sort((a, b) => severityRank(b.severity) - severityRank(a.severity))[0];
-      const lastSeen = [...svc.incidents].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))[0];
-
-      return {
-        ...svc,
-        activeCount: active.length,
-        criticalCount: active.filter((i) => i.severity === 'Critical').length,
-        health: active.length === 0 ? 'Healthy' : worst?.severity === 'Critical' ? 'Critical' : 'Degraded',
-        worstActive: active[0] || null,
-        lastSeen
-      };
-    })
-    .sort((a, b) => b.activeCount - a.activeCount || b.incidents.length - a.incidents.length);
-}
-
-function isTerminalStatus(status) {
-  return ['Resolved', 'Failed', 'Rejected', 'Cancelled'].includes(status);
 }
 
 function ServiceCard({ service, demoState }) {

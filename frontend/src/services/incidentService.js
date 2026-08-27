@@ -161,3 +161,41 @@ export function percentChange(before, after) {
   if (before === 0) return after === 0 ? 0 : null;
   return Math.round(((after - before) / before) * 100);
 }
+
+/**
+ * Groups a list of incidents by service (frontend PRD section 24: services health).
+ *
+ * There is no separate service registry to query, so a service this list has never seen an
+ * incident for is not something the frontend can know about - this is "services with observed
+ * activity", not a full inventory (frontend PRD section 28: do not fabricate unavailable data).
+ * Shared by the Services page and the Overview services table so both read the same definition of
+ * a service's health.
+ */
+export function groupByService(incidents = []) {
+  const map = new Map();
+
+  for (const incident of incidents) {
+    const name = incident.service || 'Unknown service';
+    if (!map.has(name)) {
+      map.set(name, { name, incidents: [] });
+    }
+    map.get(name).incidents.push(incident);
+  }
+
+  return [...map.values()]
+    .map((svc) => {
+      const active = svc.incidents.filter((i) => !isTerminal(i.status));
+      const worst = [...svc.incidents].sort((a, b) => severityRank(b.severity) - severityRank(a.severity))[0];
+      const lastSeen = [...svc.incidents].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))[0];
+
+      return {
+        ...svc,
+        activeCount: active.length,
+        criticalCount: active.filter((i) => i.severity === 'Critical').length,
+        health: active.length === 0 ? 'Healthy' : worst?.severity === 'Critical' ? 'Critical' : 'Degraded',
+        worstActive: active[0] || null,
+        lastSeen
+      };
+    })
+    .sort((a, b) => b.activeCount - a.activeCount || b.incidents.length - a.incidents.length);
+}

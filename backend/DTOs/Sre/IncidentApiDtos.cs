@@ -162,6 +162,15 @@ public class IncidentEventDto
     public string? Error { get; set; }
 }
 
+/// <summary>An audit event with its incident's identity attached, for a cross-incident activity
+/// feed (frontend PRD section 4: Overview "Recent Activity").</summary>
+public class RecentActivityEventDto : IncidentEventDto
+{
+    public Guid IncidentId { get; set; }
+    public string IncidentKey { get; set; } = string.Empty;
+    public string IncidentTitle { get; set; } = string.Empty;
+}
+
 public class IncidentEvidenceDto
 {
     public Guid Id { get; set; }
@@ -202,6 +211,9 @@ public class SreDashboardDto
     public int AwaitingApproval { get; set; }
     public int Remediating { get; set; }
     public int ResolvedLast24h { get; set; }
+    /// <summary>Distinct services with a currently-open incident. Not a full service registry -
+    /// there isn't one - so this counts services with active findings, not "all monitored services".</summary>
+    public int ActiveServiceCount { get; set; }
     public Dictionary<string, int> SeverityDistribution { get; set; } = new();
     public Dictionary<string, int> StatusDistribution { get; set; } = new();
     public SreIncidentSummaryDto? TopIncident { get; set; }
@@ -219,7 +231,26 @@ public class LiveMetricsDto
     public double? RetriesPerMinute { get; set; }
     public double? QueueDepth { get; set; }
     public DateTime? SampledAt { get; set; }
-    public List<MetricSampleDto> Recent { get; set; } = new();
+    public List<DashboardMetricSampleDto> Recent { get; set; } = new();
+}
+
+/// <summary>
+/// A metric sample for the dashboard's own JSON contract with the frontend - deliberately NOT the
+/// AI-investigation <see cref="MetricSampleDto"/>, which is pinned to snake_case field names for
+/// the Python microservice. Reusing that DTO here would leak Python's naming convention into the
+/// React client's contract, which happened once (frontend PRD section 4 sparklines silently read
+/// undefined) and is exactly what a separate DTO per consumer prevents.
+/// </summary>
+public class DashboardMetricSampleDto
+{
+    public DateTime Timestamp { get; set; }
+    public double? CpuPercent { get; set; }
+    public double? MemoryPercent { get; set; }
+    public double? ResponseTimeMs { get; set; }
+    public long RequestCount { get; set; }
+    public long ErrorCount { get; set; }
+    public long? RetryCount { get; set; }
+    public long? QueueDepth { get; set; }
 }
 
 public class SystemHealthDto

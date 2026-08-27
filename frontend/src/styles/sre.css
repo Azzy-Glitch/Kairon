@@ -159,7 +159,52 @@
 
 /* --- Dashboard ---------------------------------------------------------- */
 
-.sre-dashboard { display: flex; flex-direction: column; gap: 16px; }
+.sre-dashboard { display: flex; flex-direction: column; gap: 20px; }
+
+/* --- Primary stat row (frontend PRD section 4: Overview command center) ------------------ */
+
+.sre-primary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.primary-stat-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-top: 3px solid var(--border-highlight);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.stat-good { border-top-color: var(--good); }
+.stat-attention { border-top-color: var(--attention); }
+.stat-urgent { border-top-color: var(--bad); }
+.stat-active { border-top-color: var(--active-blue); }
+
+.primary-stat-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-inner);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.stat-good .primary-stat-icon { color: var(--good); }
+.stat-attention .primary-stat-icon { color: var(--attention); }
+.stat-urgent .primary-stat-icon { color: var(--bad); }
+
+.primary-stat-body { display: flex; flex-direction: column; min-width: 0; }
+.primary-stat-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); }
+.primary-stat-value { font-size: 20px; font-weight: 800; color: var(--text-main); line-height: 1.3; }
+.primary-stat-sub { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .sre-summary-grid {
   display: grid;
@@ -234,28 +279,113 @@
 .live-metric-threshold { color: #64748b; font-size: 11px; }
 .metrics-timestamp { margin-left: auto; font-size: 11px; color: #94a3b8; }
 
-.top-incident-banner {
+/* --- Telemetry snapshot (sparklines over real sampled telemetry) ------------------------- */
+
+.telemetry-snapshot { display: flex; flex-direction: column; gap: 10px; }
+
+.telemetry-snapshot-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.telemetry-snapshot-time { font-size: 11px; color: var(--text-dim); }
+
+.telemetry-snapshot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.telemetry-card {
   display: flex;
-  align-items: stretch;
-  gap: 0;
-  width: 100%;
-  padding: 0;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: var(--bg-card);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
+}
+
+.telemetry-card.breaching { border-color: rgba(251, 113, 133, 0.4); box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.2); }
+
+.telemetry-card-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.telemetry-card-value { font-size: 20px; font-weight: 800; font-family: 'JetBrains Mono', monospace; color: var(--text-main); }
+.telemetry-card.breaching .telemetry-card-value { color: var(--bad); }
+.telemetry-card-chart { margin-top: 2px; line-height: 0; }
+.telemetry-card-chart svg { width: 100%; height: 32px; display: block; }
+
+/* --- Active incident cards ----------------------------------------------------------------- */
+
+.active-incidents-section { display: flex; flex-direction: column; gap: 10px; }
+.active-incidents-head { display: flex; align-items: center; justify-content: space-between; }
+
+.active-incidents-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.active-incident-card {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  padding: 0;
   background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
   cursor: pointer;
   text-align: left;
   overflow: hidden;
-  transition: box-shadow 0.15s ease, transform 0.15s ease;
+  transition: box-shadow 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
 }
 
-.top-incident-banner:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
-.top-incident-body { padding: 14px 16px; flex: 1; min-width: 0; }
-.top-incident-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
-.top-incident-tag { font-size: 11px; color: var(--text-dim); margin-left: auto; }
-.top-incident-title { font-weight: 700; color: var(--text-main); font-size: 15px; }
-.top-incident-desc { font-size: 13px; color: var(--text-muted); margin-top: 3px; }
+.active-incident-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.active-incident-card.selected { border-color: var(--active-blue); }
+
+.active-incident-body { padding: 14px 16px; flex: 1; min-width: 0; }
+.active-incident-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.active-incident-title { font-weight: 700; color: var(--text-main); font-size: 14px; margin-bottom: 8px; }
+.active-incident-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 11px; color: var(--text-dim); }
+.active-incident-service { font-weight: 600; color: var(--text-muted); }
+
+/* --- Services health table (Overview-scoped: active incidents only) ---------------------- */
+
+.services-health-section { display: flex; flex-direction: column; gap: 10px; }
+.services-health-head { display: flex; align-items: center; justify-content: space-between; }
+.services-health-table td { font-size: 13px; }
+.services-health-table .service-dot { display: inline-block; margin-right: 6px; vertical-align: middle; }
+
+/* --- Recent activity ----------------------------------------------------------------------- */
+
+.recent-activity-section { display: flex; flex-direction: column; gap: 10px; }
+.recent-activity-head { display: flex; align-items: center; gap: 8px; color: var(--text-muted); }
+
+.recent-activity-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.recent-activity-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12.5px;
+}
+
+.recent-activity-row:last-child { border-bottom: none; }
+
+.recent-activity-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--text-dim); }
+.dot-good { background: var(--good); }
+.dot-bad { background: var(--bad); }
+.dot-attention { background: var(--attention); }
+
+.recent-activity-key { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--text-main); flex-shrink: 0; }
+.recent-activity-text { color: var(--text-body); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-activity-time { font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
 
 .sre-workspace {
   display: grid;

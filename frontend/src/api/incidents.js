@@ -34,6 +34,11 @@ export function getDashboard(projectId) {
   return request(client.get('/incidents/dashboard', { params: projectId ? { projectId } : {} }));
 }
 
+/** Most recent audit events across every incident, newest first - the Overview activity feed. */
+export function getRecentActivity(limit = 20) {
+  return request(client.get('/incidents/activity', { params: { limit } }));
+}
+
 /** Registered remediation tools and whether policy currently permits each one. */
 export function getTools() {
   return request(client.get('/incidents/tools'));

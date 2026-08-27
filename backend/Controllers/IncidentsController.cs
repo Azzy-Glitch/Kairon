@@ -60,6 +60,11 @@ public class IncidentsController : ControllerBase
     public async Task<IActionResult> Timeline(Guid id, CancellationToken cancellationToken) =>
         Ok(await _query.GetTimelineAsync(id, cancellationToken));
 
+    /// <summary>Most recent audit events across every incident - the Overview activity feed.</summary>
+    [HttpGet("activity")]
+    public async Task<IActionResult> RecentActivity([FromQuery] int limit, CancellationToken cancellationToken) =>
+        Ok(await _query.GetRecentActivityAsync(limit <= 0 ? 20 : limit, cancellationToken));
+
     /// <summary>The evidence package the AI was given, so an operator can audit the diagnosis.</summary>
     [HttpGet("{id:guid}/evidence")]
     public async Task<IActionResult> Evidence(Guid id, CancellationToken cancellationToken) =>

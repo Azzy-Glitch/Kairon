@@ -50,6 +50,16 @@ export function useDashboard({ pollMs = DEFAULT_INTERVAL } = {}) {
   return async;
 }
 
+/** Recent audit events across every incident - the Overview activity feed. */
+export function useRecentActivity({ limit = 20, pollMs = DEFAULT_INTERVAL } = {}) {
+  const loader = useCallback(() => incidentsApi.getRecentActivity(limit), [limit]);
+  const async = useAsync(loader, { isEmpty: (data) => !data || data.length === 0, deps: [limit] });
+
+  usePolling(() => async.reload({ silent: true }), pollMs);
+
+  return async;
+}
+
 /**
  * Full detail (diagnosis, prediction, recommendations, actions) for a bounded set of incidents.
  *
