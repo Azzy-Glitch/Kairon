@@ -450,6 +450,27 @@ describe('IncidentDetail', () => {
     expect(screen.getByText('Measured telemetry')).toBeInTheDocument();
   });
 
+  it('tags a KAIRON Agent-sourced signal but not a metric-threshold one', () => {
+    // docs/OBSERVABILITY_MIGRATION.md: the Symptoms table already renders any correlated signal
+    // generically - this only checks the small "Agent" marker that distinguishes a signal
+    // collected by the Agent (log tailer/process watcher) from one collected by the SDK.
+    render(
+      <IncidentDetail
+        query={query({
+          data: sampleIncident({
+            correlatedSignals: [
+              { rule: 'retry-storm', metric: 'retries', observed: 90, threshold: 30, unit: '/min', severity: 'High' },
+              { rule: 'log-pattern-match', metric: 'logPattern', observed: 2, threshold: 2, unit: ' occurrences', severity: 'High' }
+            ]
+          })
+        })}
+        actions={noopActions}
+      />
+    );
+
+    expect(screen.getAllByText('Agent')).toHaveLength(1);
+  });
+
   it('shows the Resolved banner only when the backend says so', () => {
     // Scoped to the resolution banner: the lifecycle rail always carries a "Resolved" label as a
     // pending stage, which is correct and must not be confused with a resolution claim.

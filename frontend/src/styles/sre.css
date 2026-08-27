@@ -630,6 +630,21 @@
 .symptoms-panel { border-left: 3px solid var(--cyan); }
 .symptoms-footnote { margin-top: 8px; font-size: 11px; color: var(--text-dim); }
 
+.agent-source-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--purple);
+  background: rgba(167, 139, 250, 0.14);
+  border: 1px solid rgba(167, 139, 250, 0.32);
+  border-radius: 4px;
+  vertical-align: middle;
+}
+
 /* --- Approval ----------------------------------------------------------- */
 
 .approval-panel { border: 2px solid var(--attention); background: rgba(251, 191, 36, 0.06); }

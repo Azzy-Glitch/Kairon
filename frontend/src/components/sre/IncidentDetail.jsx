@@ -204,6 +204,11 @@ function canReinvestigate(incident) {
   );
 }
 
+// Signals reported by the KAIRON Agent (a log tailer or process watcher, not the SDK) - see
+// docs/OBSERVABILITY_MIGRATION.md. Distinguishing these in the table is the whole point of that
+// migration made visible: proof this incident's evidence did not all come from one source.
+const AGENT_SOURCED_METRICS = new Set(['logPattern', 'processCrash', 'processHighResource']);
+
 /**
  * Symptoms (frontend PRD section 6): the measured signals that created the incident. Kept visually
  * separate from the AI panels, because this is telemetry rather than inference.
@@ -249,6 +254,11 @@ function SymptomsPanel({ incident }) {
                   </td>
                   <td>
                     <code className="path-code" title={signal.rule}>{signal.rule}</code>
+                    {AGENT_SOURCED_METRICS.has(signal.metric) && (
+                      <span className="agent-source-tag" title="Reported by the KAIRON Agent (log/process monitoring, not the SDK)">
+                        Agent
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}
