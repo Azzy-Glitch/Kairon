@@ -220,6 +220,24 @@ def test_record_metric_populates_expected_fields():
     assert payload["Service"] == "OrderProcessingService"
 
 
+def test_timestamp_is_z_suffixed_not_numeric_offset():
+    """The backend's Timestamp fields are DateTime, not DateTimeOffset. System.Text.Json's default
+    DateTime converter round-trips a "Z"-suffixed UTC instant as-is (the same format .NET's own
+    DateTime.UtcNow serializes to) but silently converts an explicit "+00:00" offset to the
+    server's local time zone - a real bug this test caught: Python's datetime.isoformat() emits
+    "+00:00", not "Z", so every Python-SDK timestamp landed hours off on a non-UTC server."""
+    client = _client("http://127.0.0.1:1")
+
+    try:
+        raise ValueError("bad order id")
+    except ValueError as exc:
+        client.capture_exception(exc)
+
+    _, payload = client._queue.get_nowait()
+    assert payload["Timestamp"].endswith("Z")
+    assert "+00:00" not in payload["Timestamp"]
+
+
 def test_disabled_client_does_not_enqueue_on_capture_exception():
     client = _client("http://127.0.0.1:1", enabled=False)
 

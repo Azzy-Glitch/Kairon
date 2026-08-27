@@ -42,7 +42,13 @@ def get_default_instance() -> Optional["Kairon"]:
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    # .isoformat() on a UTC-aware datetime renders the offset as "+00:00", not "Z". The backend's
+    # DateTime fields (not DateTimeOffset) round-trip a "Z"-suffixed UTC instant as-is - the same
+    # format the .NET SDK's DateTime.UtcNow serializes to - but System.Text.Json's default
+    # DateTime converter treats an explicit "+00:00" offset as needing conversion to the server's
+    # local time zone. On a server not itself running in UTC, "+00:00" silently lands as a
+    # wrong-by-the-server's-UTC-offset timestamp instead of the instant actually reported.
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def format_exception(exc: BaseException) -> Optional[str]:
