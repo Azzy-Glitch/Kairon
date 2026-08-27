@@ -59,9 +59,13 @@ incident lifecycle that already works.
 - A 5-tier permission system (Observe/Diagnose/Recommend/Remediate/Administer). Today's single
   operator-identity model (an operator name recorded on every approval, per the existing audit
   trail) is unchanged.
-- A full frontend redesign into 15 dedicated views. The existing incident-detail evidence viewer
-  already renders arbitrary evidence payloads generically, so new evidence types are visible
-  there without new pages. Small additions to existing pages only, if time remains.
+- A full frontend redesign into 15 dedicated views. The plan assumed an existing incident-detail
+  evidence viewer would render arbitrary evidence payloads generically; Phase 6 found that
+  component (`getEvidence`) is dead code, never called by any real page. The actual existing
+  fallback is `IncidentDetail`'s `SymptomsPanel`, which already renders `correlatedSignals`
+  generically regardless of source — new evidence types are visible there without new pages, plus
+  a small "Agent" badge (Phase 6) to make the multi-source story legible at a glance. Small
+  additions to existing pages only, no 15-view redesign attempted.
 - General-purpose log rotation handling (copy-truncate, size-based rotation, arbitrary formats).
   The Agent supports exactly the dated-daily-file scheme the backend's own Serilog config
   already uses, applied to the demo app too.
@@ -122,5 +126,5 @@ a second one.
 | 3. KAIRON Agent + backend ingestion | Done — 23/23 tests passing, live-verified (85+ log lines deduplicated correctly, redaction confirmed) |
 | 4. Detection & correlation extension | Done — 12 new tests (204/204 total), live-verified: a real incident correlated a log-pattern signal with 7 metric/HTTP signals into one incident |
 | 5. AI evidence extension | Done — 209/209 backend + 94/94 AI-service tests, live-verified (evidence collection + diagnosis + staleness all confirmed working with real agent events) |
-| 6. Frontend | Not started |
+| 6. Frontend | Done — 71/71 frontend tests passing, live-verified: "Agent" badge renders on exactly the log-pattern-match row of INC-0018's Symptoms table, absent from the other 8 metric-threshold rows |
 | 7. End-to-end validation & final report | Not started |
