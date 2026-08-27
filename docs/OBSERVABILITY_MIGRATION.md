@@ -127,4 +127,4 @@ a second one.
 | 4. Detection & correlation extension | Done — 12 new tests (204/204 total), live-verified: a real incident correlated a log-pattern signal with 7 metric/HTTP signals into one incident |
 | 5. AI evidence extension | Done — 209/209 backend + 94/94 AI-service tests, live-verified (evidence collection + diagnosis + staleness all confirmed working with real agent events) |
 | 6. Frontend | Done — 71/71 frontend tests passing, live-verified: "Agent" badge renders on exactly the log-pattern-match row of INC-0018's Symptoms table, absent from the other 8 metric-threshold rows |
-| 7. End-to-end validation & final report | Not started |
+| 7. End-to-end validation & final report | Done — 467/467 tests passing across all 4 test suites; live-verified: multi-source correlation (2 independent live incidents, each folding a different pair of sources), redaction (0 raw secrets in 44 AgentEvents rows), full lifecycle to Resolved, and a real cross-language timestamp bug found and fixed |
