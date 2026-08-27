@@ -16,6 +16,12 @@ public class AppDbContext : DbContext
     public DbSet<Analysis> Analyses { get; set; }
     public DbSet<Machine> Machines { get; set; }
     public DbSet<DiscoveredApplication> DiscoveredApplications { get; set; }
+    public DbSet<KaironProject> Projects { get; set; }
+    public DbSet<MonitoredApplication> MonitoredApplications { get; set; }
+    public DbSet<KaironEnvironment> Environments { get; set; }
+    public DbSet<TelemetrySourceRegistration> TelemetrySources { get; set; }
+    public DbSet<TelemetryReceipt> TelemetryReceipts { get; set; }
+    public DbSet<ProjectApiCredential> ProjectApiCredentials { get; set; }
 
     // Autonomous SRE sets (PRD section 16: additive, reusing the existing telemetry entities).
     public DbSet<SreIncident> SreIncidents { get; set; }
@@ -78,6 +84,71 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Executable).HasMaxLength(2000);
             entity.Property(e => e.Runtime).HasMaxLength(50);
             entity.HasOne(e => e.Machine).WithMany(e => e.Applications).HasForeignKey(e => e.MachineId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<KaironProject>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.Slug).IsUnique();
+            entity.Property(e => e.Name).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Slug).HasMaxLength(100).IsRequired();
+        });
+
+        modelBuilder.Entity<MonitoredApplication>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.Service }).IsUnique();
+            entity.Property(e => e.Name).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Service).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Runtime).HasMaxLength(50);
+            entity.HasOne(e => e.Project).WithMany(e => e.Applications).HasForeignKey(e => e.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<KaironEnvironment>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.Name }).IsUnique();
+            entity.Property(e => e.Name).HasMaxLength(100).IsRequired();
+            entity.HasOne(e => e.Project).WithMany(e => e.Environments).HasForeignKey(e => e.ProjectId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<TelemetrySourceRegistration>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.InstallationId }).IsUnique();
+            entity.HasIndex(e => e.LastSeenAt);
+            entity.Property(e => e.SourceType).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.InstallationId).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Version).HasMaxLength(50);
+            entity.HasOne(e => e.Application).WithMany(e => e.TelemetrySources).HasForeignKey(e => e.ApplicationId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<TelemetryReceipt>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.EventId).IsUnique();
+            entity.HasIndex(e => new { e.ProjectId, e.ReceivedAt });
+            entity.Property(e => e.EventType).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.Severity).HasMaxLength(20).IsRequired();
+            entity.Property(e => e.Source).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.Application).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Service).HasMaxLength(200);
+            entity.Property(e => e.Environment).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.PayloadJson).HasMaxLength(16000).IsRequired();
+        });
+
+        modelBuilder.Entity<ProjectApiCredential>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.KeyPrefix });
+            entity.Property(e => e.Name).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.KeyPrefix).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.KeyHash).HasMaxLength(128).IsRequired();
+            entity.HasOne(e => e.Project).WithMany(e => e.Credentials).HasForeignKey(e => e.ProjectId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

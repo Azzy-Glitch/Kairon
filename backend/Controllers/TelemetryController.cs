@@ -2,28 +2,31 @@ using AIDIP.Backend.DTOs;
 using AIDIP.Backend.Infrastructure;
 using AIDIP.Backend.Models;
 using AIDIP.Backend.Services;
-using AIDIP.Backend.Services.Orchestration;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace AIDIP.Backend.Controllers;
 
 [ApiController]
 [Route("api/telemetry")]
+[EnableRateLimiting("telemetry")]
 public class TelemetryController : ControllerBase
 {
     private readonly AppDbContext _db;
-    private readonly IContextEngine _context;
-    private readonly IIncidentProcessingQueue _queue;
+    private readonly IPlatformTelemetryService _platformTelemetry;
+    private readonly IProjectCredentialService _credentials;
+    private readonly AIDIP.Backend.Configuration.PlatformSecurityOptions _security;
 
     public TelemetryController(
         AppDbContext db,
-        IContextEngine context,
-        IIncidentProcessingQueue queue)
+        IPlatformTelemetryService platformTelemetry, IProjectCredentialService credentials,
+        Microsoft.Extensions.Options.IOptions<AIDIP.Backend.Configuration.PlatformSecurityOptions> security)
     {
         _db = db;
-        _context = context;
-        _queue = queue;
+        _platformTelemetry = platformTelemetry;
+        _credentials = credentials;
+        _security = security.Value;
     }
 
     [HttpPost("incidents")]
@@ -31,31 +34,20 @@ public class TelemetryController : ControllerBase
         [FromBody] TelemetryPayload dto,
         CancellationToken cancellationToken)
     {
-        var incident = new Incident
+        if (!await IsAuthorized(dto.ProjectId, cancellationToken)) return Unauthorized();
+        var eventId = Guid.NewGuid();
+        var application = string.IsNullOrWhiteSpace(dto.ApplicationName) ? "Unknown" : dto.ApplicationName;
+        var result = await _platformTelemetry.IngestAsync(new NormalizedTelemetryBatchDto { Events = [new()
         {
-            ProjectId = dto.ProjectId,
-            Endpoint = dto.Endpoint,
-            Method = dto.Method,
-            StatusCode = dto.StatusCode,
-            DurationMs = dto.Duration,
-            ErrorMessage = dto.Error,
-            ErrorType = dto.ExceptionType,
-            StackTrace = dto.StackTrace,
-            Environment = string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
-            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : dto.Timestamp,
-            // The SDK has always sent ApplicationName; persisting it (and the service name) is what
-            // lets detection and correlation attribute this row to a service.
-            Application = string.IsNullOrWhiteSpace(dto.ApplicationName) ? null : dto.ApplicationName,
-            Service = string.IsNullOrWhiteSpace(dto.Service) ? dto.ApplicationName : dto.Service
-        };
-
-        _db.Incidents.Add(incident);
-        await _db.SaveChangesAsync(cancellationToken);
-
-        // Detection runs on a background worker. Ingestion returns as soon as the row is durable;
-        // it never waits for correlation or for an AI call (PRD section 6).
-        _queue.TryEnqueue(new IncidentWorkItem(
-            WorkItemKind.EvaluateDetection, incident.ProjectId, incident.Environment, incident.Service));
+            EventId = eventId, ProjectId = dto.ProjectId, Timestamp = dto.Timestamp,
+            EventType = dto.ExceptionType is null ? "http" : "exception", Severity = "Error",
+            Source = "legacy-dotnet-sdk", Application = application,
+            Service = dto.Service ?? application, Environment = dto.Environment,
+            Message = dto.Error, ExceptionType = dto.ExceptionType, StackTrace = dto.StackTrace,
+            HttpContext = new HttpTelemetryContextDto { Endpoint = dto.Endpoint, Method = dto.Method,
+                StatusCode = dto.StatusCode, DurationMs = dto.Duration }
+        }] }, cancellationToken);
+        if (result.Accepted == 0) return BadRequest(new { error = "Telemetry payload is invalid." });
 
         // Keep this response compatible with AIDIP.SDK.Models.TelemetryResponse
         // without introducing a backend-to-SDK project dependency.
@@ -63,7 +55,7 @@ public class TelemetryController : ControllerBase
         {
             success = true,
             message = "Telemetry recorded.",
-            telemetryId = incident.Id.ToString()
+            telemetryId = eventId.ToString()
         });
     }
 
@@ -72,28 +64,19 @@ public class TelemetryController : ControllerBase
         [FromBody] MetricDto dto,
         CancellationToken cancellationToken)
     {
-        var metric = new Metric
+        if (!await IsAuthorized(dto.ProjectId, cancellationToken)) return Unauthorized();
+        var result = await _platformTelemetry.IngestAsync(new NormalizedTelemetryBatchDto { Events = [new()
         {
-            ProjectId = dto.ProjectId,
-            CpuPercent = dto.CpuPercent,
-            MemoryPercent = dto.MemoryPercent,
-            ResponseTimeMs = dto.ResponseTimeMs,
-            RequestCount = dto.RequestCount,
-            ErrorCount = dto.ErrorCount,
-            RetryCount = dto.RetryCount,
-            QueueDepth = dto.QueueDepth,
-            Application = dto.Application,
-            Service = dto.Service,
-            Component = dto.Component,
-            Environment = string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
-            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : dto.Timestamp
-        };
-
-        _db.Metrics.Add(metric);
-        await _db.SaveChangesAsync(cancellationToken);
-
-        _queue.TryEnqueue(new IncidentWorkItem(
-            WorkItemKind.EvaluateDetection, metric.ProjectId, metric.Environment, metric.Service));
+            EventId = Guid.NewGuid(), ProjectId = dto.ProjectId, Timestamp = dto.Timestamp,
+            EventType = "resource_metric", Severity = "Information", Source = "legacy-dotnet-sdk",
+            Application = dto.Application ?? dto.Service ?? "Unknown", Service = dto.Service ?? dto.Application ?? "Unknown",
+            Environment = dto.Environment, Host = dto.Component ?? string.Empty,
+            ResourceMetrics = new ResourceTelemetryMetricsDto { CpuPercent = dto.CpuPercent,
+                MemoryPercent = dto.MemoryPercent, ResponseTimeMs = dto.ResponseTimeMs,
+                RequestCount = dto.RequestCount, ErrorCount = dto.ErrorCount,
+                RetryCount = dto.RetryCount, QueueDepth = dto.QueueDepth }
+        }] }, cancellationToken);
+        if (result.Accepted == 0) return BadRequest(new { error = "Metric payload is invalid." });
 
         return Ok(new { status = "recorded" });
     }
@@ -139,4 +122,7 @@ public class TelemetryController : ControllerBase
 
         return Ok(result);
     }
+
+    private Task<bool> IsAuthorized(Guid projectId, CancellationToken cancellationToken) =>
+        _credentials.AuthorizeAsync([projectId], Request.Headers[_security.TelemetryKeyHeader].ToString(), cancellationToken);
 }

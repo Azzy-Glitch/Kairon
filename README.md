@@ -262,12 +262,12 @@ the frontend.
 ## Running the tests
 
 ```bash
-dotnet test AIDIP.slnx        # 241 tests: backend + SDK + Agent
+dotnet test AIDIP.slnx        # 245 tests: backend + SDK + Agent
 cd ai-service && pytest       # 91 tests, no API key required
 cd frontend && npm test       # 58 tests
 ```
 
-Total: **390 tests**, none requiring a credential or a network call.
+Total: **394 tests**, none requiring a credential or a network call.
 
 Several exist because the live demo found a real bug — the detection rate arithmetic, the
 sustained-breach guard, the verification window, the diagnosis-staleness gap, and a metric that
@@ -294,6 +294,26 @@ All in `backend/appsettings.json`.
 ## API
 
 Everything that existed before still works on the same routes. The SRE layer is additive.
+
+**Versioned platform and normalized telemetry**
+
+| Method | Route | Purpose |
+|---|---|---|
+| POST | `/api/v1/platform/projects` | Create a project through the operator boundary |
+| GET | `/api/v1/platform/projects` | List project identities and inventory counts |
+| GET | `/api/v1/platform/applications` | List logical applications and telemetry sources |
+| POST | `/api/v1/platform/projects/{id}/credentials` | Issue a project-scoped key once; only its hash is stored |
+| DELETE | `/api/v1/platform/projects/{id}/credentials/{credentialId}` | Revoke an ingestion key |
+| POST | `/api/v1/telemetry/events` | Ingest up to 200 normalized events in one bounded batch |
+
+Normalized events are durably deduplicated by `eventId`, redacted, associated with project,
+application, environment, and source identities, then adapted into the existing metric/incident
+pipeline. The legacy `/api/telemetry/incidents` and `/metrics` routes use this same adapter and
+remain compatible with existing SDKs.
+
+Local Mode accepts loopback telemetry without manual credentials by default. Centralized mode can
+set `PlatformSecurity__RequireTelemetryKey=true`; callers then supply `X-KAIRON-API-Key`. Keys are
+project-scoped, stored only as SHA-256 hashes, returned only when created, and revocable.
 
 **Pre-existing** — `/api/analyze-error`, `/api/validate-api`, `/api/predict`, `/api/recommend`,
 `/api/history`, `/api/stats`, `/api/telemetry/incidents`, `/api/telemetry/metrics`, `/api/health`

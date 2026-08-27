@@ -1,7 +1,9 @@
 using AIDIP.Backend.Extensions;
+using AIDIP.Backend.Configuration;
 using AIDIP.Backend.Infrastructure;
 using AIDIP.Backend.Services;
 using Microsoft.EntityFrameworkCore;
+using System.Threading.RateLimiting;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -26,6 +28,14 @@ builder.Services.AddControllers(options =>
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddPolicy("telemetry", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "local",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 600, Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0, AutoReplenishment = true }));
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+});
 builder.Services.AddSingleton<IProductUrlLauncher, ProductUrlLauncher>();
 builder.Services.AddHostedService<ProductDashboardLaunchService>();
 
@@ -38,6 +48,9 @@ builder.Services.AddScoped<IDevOpsService, DevOpsService>();
 builder.Services.AddScoped<IContractValidator, ContractValidator>();
 builder.Services.AddScoped<IContextEngine, ContextEngine>();
 builder.Services.AddScoped<IAgentRegistrationService, AgentRegistrationService>();
+builder.Services.AddScoped<IPlatformTelemetryService, PlatformTelemetryService>();
+builder.Services.AddScoped<IProjectCredentialService, ProjectCredentialService>();
+builder.Services.Configure<PlatformSecurityOptions>(builder.Configuration.GetSection(PlatformSecurityOptions.SectionName));
 builder.Services.AddSingleton(TimeProvider.System);
 
 // AI service + HttpClient
@@ -89,6 +102,7 @@ else
 
 app.UseSerilogRequestLogging();
 app.UseMiddleware<ErrorHandlingMiddleware>();
+app.UseRateLimiter();
 
 // KAIRON.exe owns the existing React experience in packaged/local-product mode. API routes are
 // mapped below and every other non-file route falls back to the SPA entry point.

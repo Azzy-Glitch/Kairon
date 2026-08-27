@@ -232,6 +232,96 @@ namespace AIDIP.Backend.Migrations
                     b.ToTable("Metrics");
                 });
 
+            modelBuilder.Entity("AIDIP.Backend.Models.KaironProject", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<DateTime>("CreatedAt").HasColumnType("datetime2");
+                    b.Property<bool>("IsActive").HasColumnType("bit");
+                    b.Property<string>("Name").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");
+                    b.Property<string>("Slug").IsRequired().HasMaxLength(100).HasColumnType("nvarchar(100)");
+                    b.HasKey("Id");
+                    b.HasIndex("Slug").IsUnique();
+                    b.ToTable("Projects");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.KaironEnvironment", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<DateTime>("CreatedAt").HasColumnType("datetime2");
+                    b.Property<string>("Name").IsRequired().HasMaxLength(100).HasColumnType("nvarchar(100)");
+                    b.Property<Guid>("ProjectId").HasColumnType("uniqueidentifier");
+                    b.HasKey("Id");
+                    b.HasIndex("ProjectId", "Name").IsUnique();
+                    b.ToTable("Environments");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.MonitoredApplication", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<DateTime>("CreatedAt").HasColumnType("datetime2");
+                    b.Property<DateTime?>("LastTelemetryAt").HasColumnType("datetime2");
+                    b.Property<string>("Name").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");
+                    b.Property<Guid>("ProjectId").HasColumnType("uniqueidentifier");
+                    b.Property<string>("Runtime").IsRequired().HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.Property<string>("Service").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");
+                    b.HasKey("Id");
+                    b.HasIndex("ProjectId", "Service").IsUnique();
+                    b.ToTable("MonitoredApplications");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.TelemetrySourceRegistration", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<Guid?>("ApplicationId").HasColumnType("uniqueidentifier");
+                    b.Property<string>("InstallationId").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");
+                    b.Property<bool>("IsActive").HasColumnType("bit");
+                    b.Property<DateTime>("LastSeenAt").HasColumnType("datetime2");
+                    b.Property<Guid>("ProjectId").HasColumnType("uniqueidentifier");
+                    b.Property<DateTime>("RegisteredAt").HasColumnType("datetime2");
+                    b.Property<string>("SourceType").IsRequired().HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.Property<string>("Version").IsRequired().HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.HasKey("Id");
+                    b.HasIndex("ApplicationId");
+                    b.HasIndex("LastSeenAt");
+                    b.HasIndex("ProjectId", "InstallationId").IsUnique();
+                    b.ToTable("TelemetrySources");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.TelemetryReceipt", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<string>("Application").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");
+                    b.Property<string>("Environment").IsRequired().HasMaxLength(100).HasColumnType("nvarchar(100)");
+                    b.Property<Guid>("EventId").HasColumnType("uniqueidentifier");
+                    b.Property<DateTime>("EventTimestamp").HasColumnType("datetime2");
+                    b.Property<string>("EventType").IsRequired().HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.Property<string>("PayloadJson").IsRequired().HasMaxLength(16000).HasColumnType("nvarchar(max)");
+                    b.Property<Guid>("ProjectId").HasColumnType("uniqueidentifier");
+                    b.Property<DateTime>("ReceivedAt").HasColumnType("datetime2");
+                    b.Property<string>("Service").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");
+                    b.Property<string>("Severity").IsRequired().HasMaxLength(20).HasColumnType("nvarchar(20)");
+                    b.Property<string>("Source").IsRequired().HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.Property<Guid?>("SourceId").HasColumnType("uniqueidentifier");
+                    b.HasKey("Id");
+                    b.HasIndex("EventId").IsUnique();
+                    b.HasIndex("ProjectId", "ReceivedAt");
+                    b.ToTable("TelemetryReceipts");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.ProjectApiCredential", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<DateTime>("CreatedAt").HasColumnType("datetime2");
+                    b.Property<string>("KeyHash").IsRequired().HasMaxLength(128).HasColumnType("nvarchar(128)");
+                    b.Property<string>("KeyPrefix").IsRequired().HasMaxLength(16).HasColumnType("nvarchar(16)");
+                    b.Property<string>("Name").IsRequired().HasMaxLength(100).HasColumnType("nvarchar(100)");
+                    b.Property<Guid>("ProjectId").HasColumnType("uniqueidentifier");
+                    b.Property<DateTime?>("RevokedAt").HasColumnType("datetime2");
+                    b.HasKey("Id");
+                    b.HasIndex("ProjectId", "KeyPrefix");
+                    b.ToTable("ProjectApiCredentials");
+                });
+
             modelBuilder.Entity("AIDIP.Backend.Models.Sre.IncidentEvent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -300,6 +390,50 @@ namespace AIDIP.Backend.Migrations
             modelBuilder.Entity("AIDIP.Backend.Models.Machine", b =>
                 {
                     b.Navigation("Applications");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.KaironEnvironment", b =>
+                {
+                    b.HasOne("AIDIP.Backend.Models.KaironProject", "Project")
+                        .WithMany("Environments").HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade).IsRequired();
+                    b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.MonitoredApplication", b =>
+                {
+                    b.HasOne("AIDIP.Backend.Models.KaironProject", "Project")
+                        .WithMany("Applications").HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade).IsRequired();
+                    b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.TelemetrySourceRegistration", b =>
+                {
+                    b.HasOne("AIDIP.Backend.Models.MonitoredApplication", "Application")
+                        .WithMany("TelemetrySources").HasForeignKey("ApplicationId")
+                        .OnDelete(DeleteBehavior.SetNull);
+                    b.Navigation("Application");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.ProjectApiCredential", b =>
+                {
+                    b.HasOne("AIDIP.Backend.Models.KaironProject", "Project")
+                        .WithMany("Credentials").HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade).IsRequired();
+                    b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.KaironProject", b =>
+                {
+                    b.Navigation("Applications");
+                    b.Navigation("Credentials");
+                    b.Navigation("Environments");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.MonitoredApplication", b =>
+                {
+                    b.Navigation("TelemetrySources");
                 });
 
             modelBuilder.Entity("AIDIP.Backend.Models.Sre.IncidentEvidence", b =>

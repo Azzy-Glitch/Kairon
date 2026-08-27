@@ -42,7 +42,7 @@ public sealed class LocalPersistenceTests
                 Assert.Equal(telemetryId, (await restarted.Incidents.SingleAsync()).Id);
                 Assert.Equal(sreId, (await restarted.SreIncidents.SingleAsync()).Id);
                 Assert.Equal(machineId, (await restarted.Machines.SingleAsync()).Id);
-                Assert.Equal(4, (await restarted.Database.GetAppliedMigrationsAsync()).Count());
+                Assert.Equal(5, (await restarted.Database.GetAppliedMigrationsAsync()).Count());
             }
         }
         finally
