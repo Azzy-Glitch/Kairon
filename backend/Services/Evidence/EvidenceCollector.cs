@@ -103,6 +103,20 @@ public class EvidenceCollector : IEvidenceCollector
             .Take(_options.MaxHistoricalIncidents)
             .ToListAsync(cancellationToken);
 
+        // KAIRON Agent events (log pattern matches, process events) for the same window
+        // (docs/OBSERVABILITY_MIGRATION.md). The compact CorrelatedSignals entry for these already
+        // exists if a rule fired on them; this is the fuller picture - every reported event, not
+        // just the ones a threshold rule turned into a signal, with the full (redacted) message.
+        var agentEvents = await _db.AgentEvents
+            .AsNoTracking()
+            .Where(e => e.ProjectId == incident.ProjectId
+                        && e.Environment == incident.Environment
+                        && e.Service == incident.Service
+                        && e.Timestamp >= windowStart)
+            .OrderByDescending(e => e.Timestamp)
+            .Take(_options.MaxAgentEvents)
+            .ToListAsync(cancellationToken);
+
         var package = new EvidencePackageDto
         {
             Incident = new IncidentContextDto
@@ -160,6 +174,22 @@ public class EvidenceCollector : IEvidenceCollector
                 Severity = s.Severity,
                 DetectedAt = s.DetectedAt
             }).ToList(),
+            LogEvents = agentEvents
+                .OrderBy(e => e.Timestamp)
+                .Select(e => new AgentEventEvidenceDto
+                {
+                    Timestamp = e.Timestamp,
+                    EventType = e.EventType,
+                    Severity = e.Severity,
+                    // Already redacted at ingestion (TelemetryController.CreateEvent) - bounded
+                    // again here anyway, the same defence-in-depth every other text field in this
+                    // package gets, since evidence bounds are enforced at the point evidence is
+                    // built, not assumed from an upstream caller.
+                    Message = Bound(e.Message, 500) ?? string.Empty,
+                    Source = e.Source,
+                    OccurrenceCount = e.OccurrenceCount
+                })
+                .ToList(),
             HistoricalIncidents = history.Select(h => new HistoricalIncidentDto
             {
                 IncidentKey = h.IncidentKey,
@@ -184,9 +214,9 @@ public class EvidenceCollector : IEvidenceCollector
         };
 
         _logger.LogInformation(
-            "Collected evidence for {Key}: {Metrics} metric sample(s), {Errors} error(s), {Signals} signal(s), {History} historical",
+            "Collected evidence for {Key}: {Metrics} metric sample(s), {Errors} error(s), {Signals} signal(s), {AgentEvents} agent event(s), {History} historical",
             incident.IncidentKey, package.RecentMetrics.Count, package.RelatedErrors.Count,
-            package.CorrelatedSignals.Count, package.HistoricalIncidents.Count);
+            package.CorrelatedSignals.Count, package.LogEvents.Count, package.HistoricalIncidents.Count);
 
         return package;
     }
@@ -204,6 +234,12 @@ public class EvidenceCollector : IEvidenceCollector
 
         AddEvidence(incident, EvidenceKinds.CorrelatedSignals,
             $"{package.CorrelatedSignals.Count} correlated signal(s)", package.CorrelatedSignals, package.CorrelatedSignals.Count);
+
+        if (package.LogEvents.Count > 0)
+        {
+            AddEvidence(incident, EvidenceKinds.AgentEvents,
+                $"{package.LogEvents.Count} Agent event(s)", package.LogEvents, package.LogEvents.Count);
+        }
 
         if (package.HistoricalIncidents.Count > 0)
         {

@@ -140,6 +140,20 @@ def investigation_user_prompt(evidence: EvidencePackage) -> str:
             # of it actually reaches the model.
             for e in evidence.related_errors[:10]
         ],
+        # Events from the KAIRON Agent - a log tailer or process watcher, not an SDK
+        # (docs/OBSERVABILITY_MIGRATION.md). Present only when the Agent reported something for
+        # this incident's service/window; an empty list here is a normal HTTP/metric-only
+        # incident, not a gap.
+        "agent_events": [
+            {
+                "event_type": e.event_type,
+                "severity": e.severity,
+                "message": e.message,
+                "source": e.source,
+                "occurrence_count": e.occurrence_count,
+            }
+            for e in evidence.log_events[:10]
+        ],
         "historical_incidents": [
             {
                 "key": h.incident_key,

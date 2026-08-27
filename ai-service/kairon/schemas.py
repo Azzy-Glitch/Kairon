@@ -81,6 +81,21 @@ class CorrelatedSignal(BaseModel):
     detected_at: Optional[datetime] = None
 
 
+class AgentEvent(BaseModel):
+    """A KAIRON Agent event - a log pattern match or a process lifecycle/resource event
+    (docs/OBSERVABILITY_MIGRATION.md). Collected by a log tailer or a process watcher, not an
+    SDK, which is the point: this is what proves diagnosis is not limited to HTTP/metric
+    evidence.
+    """
+
+    timestamp: Optional[datetime] = None
+    event_type: str = ""
+    severity: str = ""
+    message: str = ""
+    source: str = ""
+    occurrence_count: int = 1
+
+
 class HistoricalIncident(BaseModel):
     incident_key: str = ""
     title: str = ""
@@ -107,6 +122,7 @@ class EvidencePackage(BaseModel):
     recent_metrics: List[MetricSample] = Field(default_factory=list)
     related_errors: List[RelatedError] = Field(default_factory=list)
     correlated_signals: List[CorrelatedSignal] = Field(default_factory=list)
+    log_events: List[AgentEvent] = Field(default_factory=list)
     historical_incidents: List[HistoricalIncident] = Field(default_factory=list)
     available_actions: List[AvailableAction] = Field(default_factory=list)
 

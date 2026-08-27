@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 
 from kairon.config import AiConfig  # noqa: E402
 from kairon.schemas import (  # noqa: E402
+    AgentEvent,
     AvailableAction,
     CorrelatedSignal,
     EvidencePackage,
@@ -114,4 +115,49 @@ def cpu_only_evidence(retry_storm_evidence: EvidencePackage) -> EvidencePackage:
             risk_level="Medium",
         )
     )
+    return evidence
+
+
+@pytest.fixture
+def process_crash_evidence(retry_storm_evidence: EvidencePackage) -> EvidencePackage:
+    """A KAIRON Agent-only incident: the process stopped running, no metric signal at all
+    (docs/OBSERVABILITY_MIGRATION.md) - proves diagnosis is not limited to HTTP/metric evidence."""
+    evidence = retry_storm_evidence.model_copy(deep=True)
+    now = datetime.now(timezone.utc)
+    evidence.correlated_signals = [
+        CorrelatedSignal(
+            rule="process-crash", metric="processCrash",
+            symptom="Process 'Kairon.DemoApp' is no longer running (was PID 12345).",
+            observed=1.0, threshold=0.0, unit="", severity="Critical", detected_at=now,
+        )
+    ]
+    evidence.log_events = [
+        AgentEvent(
+            timestamp=now, event_type="ProcessCrash", severity="Critical",
+            message="Process 'Kairon.DemoApp' is no longer running (was PID 12345).",
+            source="Kairon.DemoApp", occurrence_count=1,
+        )
+    ]
+    return evidence
+
+
+@pytest.fixture
+def log_pattern_only_evidence(retry_storm_evidence: EvidencePackage) -> EvidencePackage:
+    """A KAIRON Agent-only incident: a repeated log error pattern, no metric threshold breached."""
+    evidence = retry_storm_evidence.model_copy(deep=True)
+    now = datetime.now(timezone.utc)
+    evidence.correlated_signals = [
+        CorrelatedSignal(
+            rule="log-pattern-match", metric="logPattern",
+            symptom="2 matched log pattern(s), most recent: Order processing failed: timeout",
+            observed=2.0, threshold=2.0, unit=" occurrences", severity="High", detected_at=now,
+        )
+    ]
+    evidence.log_events = [
+        AgentEvent(
+            timestamp=now, event_type="LogPatternMatch", severity="Error",
+            message="Order processing failed: Order processing retry exhausted while calling inventory service.",
+            source="demo/Kairon.DemoApp/logs/kairon-demo-20260827.txt", occurrence_count=1,
+        )
+    ]
     return evidence

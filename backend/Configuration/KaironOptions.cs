@@ -148,6 +148,7 @@ public class AiOrchestrationOptions
     public int MaxMetricSamples { get; set; } = 30;
     public int MaxRelatedErrors { get; set; } = 20;
     public int MaxHistoricalIncidents { get; set; } = 5;
+    public int MaxAgentEvents { get; set; } = 20;
     public int MaxEvidencePayloadChars { get; set; } = 16000;
 
     /// <summary>Capacity of the incident processing queue. Full queue drops work rather than blocking ingestion.</summary>

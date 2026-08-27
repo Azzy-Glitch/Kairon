@@ -81,8 +81,19 @@ class MockProvider(AIProvider):
         has_cpu = "cpu" in metrics
         has_latency = "latency" in metrics
         has_errors = bool(metrics & {"errorRate", "errors"})
+        # KAIRON Agent-sourced signals (docs/OBSERVABILITY_MIGRATION.md) - collected by a log
+        # tailer or process watcher, not an SDK.
+        has_process_crash = "processCrash" in metrics
+        has_log_pattern = "logPattern" in metrics
 
-        if has_retries:
+        if has_process_crash:
+            # A process that has stopped running is the most unambiguous evidence there is - more
+            # certain than an elevated rate, so it outranks every metric-based branch below.
+            root_cause = "The monitored process stopped running unexpectedly."
+            confidence = 0.95
+            preferred = "RestartDemoService"
+            predicted = "The service remains unavailable until the process is restarted."
+        elif has_retries:
             root_cause = "Controlled retry loop causing repeated downstream requests, saturating worker threads."
             confidence = 0.92
             preferred = "DisableDemoRetryLoop"
@@ -99,6 +110,13 @@ class MockProvider(AIProvider):
             confidence = 0.71
             preferred = "RestartDemoService"
             predicted = "The error rate will remain elevated and failed requests will accumulate."
+        elif has_log_pattern:
+            # Evidence from application logs only - no metric threshold breached yet, but the
+            # Agent's tailer already deduplicated this down to a real repeated pattern, not noise.
+            root_cause = "Application logs show a repeated error pattern, most likely an unhandled exception."
+            confidence = 0.68
+            preferred = "RestartDemoService"
+            predicted = "The logged failure will keep recurring until the underlying cause is addressed."
         else:
             root_cause = "Resource pressure on the affected service."
             confidence = 0.55

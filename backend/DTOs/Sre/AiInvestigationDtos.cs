@@ -20,6 +20,9 @@ public class EvidencePackageDto
     [JsonPropertyName("correlated_signals")]
     public List<CorrelatedSignalDto> CorrelatedSignals { get; set; } = new();
 
+    [JsonPropertyName("log_events")]
+    public List<AgentEventEvidenceDto> LogEvents { get; set; } = new();
+
     [JsonPropertyName("historical_incidents")]
     public List<HistoricalIncidentDto> HistoricalIncidents { get; set; } = new();
 
@@ -115,6 +118,37 @@ public class RelatedErrorDto
 
     [JsonPropertyName("error_message")]
     public string? ErrorMessage { get; set; }
+}
+
+/// <summary>
+/// A KAIRON Agent event handed to the AI as its own evidence source (docs/OBSERVABILITY_MIGRATION.md):
+/// the full (redacted, but untruncated by CorrelatedSignalSnapshot's 200-char summary) message,
+/// so the model can reason about the actual log line or process event, not just the compact
+/// symptom sentence CorrelatedSignalDto already carries. Deliberately a distinct type from
+/// Kairon.Backend.DTOs.AgentEventDto (the ingestion contract in Kairon.Backend.DTOs, PascalCase)
+/// rather than reusing it - the mistake that once made the dashboard's own sparklines silently
+/// read undefined (docs/REMEDIATION_VERIFICATION.md) was exactly this: one DTO serving two
+/// unrelated wire contracts.
+/// </summary>
+public class AgentEventEvidenceDto
+{
+    [JsonPropertyName("timestamp")]
+    public DateTime Timestamp { get; set; }
+
+    [JsonPropertyName("event_type")]
+    public string EventType { get; set; } = string.Empty;
+
+    [JsonPropertyName("severity")]
+    public string Severity { get; set; } = string.Empty;
+
+    [JsonPropertyName("message")]
+    public string Message { get; set; } = string.Empty;
+
+    [JsonPropertyName("source")]
+    public string Source { get; set; } = string.Empty;
+
+    [JsonPropertyName("occurrence_count")]
+    public int OccurrenceCount { get; set; }
 }
 
 public class CorrelatedSignalDto

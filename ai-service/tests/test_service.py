@@ -78,6 +78,44 @@ class TestMockMode:
         assert (await service.recommend("some context"))["recommendations"]
         assert (await service.suggest_fixes([{"path": "a"}]))["suggestions"]
 
+    async def test_a_process_crash_is_diagnosed_from_agent_evidence_alone(self, mock_config, process_crash_evidence):
+        """No HTTP/metric signal at all - only a KAIRON Agent event
+        (docs/OBSERVABILITY_MIGRATION.md) - proves diagnosis is not limited to what an SDK
+        reports."""
+        result = await AiService(mock_config).investigate(process_crash_evidence)
+
+        assert "process" in result.root_cause.lower()
+        assert "stopped" in result.root_cause.lower() or "running" in result.root_cause.lower()
+        assert result.confidence == pytest.approx(0.95)
+        assert result.recommendations[0].action == "RestartDemoService"
+
+    async def test_a_process_crash_outranks_a_retry_storm_signal(self, mock_config, retry_storm_evidence):
+        """A crash is more certain evidence than an elevated rate, so it takes priority even when
+        both are present in the same incident."""
+        from kairon.schemas import CorrelatedSignal
+
+        evidence = retry_storm_evidence.model_copy(deep=True)
+        evidence.correlated_signals.append(
+            CorrelatedSignal(rule="process-crash", metric="processCrash", symptom="Process crashed",
+                              observed=1.0, threshold=0.0, unit="", severity="Critical")
+        )
+
+        result = await AiService(mock_config).investigate(evidence)
+
+        assert "process" in result.root_cause.lower()
+        assert result.confidence == pytest.approx(0.95)
+
+    async def test_a_log_pattern_only_incident_gets_a_specific_diagnosis_not_generic(
+        self, mock_config, log_pattern_only_evidence
+    ):
+        """Without this branch, a log-only incident falls through to the fully generic 'resource
+        pressure' fallback - this proves it gets a diagnosis that actually reflects the evidence."""
+        result = await AiService(mock_config).investigate(log_pattern_only_evidence)
+
+        assert "log" in result.root_cause.lower()
+        assert result.root_cause != "Resource pressure on the affected service."
+        assert result.confidence == pytest.approx(0.68)
+
 
 class TestFailureIsolation:
     async def test_provider_failure_becomes_a_controlled_error(self, mock_config, retry_storm_evidence):
