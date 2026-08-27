@@ -118,10 +118,18 @@ public class DetectionEngine : IDetectionEngine
                         && i.Timestamp >= windowStart
                         && i.Timestamp <= evaluatedAt);
 
+        var agentEventsQuery = _db.AgentEvents
+            .AsNoTracking()
+            .Where(e => e.ProjectId == projectId
+                        && e.Environment == environment
+                        && e.Timestamp >= windowStart
+                        && e.Timestamp <= evaluatedAt);
+
         if (!string.IsNullOrWhiteSpace(service))
         {
             metricsQuery = metricsQuery.Where(m => m.Service == service);
             telemetryQuery = telemetryQuery.Where(i => i.Service == service);
+            agentEventsQuery = agentEventsQuery.Where(e => e.Service == service);
         }
 
         var metrics = await metricsQuery
@@ -135,16 +143,23 @@ public class DetectionEngine : IDetectionEngine
             .Take(500)
             .ToListAsync(cancellationToken);
 
-        if (metrics.Count == 0 && telemetry.Count == 0)
+        var agentEvents = await agentEventsQuery
+            .OrderBy(e => e.Timestamp)
+            .Take(500)
+            .ToListAsync(cancellationToken);
+
+        if (metrics.Count == 0 && telemetry.Count == 0 && agentEvents.Count == 0)
             return Array.Empty<DetectionSignal>();
 
         var resolvedService = service
             ?? metrics.Select(m => m.Service).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s))
             ?? telemetry.Select(t => t.Service).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s))
+            ?? agentEvents.Select(e => e.Service).FirstOrDefault(s => !string.IsNullOrWhiteSpace(s))
             ?? "Unknown";
 
         var application = metrics.Select(m => m.Application).FirstOrDefault(a => !string.IsNullOrWhiteSpace(a))
             ?? telemetry.Select(t => t.Application).FirstOrDefault(a => !string.IsNullOrWhiteSpace(a))
+            ?? agentEvents.Select(e => e.Application).FirstOrDefault(a => !string.IsNullOrWhiteSpace(a))
             ?? "Unknown";
 
         var context = new DetectionContext
@@ -156,6 +171,7 @@ public class DetectionEngine : IDetectionEngine
             Application = application,
             Metrics = metrics,
             Telemetry = telemetry,
+            AgentEvents = agentEvents,
             Now = evaluatedAt
         };
 

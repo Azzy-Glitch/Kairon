@@ -23,6 +23,10 @@ public class DetectionContext
     /// <summary>Telemetry rows inside the evaluation window, oldest first.</summary>
     public IReadOnlyList<Incident> Telemetry { get; init; } = Array.Empty<Incident>();
 
+    /// <summary>KAIRON Agent events (log pattern matches, process lifecycle/resource events)
+    /// inside the evaluation window, oldest first (docs/OBSERVABILITY_MIGRATION.md).</summary>
+    public IReadOnlyList<AgentEvent> AgentEvents { get; init; } = Array.Empty<AgentEvent>();
+
     /// <summary>Evaluation instant. Injected rather than read from the clock so tests are deterministic.</summary>
     public DateTime Now { get; init; } = DateTime.UtcNow;
 

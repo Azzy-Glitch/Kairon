@@ -293,6 +293,9 @@ public class CorrelationEngine : ICorrelationEngine
             "retries" => "Retry Storm",
             "requests" => "Request Burst",
             "queue" => "Queue Backlog",
+            "logPattern" => "Log Pattern Match",
+            "processCrash" => "Process Crash",
+            "processHighResource" => "Process High Resource Usage",
             _ => "Anomaly"
         };
     }
@@ -307,6 +310,9 @@ public class CorrelationEngine : ICorrelationEngine
         "retries" => "Retries",
         "requests" => "Requests",
         "queue" => "Queue",
+        "logPattern" => "Log Pattern",
+        "processCrash" => "Process Crash",
+        "processHighResource" => "Process Resources",
         _ => metric
     };
 }

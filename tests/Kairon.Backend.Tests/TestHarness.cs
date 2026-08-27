@@ -216,7 +216,8 @@ public sealed class TestHarness : IDisposable
     public DetectionContext Context(
         DateTime now,
         IEnumerable<Metric>? metrics = null,
-        IEnumerable<Incident>? telemetry = null) => new()
+        IEnumerable<Incident>? telemetry = null,
+        IEnumerable<AgentEvent>? agentEvents = null) => new()
     {
         Options = Detection,
         ProjectId = ProjectId,
@@ -225,6 +226,7 @@ public sealed class TestHarness : IDisposable
         Environment = Environment,
         Metrics = (metrics ?? Array.Empty<Metric>()).OrderBy(m => m.Timestamp).ToList(),
         Telemetry = (telemetry ?? Array.Empty<Incident>()).OrderBy(t => t.Timestamp).ToList(),
+        AgentEvents = (agentEvents ?? Array.Empty<AgentEvent>()).OrderBy(e => e.Timestamp).ToList(),
         Now = now
     };
 

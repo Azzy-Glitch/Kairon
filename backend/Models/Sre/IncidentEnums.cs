@@ -72,5 +72,12 @@ public enum DetectionRuleKind
     MetricDeviation = 4,
     RepeatedErrors = 5,
     RequestBurst = 6,
-    RetryStorm = 7
+    RetryStorm = 7,
+
+    // KAIRON Agent-sourced signals (docs/OBSERVABILITY_MIGRATION.md). Appending, not
+    // renumbering, is safe: CorrelatedSignalSnapshot.Rule persists the string RuleId, never
+    // this enum's raw int value.
+    LogPatternMatch = 8,
+    ProcessCrash = 9,
+    ProcessHighResource = 10
 }

@@ -299,6 +299,108 @@ public class RepeatedErrorsRule : IDetectionRule
     }
 }
 
+/// <summary>
+/// Repeated log entries the KAIRON Agent matched against its pattern set - an unhandled
+/// exception, an OOM marker, or a logged error with a stack trace
+/// (docs/OBSERVABILITY_MIGRATION.md). The Agent already deduplicates identical lines on its own
+/// timer, so more than one distinct reported occurrence reaching the backend is real, repeated
+/// evidence, not one noisy line - the same "one spike is not an incident" reasoning the
+/// threshold rules apply to metrics, applied to log-sourced signals instead.
+/// </summary>
+public class LogPatternMatchRule : IDetectionRule
+{
+    public DetectionRuleKind Kind => DetectionRuleKind.LogPatternMatch;
+    public string RuleId => "log-pattern-match";
+
+    public DetectionSignal? Evaluate(DetectionContext ctx)
+    {
+        var matches = ctx.AgentEvents.Where(e => e.EventType == "LogPatternMatch").ToList();
+        if (matches.Count < ctx.Options.LogPatternMatchMinCount) return null;
+
+        var worst = matches.OrderByDescending(e => SeverityRank(e.Severity)).First();
+
+        var signal = ctx.NewSignal(Kind, RuleId);
+        signal.MetricName = "logPattern";
+        signal.Observed = matches.Count;
+        signal.Threshold = ctx.Options.LogPatternMatchMinCount;
+        signal.Unit = " occurrences";
+        signal.Severity = ToIncidentSeverity(worst.Severity);
+        signal.Component = worst.Source;
+        signal.Symptom = $"{matches.Count} matched log pattern(s), most recent: {Truncate(worst.Message, 200)}";
+        return signal;
+    }
+
+    private static int SeverityRank(string severity) => severity switch
+    {
+        "Critical" => 3,
+        "Error" => 2,
+        "Warning" => 1,
+        _ => 0
+    };
+
+    private static IncidentSeverity ToIncidentSeverity(string agentSeverity) => agentSeverity switch
+    {
+        "Critical" => IncidentSeverity.Critical,
+        "Error" => IncidentSeverity.High,
+        "Warning" => IncidentSeverity.Medium,
+        _ => IncidentSeverity.Low
+    };
+
+    private static string Truncate(string value, int max) => value.Length <= max ? value : value[..max] + "...";
+}
+
+/// <summary>
+/// A process the KAIRON Agent was watching stopped unexpectedly. Fires on the first occurrence -
+/// unlike a single log line, a crash is unambiguously severe evidence on its own.
+/// </summary>
+public class ProcessCrashRule : IDetectionRule
+{
+    public DetectionRuleKind Kind => DetectionRuleKind.ProcessCrash;
+    public string RuleId => "process-crash";
+
+    public DetectionSignal? Evaluate(DetectionContext ctx)
+    {
+        var crash = ctx.AgentEvents.LastOrDefault(e => e.EventType == "ProcessCrash");
+        if (crash is null) return null;
+
+        var signal = ctx.NewSignal(Kind, RuleId);
+        signal.MetricName = "processCrash";
+        signal.Observed = 1;
+        signal.Threshold = 0;
+        signal.Unit = string.Empty;
+        signal.Severity = IncidentSeverity.Critical;
+        signal.Component = crash.Source;
+        signal.Symptom = crash.Message;
+        return signal;
+    }
+}
+
+/// <summary>A process the KAIRON Agent was watching reported CPU above its configured
+/// threshold.</summary>
+public class ProcessHighResourceRule : IDetectionRule
+{
+    public DetectionRuleKind Kind => DetectionRuleKind.ProcessHighResource;
+    public string RuleId => "process-high-resource";
+
+    public DetectionSignal? Evaluate(DetectionContext ctx)
+    {
+        var events = ctx.AgentEvents.Where(e => e.EventType == "ProcessHighResource").ToList();
+        if (events.Count == 0) return null;
+
+        var latest = events[^1];
+
+        var signal = ctx.NewSignal(Kind, RuleId);
+        signal.MetricName = "processHighResource";
+        signal.Observed = events.Count;
+        signal.Threshold = 1;
+        signal.Unit = " occurrences";
+        signal.Severity = IncidentSeverity.Medium;
+        signal.Component = latest.Source;
+        signal.Symptom = latest.Message;
+        return signal;
+    }
+}
+
 /// <summary>Queue backlog. Not in the PRD's initial list by name, but it is the signal the demo
 /// scenario emits (frontend PRD section 15) and it correlates with the retry storm.</summary>
 public class QueueBacklogRule : IDetectionRule

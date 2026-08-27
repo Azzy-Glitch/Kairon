@@ -83,6 +83,41 @@ public class CorrelationTests : IDisposable
     }
 
     [Fact]
+    public async Task ALogPatternOnlySignalGetsAMeaningfulTitleNotAnomaly()
+    {
+        var incidents = await _h.CreateCorrelationEngine()
+            .CorrelateAsync(new List<DetectionSignal> { Signal("log-pattern-match", "logPattern") });
+
+        Assert.Equal($"{_h.Service} Log Pattern Match", incidents[0].Title);
+    }
+
+    [Fact]
+    public async Task AProcessCrashOnlySignalGetsAMeaningfulTitleNotAnomaly()
+    {
+        var incidents = await _h.CreateCorrelationEngine()
+            .CorrelateAsync(new List<DetectionSignal> { Signal("process-crash", "processCrash") });
+
+        Assert.Equal($"{_h.Service} Process Crash", incidents[0].Title);
+    }
+
+    [Fact]
+    public async Task ALogPatternAndAProcessCrashCorrelateIntoOneIncident()
+    {
+        // Two Agent-sourced signals for the same service, same correlation window - proving
+        // Agent signals fold together exactly the way metric/HTTP signals already do.
+        var signals = new List<DetectionSignal>
+        {
+            Signal("log-pattern-match", "logPattern"),
+            Signal("process-crash", "processCrash")
+        };
+
+        var incidents = await _h.CreateCorrelationEngine().CorrelateAsync(signals);
+
+        Assert.Single(incidents);
+        Assert.Equal(2, incidents[0].SignalCount);
+    }
+
+    [Fact]
     public async Task DifferentServicesProduceSeparateIncidents()
     {
         var signals = new List<DetectionSignal>

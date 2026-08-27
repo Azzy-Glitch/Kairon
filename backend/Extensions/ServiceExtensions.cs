@@ -50,6 +50,9 @@ public static class ServiceExtensions
         services.AddScoped<IDetectionRule, MetricDeviationRule>();
         services.AddScoped<IDetectionRule, RepeatedErrorsRule>();
         services.AddScoped<IDetectionRule, QueueBacklogRule>();
+        services.AddScoped<IDetectionRule, LogPatternMatchRule>();
+        services.AddScoped<IDetectionRule, ProcessCrashRule>();
+        services.AddScoped<IDetectionRule, ProcessHighResourceRule>();
         services.AddScoped<IDetectionEngine, DetectionEngine>();
 
         services.AddScoped<ICorrelationEngine, CorrelationEngine>();

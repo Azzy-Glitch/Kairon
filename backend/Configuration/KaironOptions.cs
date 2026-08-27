@@ -52,6 +52,14 @@ public class DetectionOptions
     /// <summary>Severity escalation - breach ratio (observed/threshold) at which severity climbs.</summary>
     public double HighSeverityRatio { get; set; } = 1.25;
     public double CriticalSeverityRatio { get; set; } = 1.6;
+
+    /// <summary>
+    /// LogPatternMatch events in the window before the rule fires. The Agent already
+    /// deduplicates identical lines on its own timer (docs/OBSERVABILITY_MIGRATION.md), so more
+    /// than one distinct reported occurrence reaching the backend is real, repeated evidence -
+    /// not one noisy line.
+    /// </summary>
+    public int LogPatternMatchMinCount { get; set; } = 2;
 }
 
 /// <summary>Remediation policy configuration (PRD section 11 and 12).</summary>
