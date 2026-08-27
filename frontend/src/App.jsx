@@ -9,8 +9,8 @@ import RemediationCenterPage from './components/sre/RemediationCenterPage';
 import AnalyticsPage from './components/sre/AnalyticsPage';
 import DeveloperTools from './components/sre/DeveloperTools';
 import SettingsPage from './components/sre/SettingsPage';
-import { ToastProvider } from './components/Toast';
-import { useHealth } from './hooks/useDemo';
+import { ToastProvider, useToast } from './components/Toast';
+import { useDemo, useHealth } from './hooks/useDemo';
 import {
   IconDashboard,
   IconAlertTriangle,
@@ -37,89 +37,135 @@ import './styles/sre.css';
  * tested screen in two for a naming technicality is exactly the unnecessary rewrite the PRD's
  * compatibility rules (sections 5, 50) warn against.
  */
-export default function App() {
+const TABS = [
+  { id: 'sre', label: 'Overview', subtitle: 'Real-time system health and incidents', icon: <IconShield className="w-4 h-4" /> },
+  { id: 'services', label: 'Services', subtitle: 'Health and telemetry for every monitored service', icon: <IconDashboard className="w-4 h-4" /> },
+  { id: 'telemetry', label: 'Observability', subtitle: 'Raw telemetry and metric submission', icon: <IconServer className="w-4 h-4" /> },
+  { id: 'ai-insights', label: 'AI Insights', subtitle: 'Investigations, confidence and diagnoses across incidents', icon: <IconSparkles className="w-4 h-4" /> },
+  { id: 'remediation', label: 'Remediation', subtitle: 'Actions awaiting approval and remediation history', icon: <IconZap className="w-4 h-4" /> },
+  { id: 'history', label: 'History', subtitle: 'Full audit trail of automated actions', icon: <IconHistory className="w-4 h-4" /> },
+  { id: 'analytics', label: 'Analytics', subtitle: 'Trends across incidents, causes and outcomes', icon: <IconPredict className="w-4 h-4" /> },
+  { id: 'demo', label: 'Demo Center', subtitle: 'Run the end-to-end incident simulation', icon: <IconAlertTriangle className="w-4 h-4" /> },
+  { id: 'devtools', label: 'Developer Tools', subtitle: 'API validation, error analysis and prediction utilities', icon: <IconTerminal className="w-4 h-4" /> },
+  { id: 'settings', label: 'Settings', subtitle: 'Provider, policy and environment configuration', icon: <IconSettings className="w-4 h-4" /> }
+];
+
+function AppShell() {
   const [tab, setTab] = useState('sre');
+  const [collapsed, setCollapsed] = useState(false);
 
   // Component-level health, so the header can say *which* subsystem is down rather than just
   // showing a red dot (frontend PRD section 18).
   const { health } = useHealth();
+  const demo = useDemo();
+  const toast = useToast();
 
-  const tabs = [
-    { id: 'sre', label: 'Overview', icon: <IconShield className="w-4 h-4 text-cyan-400" /> },
-    { id: 'services', label: 'Services', icon: <IconDashboard className="w-4 h-4 text-sky-400" /> },
-    { id: 'telemetry', label: 'Observability', icon: <IconServer className="w-4 h-4 text-sky-400" /> },
-    { id: 'ai-insights', label: 'AI Insights', icon: <IconSparkles className="w-4 h-4 text-amber-400" /> },
-    { id: 'remediation', label: 'Remediation', icon: <IconZap className="w-4 h-4 text-emerald-400" /> },
-    { id: 'history', label: 'History', icon: <IconHistory className="w-4 h-4 text-emerald-400" /> },
-    { id: 'analytics', label: 'Analytics', icon: <IconPredict className="w-4 h-4 text-purple-400" /> },
-    { id: 'demo', label: 'Demo Center', icon: <IconAlertTriangle className="w-4 h-4 text-rose-400" /> },
-    { id: 'devtools', label: 'Developer Tools', icon: <IconTerminal className="w-4 h-4 text-slate-400" /> },
-    { id: 'settings', label: 'Settings', icon: <IconSettings className="w-4 h-4 text-slate-400" /> }
-  ];
+  const active = TABS.find((t) => t.id === tab) || TABS[0];
+  const overallHealthy = health.backend && health.database && health.aiService;
+
+  const runSimulation = async () => {
+    try {
+      await demo.start();
+      toast.addToast('Incident simulation started', 'success');
+      setTab('demo');
+    } catch (err) {
+      toast.addToast(err?.message || 'Could not start the simulation', 'error');
+    }
+  };
 
   return (
-    <ToastProvider>
-      <div className="app-layout">
-        {/* Background glow ambient effects */}
-        <div className="ambient-glow glow-1"></div>
-        <div className="ambient-glow glow-2"></div>
-
-        {/* Top Navigation Bar */}
-        <header className="navbar">
-          <div className="nav-container">
-            <div className="brand-section" onClick={() => setTab('sre')}>
-              <div className="brand-logo-badge">
-                <IconShield className="w-6 h-6 text-cyan-400" />
-              </div>
-              <div className="brand-text">
-                <div className="brand-title-wrap">
-                  <h1 className="brand-title">Kairon</h1>
-                  <span className="version-pill">Autonomous AI SRE</span>
-                </div>
-                <p className="brand-tagline">AI-Powered DevOps Telemetry & Reliability Platform</p>
-              </div>
+    <div className="app-shell">
+      <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
+        <div className="sidebar-brand" onClick={() => setTab('sre')}>
+          <div className="sidebar-brand-icon">
+            <IconShield className="w-5 h-5" />
+          </div>
+          {!collapsed && (
+            <div className="sidebar-brand-text">
+              <span className="sidebar-brand-name">Kairon</span>
+              <span className="sidebar-brand-tagline">Autonomous AI SRE</span>
             </div>
+          )}
+        </div>
 
-            <div className="status-indicators">
-              <div className="status-pill-badge">
-                <span className={`status-dot ${health.backend ? 'online' : 'offline'}`}></span>
-                <span className="status-pill-text">API Core :8000</span>
-              </div>
-              <div className="status-pill-badge">
-                <span className={`status-dot ${health.database ? 'online' : 'offline'}`}></span>
-                <span className="status-pill-text">Database</span>
-              </div>
-              <div className="status-pill-badge">
-                <span className={`status-dot ${health.aiService ? 'online' : 'offline'}`}></span>
-                <span className="status-pill-text">
-                  AI Microservice{health.aiMode && health.aiMode !== 'unknown' ? ` (${health.aiMode})` : ''}
+        <nav className="sidebar-nav">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              className={`sidebar-nav-item ${tab === t.id ? 'active' : ''}`}
+              onClick={() => setTab(t.id)}
+              title={t.label}
+            >
+              {t.icon}
+              {!collapsed && <span className="tab-label">{t.label}</span>}
+            </button>
+          ))}
+        </nav>
+
+        <div className="sidebar-footer">
+          {!collapsed && (
+            <div className="sidebar-status-card">
+              <span className="sidebar-status-label">System status</span>
+
+              <div className="sidebar-status-row">
+                <span className="sidebar-status-row-label">
+                  <span className={`status-dot ${overallHealthy ? 'online' : 'offline'}`}></span>
+                  Overall health
+                </span>
+                <span className={`sidebar-status-row-value ${overallHealthy ? 'good' : 'bad'}`}>
+                  {overallHealthy ? 'Healthy' : 'Degraded'}
                 </span>
               </div>
-              <div className="status-pill-badge">
-                <span className={`status-dot ${health.detectionEnabled ? 'online' : 'offline'}`}></span>
-                <span className="status-pill-text">Detection</span>
+
+              <div className="sidebar-status-row">
+                <span className="sidebar-status-row-label">AI service</span>
+                <span className={`sidebar-status-row-value ${health.aiService ? 'good' : 'bad'}`}>
+                  {health.aiService ? `Operational${health.aiMode ? ` (${health.aiMode})` : ''}` : 'Offline'}
+                </span>
               </div>
+
+              <div className="sidebar-status-row">
+                <span className="sidebar-status-row-label">Detection</span>
+                <span className={`sidebar-status-row-value ${health.detectionEnabled ? 'good' : 'bad'}`}>
+                  {health.detectionEnabled ? 'Active' : 'Paused'}
+                </span>
+              </div>
+
+              <div className="sidebar-status-row">
+                <span className="sidebar-status-row-label">Database</span>
+                <span className={`sidebar-status-row-value ${health.database ? 'good' : 'bad'}`}>
+                  {health.database ? 'Connected' : 'Unreachable'}
+                </span>
+              </div>
+            </div>
+          )}
+
+          <button className="sidebar-simulate-btn" onClick={runSimulation} disabled={demo.busy === 'start'}>
+            <IconAlertTriangle className="w-4 h-4" />
+            {!collapsed && (demo.busy === 'start' ? 'Starting...' : 'Run Incident Simulation')}
+          </button>
+
+          <button className="sidebar-collapse-btn" onClick={() => setCollapsed((c) => !c)}>
+            {collapsed ? '»' : '« Collapse'}
+          </button>
+        </div>
+      </aside>
+
+      <div className="app-main">
+        <header className="topbar">
+          <div className="topbar-title">
+            <h1>{active.label}</h1>
+            <p>{active.subtitle}</p>
+          </div>
+
+          <div className="topbar-actions">
+            <div className="topbar-health-pill">
+              <span className={`status-dot ${overallHealthy ? 'online' : 'offline'}`}></span>
+              Health: {overallHealthy ? 'Healthy' : 'Degraded'}
             </div>
           </div>
         </header>
 
-        {/* Tab Navigation Pill Bar */}
-        <div className="nav-tabs-wrapper">
-          <nav className="nav-tabs">
-            {tabs.map((t) => (
-              <button
-                key={t.id}
-                className={`tab-btn ${tab === t.id ? 'active' : ''}`}
-                onClick={() => setTab(t.id)}
-              >
-                {t.icon}
-                <span className="tab-label">{t.label}</span>
-              </button>
-            ))}
-          </nav>
-        </div>
-
-        {/* Main Content Area */}
         <main className="main-content">
           {tab === 'sre' && <SreDashboard />}
           {tab === 'services' && <ServicesPage />}
@@ -131,20 +177,27 @@ export default function App() {
           {tab === 'demo' && <DemoRunner />}
           {tab === 'devtools' && <DeveloperTools />}
           {tab === 'settings' && <SettingsPage />}
-        </main>
 
-        {/* Footer */}
-        <footer className="footer-bar">
-          <span>Kairon DevOps Intelligence Platform &bull; Built for High Reliability & Incident Remediation</span>
-          <div className="footer-links">
-            <span>FastAPI Python Engine</span>
-            <span>&bull;</span>
-            <span>.NET 10 Web API Core</span>
-            <span>&bull;</span>
-            <span>React + Vite</span>
-          </div>
-        </footer>
+          <footer className="footer-bar">
+            <span>Kairon &bull; Autonomous AI SRE &bull; Built for High Reliability & Incident Remediation</span>
+            <div className="footer-links">
+              <span>FastAPI Python Engine</span>
+              <span>&bull;</span>
+              <span>.NET 10 Web API Core</span>
+              <span>&bull;</span>
+              <span>React + Vite</span>
+            </div>
+          </footer>
+        </main>
       </div>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ToastProvider>
+      <AppShell />
     </ToastProvider>
   );
 }

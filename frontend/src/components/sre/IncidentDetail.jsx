@@ -80,7 +80,7 @@ function DetailBody({ incident, actions }) {
           <div>
             <dt>Endpoint</dt>
             <dd>
-              <code className="path-code">{incident.affectedEndpoint || '--'}</code>
+              <code className="path-code" title={incident.affectedEndpoint || undefined}>{incident.affectedEndpoint || '--'}</code>
             </dd>
           </div>
           <div>
@@ -248,7 +248,7 @@ function SymptomsPanel({ incident }) {
                     <SeverityBadge severity={signal.severity} size="sm" />
                   </td>
                   <td>
-                    <code className="path-code">{signal.rule}</code>
+                    <code className="path-code" title={signal.rule}>{signal.rule}</code>
                   </td>
                 </tr>
               ))}
