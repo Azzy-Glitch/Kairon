@@ -119,7 +119,7 @@ a second one.
 |---|---|
 | 1. Foundation (this document) | Done |
 | 2. Python SDK | Done — 29/29 tests passing |
-| 3. KAIRON Agent + backend ingestion | Not started |
+| 3. KAIRON Agent + backend ingestion | Done — 23/23 tests passing, live-verified (85+ log lines deduplicated correctly, redaction confirmed) |
 | 4. Detection & correlation extension | Not started |
 | 5. AI evidence extension | Not started |
 | 6. Frontend | Not started |
