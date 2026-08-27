@@ -118,7 +118,7 @@ a second one.
 | Phase | Status |
 |---|---|
 | 1. Foundation (this document) | Done |
-| 2. Python SDK | In progress |
+| 2. Python SDK | Done — 29/29 tests passing |
 | 3. KAIRON Agent + backend ingestion | Not started |
 | 4. Detection & correlation extension | Not started |
 | 5. AI evidence extension | Not started |
