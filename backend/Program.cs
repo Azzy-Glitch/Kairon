@@ -96,6 +96,13 @@ else
 app.UseSerilogRequestLogging();
 app.UseMiddleware<ErrorHandlingMiddleware>();
 
+// Serves the React production build from wwwroot (populated by `npm run build` + a copy step -
+// see docs/DESKTOP_SHELL.md) so the desktop shell and any browser can load the UI directly from
+// this API process instead of requiring a separate Vite dev server. Registered before the health/
+// API routes only affects static asset matching; MapFallbackToFile below is what runs last.
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 app.MapHealthChecks("/api/health");
 
 app.MapHealthChecks(
@@ -106,6 +113,13 @@ app.MapHealthChecks(
     });
 
 app.MapControllers();
+
+// SPA fallback - only for GET requests that matched no API route or static file, so it can never
+// shadow /api/*. Missing wwwroot/index.html (no frontend built yet) is a no-op, not an error.
+if (File.Exists(Path.Combine(app.Environment.WebRootPath ?? "wwwroot", "index.html")))
+{
+    app.MapFallbackToFile("index.html");
+}
 
 // Initialize database
 using (var scope = app.Services.CreateScope())

@@ -78,6 +78,10 @@ coverage/
 backend/logs/
 demo/Kairon.DemoApp/logs/
 
+# Generated frontend build copied into the backend for static-file/desktop-shell serving
+# (docs/DESKTOP_SHELL.md) - rebuilt from frontend/dist by the same script that publishes it.
+backend/wwwroot/
+
 # The provider configuration template is documentation, not a credential file. It carries no real
 # key and needs to be tracked, so it is exempted from the .env.* rule above.
 !.env.example
