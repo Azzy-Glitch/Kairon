@@ -40,6 +40,7 @@ public sealed class AgentController : ControllerBase
     }
 
     [HttpGet("machines")]
+    [RequiresOperator]
     public async Task<IReadOnlyList<MachineStatusDto>> Machines(CancellationToken cancellationToken)
     {
         var onlineAfter = _time.GetUtcNow().UtcDateTime.AddSeconds(-45);
@@ -50,6 +51,7 @@ public sealed class AgentController : ControllerBase
     }
 
     [HttpGet("applications")]
+    [RequiresOperator]
     public async Task<IReadOnlyList<ApplicationInventoryDto>> Applications(CancellationToken cancellationToken) =>
         await _db.DiscoveredApplications.AsNoTracking().Include(x => x.Machine)
             .OrderByDescending(x => x.IsRunning).ThenBy(x => x.Name)

@@ -322,6 +322,25 @@ namespace AIDIP.Backend.Migrations
                     b.ToTable("ProjectApiCredentials");
                 });
 
+            modelBuilder.Entity("AIDIP.Backend.Models.PlatformAuditEvent", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<string>("Action").IsRequired().HasMaxLength(100).HasColumnType("nvarchar(100)");
+                    b.Property<string>("Actor").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");
+                    b.Property<string>("Category").IsRequired().HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.Property<string>("DataJson").HasMaxLength(8000).HasColumnType("nvarchar(max)");
+                    b.Property<string>("Message").HasMaxLength(2000).HasColumnType("nvarchar(2000)");
+                    b.Property<Guid?>("ProjectId").HasColumnType("uniqueidentifier");
+                    b.Property<string>("Result").IsRequired().HasMaxLength(40).HasColumnType("nvarchar(40)");
+                    b.Property<string>("TargetId").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");
+                    b.Property<string>("TargetType").IsRequired().HasMaxLength(100).HasColumnType("nvarchar(100)");
+                    b.Property<DateTime>("Timestamp").HasColumnType("datetime2");
+                    b.HasKey("Id");
+                    b.HasIndex("Timestamp");
+                    b.HasIndex("ProjectId", "Timestamp");
+                    b.ToTable("PlatformAuditEvents");
+                });
+
             modelBuilder.Entity("AIDIP.Backend.Models.Sre.IncidentEvent", b =>
                 {
                     b.Property<Guid>("Id")

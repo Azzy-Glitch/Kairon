@@ -19,6 +19,7 @@ public sealed class LocalPersistenceTests
         var telemetryId = Guid.NewGuid();
         var sreId = Guid.NewGuid();
         var machineId = Guid.NewGuid();
+        var auditId = Guid.NewGuid();
         try
         {
             await using (var first = Create(path))
@@ -32,6 +33,9 @@ public sealed class LocalPersistenceTests
                     UpdatedAt = DateTime.UtcNow });
                 first.Machines.Add(new Machine { Id = machineId, HostName = "test-machine", AgentCredentialHash = "hash",
                     RegisteredAt = DateTime.UtcNow, LastSeenAt = DateTime.UtcNow });
+                first.PlatformAuditEvents.Add(new PlatformAuditEvent { Id = auditId, Action = "project.created",
+                    Actor = "local-operator", TargetType = "project", TargetId = projectId.ToString(),
+                    ProjectId = projectId, Timestamp = DateTime.UtcNow });
                 await first.SaveChangesAsync();
             }
 
@@ -42,7 +46,8 @@ public sealed class LocalPersistenceTests
                 Assert.Equal(telemetryId, (await restarted.Incidents.SingleAsync()).Id);
                 Assert.Equal(sreId, (await restarted.SreIncidents.SingleAsync()).Id);
                 Assert.Equal(machineId, (await restarted.Machines.SingleAsync()).Id);
-                Assert.Equal(5, (await restarted.Database.GetAppliedMigrationsAsync()).Count());
+                Assert.Equal(auditId, (await restarted.PlatformAuditEvents.SingleAsync()).Id);
+                Assert.Equal(6, (await restarted.Database.GetAppliedMigrationsAsync()).Count());
             }
         }
         finally

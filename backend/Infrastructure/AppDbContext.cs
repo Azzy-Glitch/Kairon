@@ -22,6 +22,7 @@ public class AppDbContext : DbContext
     public DbSet<TelemetrySourceRegistration> TelemetrySources { get; set; }
     public DbSet<TelemetryReceipt> TelemetryReceipts { get; set; }
     public DbSet<ProjectApiCredential> ProjectApiCredentials { get; set; }
+    public DbSet<PlatformAuditEvent> PlatformAuditEvents { get; set; }
 
     // Autonomous SRE sets (PRD section 16: additive, reusing the existing telemetry entities).
     public DbSet<SreIncident> SreIncidents { get; set; }
@@ -150,6 +151,21 @@ public class AppDbContext : DbContext
             entity.Property(e => e.KeyHash).HasMaxLength(128).IsRequired();
             entity.HasOne(e => e.Project).WithMany(e => e.Credentials).HasForeignKey(e => e.ProjectId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<PlatformAuditEvent>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.Timestamp);
+            entity.HasIndex(e => new { e.ProjectId, e.Timestamp });
+            entity.Property(e => e.Category).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.Action).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.Actor).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.TargetType).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.TargetId).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Result).HasMaxLength(40).IsRequired();
+            entity.Property(e => e.Message).HasMaxLength(2000);
+            entity.Property(e => e.DataJson).HasMaxLength(8000);
         });
 
         modelBuilder.Entity<SreIncident>(entity =>

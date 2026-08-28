@@ -7,11 +7,11 @@ using Microsoft.Extensions.Options;
 namespace AIDIP.Backend.Infrastructure;
 
 /// <summary>
-/// Marks an endpoint that changes remediation state - approve, reject, cancel, execute. When
-/// SreSecurity:RequireOperatorKey is on, these require a server-side key (PRD section 19).
+/// Marks an operator-only endpoint, including remediation changes and sensitive platform reads.
+/// When SreSecurity:RequireOperatorKey is on, these require a server-side key (PRD section 19).
 ///
-/// Off by default so the hackathon demo runs with no setup, but the enforcement path is real
-/// rather than a stub, so turning it on is a configuration change and not a code change.
+/// Off by default so Local Mode runs with no setup; centralized deployments enable the same
+/// enforcement path through configuration rather than a separate API implementation.
 /// </summary>
 [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class)]
 public class RequiresOperatorAttribute : Attribute

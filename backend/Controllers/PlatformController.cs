@@ -2,21 +2,26 @@ using AIDIP.Backend.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using AIDIP.Backend.Services;
+using AIDIP.Backend.Services.Audit;
 
 namespace AIDIP.Backend.Controllers;
 
 [ApiController]
 [Route("api/v1/platform")]
+[RequiresOperator]
 public sealed class PlatformController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly IProjectCredentialService _credentials;
     private readonly TimeProvider _time;
-    public PlatformController(AppDbContext db, IProjectCredentialService credentials, TimeProvider time)
+    private readonly IPlatformAuditService _audit;
+    public PlatformController(AppDbContext db, IProjectCredentialService credentials, TimeProvider time,
+        IPlatformAuditService audit)
     {
         _db = db;
         _credentials = credentials;
         _time = time;
+        _audit = audit;
     }
 
     [HttpPost("projects")]
@@ -31,6 +36,8 @@ public sealed class PlatformController : ControllerBase
         var project = new AIDIP.Backend.Models.KaironProject { Id = request.Id ?? Guid.NewGuid(),
             Name = request.Name.Trim(), Slug = slug, CreatedAt = _time.GetUtcNow().UtcDateTime };
         _db.Projects.Add(project);
+        _audit.Record("project.created", Actor(), "project", project.Id.ToString(), project.Id,
+            data: new { project.Name, project.Slug });
         await _db.SaveChangesAsync(cancellationToken);
         return Created($"/api/v1/platform/projects/{project.Id}", new { project.Id, project.Name, project.Slug });
     }
@@ -56,15 +63,43 @@ public sealed class PlatformController : ControllerBase
     public async Task<IActionResult> CreateCredential(Guid projectId, [FromBody] CredentialNameDto request,
         CancellationToken cancellationToken)
     {
+        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
         var created = await _credentials.CreateAsync(projectId, request.Name, cancellationToken);
-        return created is null ? NotFound(new { error = "Project not found." }) : Ok(created);
+        if (created is null) return NotFound(new { error = "Project not found." });
+        _audit.Record("credential.created", Actor(), "project-credential", created.Id.ToString(), projectId,
+            data: new { created.Name, created.KeyPrefix });
+        await _db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return Ok(created);
     }
 
     [HttpDelete("projects/{projectId:guid}/credentials/{credentialId:guid}")]
     [RequiresOperator]
     public async Task<IActionResult> RevokeCredential(Guid projectId, Guid credentialId,
-        CancellationToken cancellationToken) =>
-        await _credentials.RevokeAsync(projectId, credentialId, cancellationToken) ? NoContent() : NotFound();
+        CancellationToken cancellationToken)
+    {
+        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+        if (!await _credentials.RevokeAsync(projectId, credentialId, cancellationToken)) return NotFound();
+        _audit.Record("credential.revoked", Actor(), "project-credential", credentialId.ToString(), projectId);
+        await _db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return NoContent();
+    }
+
+    [HttpGet("audit")]
+    public async Task<IActionResult> Audit([FromQuery] Guid? projectId, [FromQuery] int limit = 100,
+        CancellationToken cancellationToken = default)
+    {
+        var query = _db.PlatformAuditEvents.AsNoTracking().AsQueryable();
+        if (projectId.HasValue) query = query.Where(x => x.ProjectId == projectId);
+        return Ok(await query.OrderByDescending(x => x.Timestamp).Take(Math.Clamp(limit, 1, 500))
+            .Select(x => new { x.Id, x.Timestamp, x.Category, x.Action, x.Actor, x.TargetType, x.TargetId,
+                x.ProjectId, x.Result, x.Message, x.DataJson }).ToListAsync(cancellationToken));
+    }
+
+    private string Actor() => Request.Headers["X-KAIRON-Operator"].ToString() is { Length: > 0 } actor
+        ? actor
+        : "local-operator";
 
     private static string Slugify(string value)
     {

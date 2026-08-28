@@ -57,6 +57,7 @@ public static class ServiceExtensions
 
         // --- Audit.
         services.AddScoped<IAuditService, AuditService>();
+        services.AddScoped<IPlatformAuditService, PlatformAuditService>();
         services.AddScoped<IIncidentKeyGenerator, IncidentKeyGenerator>();
 
         // --- Remediation. The registry is built from the registered tools, which is what makes
