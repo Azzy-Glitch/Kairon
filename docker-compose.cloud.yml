@@ -1,0 +1,39 @@
+services:
+  ai:
+    build:
+      context: .
+      dockerfile: ai-service/Dockerfile
+    image: kairon/ai:${KAIRON_VERSION:-dev}
+    restart: unless-stopped
+    environment:
+      AI__Provider: ${KAIRON_AI_PROVIDER:-mock}
+      AI__Model: ${KAIRON_AI_MODEL:-}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+    networks: [kairon]
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: kairon/backend:${KAIRON_VERSION:-dev}
+    restart: unless-stopped
+    depends_on:
+      ai:
+        condition: service_healthy
+    ports:
+      - "${KAIRON_HTTP_PORT:-8000}:8000"
+    environment:
+      Persistence__Provider: SqlServer
+      ConnectionStrings__DefaultConnection: ${KAIRON_SQL_CONNECTION:?Set KAIRON_SQL_CONNECTION}
+      AiService__BaseUrl: http://ai:8001
+      AiService__MockMode: ${KAIRON_AI_MOCK_MODE:-false}
+      Product__ManageLocalAi: "false"
+      PlatformSecurity__RequireTelemetryKey: "true"
+      SreSecurity__RequireOperatorKey: "true"
+      SreSecurity__OperatorKey: ${KAIRON_OPERATOR_KEY:?Set KAIRON_OPERATOR_KEY}
+      Cors__AllowedOrigins__0: ${KAIRON_ALLOWED_ORIGIN:?Set KAIRON_ALLOWED_ORIGIN}
+    networks: [kairon]
+
+networks:
+  kairon:
+    driver: bridge

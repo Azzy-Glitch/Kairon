@@ -66,6 +66,10 @@ Persistence__Provider=SQLite    # default Local Mode
 Persistence__Provider=SqlServer # optional centralized mode; uses DefaultConnection
 ```
 
+Production container images and the external-database Cloud Mode composition are documented in
+[`docs/cloud-deployment.md`](docs/cloud-deployment.md). Cloud Mode does not replace or alter the
+zero-database-setup SQLite desktop default.
+
 Run all four in separate terminals. Nothing needs an API key.
 
 ```bash
