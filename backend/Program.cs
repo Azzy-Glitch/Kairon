@@ -6,14 +6,29 @@ using Microsoft.EntityFrameworkCore;
 using System.Threading.RateLimiting;
 using Serilog;
 
-var builder = WebApplication.CreateBuilder(args);
+var desktopMode = args.Any(argument => string.Equals(argument, "--desktop", StringComparison.OrdinalIgnoreCase));
+var hostArguments = args.Where(argument => !string.Equals(argument, "--desktop", StringComparison.OrdinalIgnoreCase)).ToArray();
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    // --desktop is a KAIRON product switch, not an ASP.NET configuration key. Remove it so the
+    // command-line provider does not consume the following --urls option as its value.
+    Args = hostArguments,
+    // Installed shortcuts set the working directory, but upgrades, diagnostics, and direct launches
+    // are not required to do so. Resolve packaged UI files relative to KAIRON.exe itself.
+    ContentRootPath = desktopMode ? AppContext.BaseDirectory : Directory.GetCurrentDirectory()
+});
+
+var persistenceOptions = builder.Configuration.GetSection(PersistenceOptions.SectionName).Get<PersistenceOptions>()
+                         ?? new PersistenceOptions();
+var productPaths = KaironDataPaths.Resolve(persistenceOptions);
+productPaths.EnsureCreated();
 
 // Configure Serilog
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
     .Enrich.FromLogContext()
     .WriteTo.Console()
-    .WriteTo.File("logs/aidip-.txt", rollingInterval: RollingInterval.Day)
+    .WriteTo.File(Path.Combine(productPaths.Logs, "kairon-.log"), rollingInterval: RollingInterval.Day)
     .CreateLogger();
 
 builder.Host.UseSerilog();
@@ -38,6 +53,7 @@ builder.Services.AddRateLimiter(options =>
 });
 builder.Services.AddSingleton<IProductUrlLauncher, ProductUrlLauncher>();
 builder.Services.AddHostedService<ProductDashboardLaunchService>();
+builder.Services.AddHostedService<LocalAiProcessService>();
 
 // Persistence is infrastructure-configurable: SQLite is Local Mode, SQL Server remains available
 // for centralized deployments. Application services only depend on AppDbContext.
