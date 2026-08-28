@@ -41,9 +41,6 @@ Name: "{autodesktop}\KAIRON"; Filename: "{app}\KAIRON.exe"; Parameters: "--deskt
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Run]
-Filename: "{sys}\sc.exe"; Parameters: "create KAIRON.Agent binPath= ""{app}\agent\KAIRON.Agent.exe"" start= auto obj= ""NT AUTHORITY\LocalService"" DisplayName= ""KAIRON Agent"""; Flags: runhidden waituntilterminated; StatusMsg: "Installing KAIRON Agent service..."
-Filename: "{sys}\sc.exe"; Parameters: "failure KAIRON.Agent reset= 86400 actions= restart/5000/restart/15000/none/0"; Flags: runhidden waituntilterminated
-Filename: "{sys}\sc.exe"; Parameters: "start KAIRON.Agent"; Flags: runhidden waituntilterminated; StatusMsg: "Starting KAIRON Agent..."
 Filename: "{app}\KAIRON.exe"; Parameters: "--desktop --urls http://127.0.0.1:8000"; Description: "Launch KAIRON"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
@@ -51,10 +48,163 @@ Filename: "{sys}\sc.exe"; Parameters: "stop KAIRON.Agent"; Flags: runhidden wait
 Filename: "{sys}\sc.exe"; Parameters: "delete KAIRON.Agent"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteAgent"
 
 [Code]
-function PrepareToInstall(var NeedsRestart: Boolean): String;
-var ResultCode: Integer;
+const
+  AgentServiceName = 'KAIRON.Agent';
+  ErrorServiceDoesNotExist = 1060;
+  ErrorServiceNotActive = 1062;
+  ErrorServiceAlreadyRunning = 1056;
+
+function AgentExecutablePath: String;
 begin
-  Exec(ExpandConstant('{sys}\sc.exe'), 'stop KAIRON.Agent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{sys}\sc.exe'), 'delete KAIRON.Agent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := ExpandConstant('{app}\agent\KAIRON.Agent.exe');
+end;
+
+function NormalizeImagePath(Value: String): String;
+begin
+  Result := Trim(Value);
+  if (Length(Result) >= 2) and (Result[1] = '"') and
+     (Result[Length(Result)] = '"') then
+    Result := Copy(Result, 2, Length(Result) - 2);
+end;
+
+function RunServiceControl(const Arguments, Action: String; var ResultCode: Integer): Boolean;
+begin
+  Log(Format('KAIRON Agent: %s.', [Action]));
+  Result := Exec(ExpandConstant('{sys}\sc.exe'), Arguments, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  if Result then
+    Log(Format('KAIRON Agent: %s completed with exit code %d.', [Action, ResultCode]))
+  else
+    Log(Format('KAIRON Agent: could not launch sc.exe for %s (Win32 error %d: %s).', [Action, DLLGetLastError, SysErrorMessage(DLLGetLastError)]));
+end;
+
+function QueryAgentService(var ResultCode: Integer): Boolean;
+begin
+  Result := RunServiceControl('query ' + AgentServiceName,
+    'querying the Windows Service Control Manager', ResultCode);
+end;
+
+function AgentServiceExists: Boolean;
+var
+  ResultCode: Integer;
+begin
+  if not QueryAgentService(ResultCode) then
+    RaiseException('KAIRON Setup could not query the Windows Service Control Manager. ' +
+      'Review the installer log and verify administrative permissions.');
+
+  if ResultCode = 0 then
+    Result := True
+  else if ResultCode = ErrorServiceDoesNotExist then
+    Result := False
+  else
+    RaiseException(Format(
+      'KAIRON Setup could not determine whether the %s service exists (sc.exe exit code %d). ' +
+      'Review the installer log.', [AgentServiceName, ResultCode]));
+end;
+
+procedure ValidateExistingAgentService;
+var
+  ExistingImagePath: String;
+begin
+  if not RegQueryStringValue(HKLM,
+    'SYSTEM\CurrentControlSet\Services\' + AgentServiceName,
+    'ImagePath', ExistingImagePath) then
+    RaiseException('An existing KAIRON.Agent service was found, but its executable path could not be verified. ' +
+      'Setup will not replace a service it cannot identify.');
+
+  if CompareText(NormalizeImagePath(ExistingImagePath), AgentExecutablePath) <> 0 then
+    RaiseException(Format(
+      'An existing KAIRON.Agent service points to a different executable (%s). ' +
+      'Setup will not overwrite an unrelated service.', [NormalizeImagePath(ExistingImagePath)]));
+
+  Log('KAIRON Agent: existing service belongs to this installation and will be reconfigured.');
+end;
+
+procedure StopExistingAgentService;
+var
+  ResultCode: Integer;
+begin
+  if not RunServiceControl('stop ' + AgentServiceName,
+    'stopping the existing service for upgrade', ResultCode) then
+    RaiseException('KAIRON Setup could not launch Service Control Manager tooling to stop the existing Agent.');
+
+  if (ResultCode <> 0) and (ResultCode <> ErrorServiceNotActive) then
+    RaiseException(Format(
+      'KAIRON Setup could not stop the existing %s service (sc.exe exit code %d). ' +
+      'Stop the service and retry setup.', [AgentServiceName, ResultCode]));
+end;
+
+procedure InstallOrReconfigureAgentService;
+var
+  Existing: Boolean;
+  ResultCode: Integer;
+  Arguments: String;
+  RegistrationAction: String;
+begin
+  Existing := AgentServiceExists;
+  Arguments := 'binPath= "' + AgentExecutablePath + '" start= auto ' +
+    'obj= "NT AUTHORITY\LocalService" DisplayName= "KAIRON Agent"';
+
+  if Existing then
+  begin
+    RegistrationAction := 'reconfigure';
+    ValidateExistingAgentService;
+    if not RunServiceControl('config ' + AgentServiceName + ' ' + Arguments,
+      'reconfiguring the existing service', ResultCode) then
+      RaiseException('KAIRON Setup could not launch Service Control Manager tooling to reconfigure the Agent.');
+  end
+  else
+  begin
+    RegistrationAction := 'create';
+    if not RunServiceControl('create ' + AgentServiceName + ' ' + Arguments,
+      'creating the service', ResultCode) then
+      RaiseException('KAIRON Setup could not launch Service Control Manager tooling to create the Agent.');
+  end;
+
+  if ResultCode <> 0 then
+    RaiseException(Format(
+      'KAIRON Setup could not %s the %s service (sc.exe exit code %d). ' +
+      'Installation cannot continue. Review the installer log and administrative permissions.', [RegistrationAction, AgentServiceName, ResultCode]));
+
+  if not AgentServiceExists then
+    RaiseException('KAIRON Setup completed the service registration command, but KAIRON.Agent ' +
+      'is not present in the Windows Service Control Manager.');
+
+  if not RunServiceControl(
+    'failure ' + AgentServiceName + ' reset= 86400 actions= restart/5000/restart/15000/none/0',
+    'configuring service recovery', ResultCode) then
+    RaiseException('KAIRON Setup could not launch Service Control Manager tooling to configure Agent recovery.');
+  if ResultCode <> 0 then
+    RaiseException(Format(
+      'KAIRON Setup created the Agent service but could not configure recovery (sc.exe exit code %d). ' +
+      'Installation cannot continue.', [ResultCode]));
+
+  if not RunServiceControl('start ' + AgentServiceName,
+    'starting the service', ResultCode) then
+    RaiseException('KAIRON Setup could not launch Service Control Manager tooling to start the Agent.');
+  if (ResultCode <> 0) and (ResultCode <> ErrorServiceAlreadyRunning) then
+    RaiseException(Format(
+      'KAIRON Setup registered the Agent service but could not start it (sc.exe exit code %d). ' +
+      'Installation cannot continue. Review the installer log.', [ResultCode]));
+
+  if not AgentServiceExists then
+    RaiseException('KAIRON Setup started the Agent registration flow, but KAIRON.Agent could not be verified in SCM.');
+
+  Log('KAIRON Agent: service registration, recovery configuration, startup, and SCM verification succeeded.');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  if AgentServiceExists then
+  begin
+    ValidateExistingAgentService;
+    StopExistingAgentService;
+  end;
   Result := '';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    InstallOrReconfigureAgentService;
 end;

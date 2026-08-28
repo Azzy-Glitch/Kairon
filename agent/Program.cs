@@ -7,7 +7,7 @@ var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
     // Agent executable, not the caller's working directory.
     ContentRootPath = AppContext.BaseDirectory
 });
-builder.Services.AddWindowsService(options => options.ServiceName = "KAIRON Agent");
+builder.Services.AddWindowsService(options => options.ServiceName = "KAIRON.Agent");
 // Do not implicitly bind the desktop Agent to Windows Event Log permissions. Packaging can add a
 // controlled sink later; the worker itself must run safely as an ordinary user and as a service.
 builder.Logging.ClearProviders();
