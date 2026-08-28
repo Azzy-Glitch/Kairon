@@ -9,6 +9,8 @@ public class AIDIPOptions
 {
     public string Endpoint { get; set; } = "http://localhost:8000";
     public string? ApiKey { get; set; }
+    /// <summary>Authentication header used by the KAIRON backend.</summary>
+    public string ApiKeyHeader { get; set; } = "X-KAIRON-API-Key";
     public Guid ProjectId { get; set; }
     public bool EnableTelemetry { get; set; } = true;
     public bool CaptureRequestBody { get; set; } = false;

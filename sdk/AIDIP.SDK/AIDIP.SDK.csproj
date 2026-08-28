@@ -8,11 +8,16 @@
 		<PackageId>AIDIP.SDK</PackageId>
 		<Version>1.0.0</Version>
 		<Authors>AIDIP</Authors>
-		<Description>AIDIP telemetry and observability SDK for .NET applications.</Description>
+		<Description>KAIRON fail-open telemetry and deep observability SDK for ASP.NET Core applications.</Description>
+		<PackageTags>kairon;observability;telemetry;sre;aspnetcore</PackageTags>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
+		<RepositoryType>git</RepositoryType>
+		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+		<None Include="README.md" Pack="true" PackagePath="\" />
 	</ItemGroup>
 
 </Project>

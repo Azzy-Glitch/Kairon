@@ -124,5 +124,13 @@ public class TelemetryController : ControllerBase
     }
 
     private Task<bool> IsAuthorized(Guid projectId, CancellationToken cancellationToken) =>
-        _credentials.AuthorizeAsync([projectId], Request.Headers[_security.TelemetryKeyHeader].ToString(), cancellationToken);
+        _credentials.AuthorizeAsync([projectId], TelemetryKey(), cancellationToken);
+
+    private string TelemetryKey()
+    {
+        var current = Request.Headers[_security.TelemetryKeyHeader].ToString();
+        // Compatibility for AIDIP.SDK 1.0 clients. New KAIRON SDK versions use the configured
+        // X-KAIRON header; accepting the legacy name avoids a breaking security rollout.
+        return string.IsNullOrWhiteSpace(current) ? Request.Headers["X-AIDIP-API-Key"].ToString() : current;
+    }
 }

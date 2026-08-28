@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kairon-sdk"
+version = "1.0.0"
+description = "Fail-open Python telemetry and deep observability SDK for KAIRON"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "KAIRON" }]
+dependencies = ["httpx>=0.27"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+fastapi = ["fastapi>=0.110"]
+test = ["pytest>=8", "fastapi>=0.110"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["kairon_sdk"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

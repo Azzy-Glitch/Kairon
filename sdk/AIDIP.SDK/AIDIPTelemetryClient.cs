@@ -58,7 +58,7 @@ public class AIDIPTelemetryClient
         };
 
         if (!string.IsNullOrWhiteSpace(_options.ApiKey))
-            request.Headers.Add("X-AIDIP-API-Key", _options.ApiKey);
+            request.Headers.Add(_options.ApiKeyHeader, _options.ApiKey);
 
         try
         {

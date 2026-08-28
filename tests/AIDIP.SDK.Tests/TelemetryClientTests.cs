@@ -80,7 +80,18 @@ public class TelemetryClientTests
 
         await CreateClient(handler, o => o.ApiKey = "platform-key").SendAsync(Payload());
 
-        Assert.True(handler.LastRequest!.Headers.Contains("X-AIDIP-API-Key"));
+        Assert.True(handler.LastRequest!.Headers.Contains("X-KAIRON-API-Key"));
+    }
+
+    [Fact]
+    public async Task ApiKeyHeaderCanBeOverriddenForCompatibleBackends()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, """{"success":true}""");
+
+        await CreateClient(handler, o => { o.ApiKey = "platform-key"; o.ApiKeyHeader = "X-Custom-Key"; })
+            .SendAsync(Payload());
+
+        Assert.True(handler.LastRequest!.Headers.Contains("X-Custom-Key"));
     }
 
     [Fact]
@@ -90,7 +101,7 @@ public class TelemetryClientTests
 
         await CreateClient(handler, o => o.ApiKey = null).SendAsync(Payload());
 
-        Assert.False(handler.LastRequest!.Headers.Contains("X-AIDIP-API-Key"));
+        Assert.False(handler.LastRequest!.Headers.Contains("X-KAIRON-API-Key"));
     }
 
     [Fact]
