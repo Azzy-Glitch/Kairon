@@ -50,6 +50,7 @@ builder.Services.AddScoped<IContextEngine, ContextEngine>();
 builder.Services.AddScoped<IAgentRegistrationService, AgentRegistrationService>();
 builder.Services.AddScoped<IPlatformTelemetryService, PlatformTelemetryService>();
 builder.Services.AddScoped<IProjectCredentialService, ProjectCredentialService>();
+builder.Services.AddScoped<ISdkPairingService, SdkPairingService>();
 builder.Services.Configure<PlatformSecurityOptions>(builder.Configuration.GetSection(PlatformSecurityOptions.SectionName));
 builder.Services.AddSingleton(TimeProvider.System);
 

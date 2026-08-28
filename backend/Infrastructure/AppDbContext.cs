@@ -23,6 +23,8 @@ public class AppDbContext : DbContext
     public DbSet<TelemetryReceipt> TelemetryReceipts { get; set; }
     public DbSet<ProjectApiCredential> ProjectApiCredentials { get; set; }
     public DbSet<PlatformAuditEvent> PlatformAuditEvents { get; set; }
+    public DbSet<SdkPairingSession> SdkPairingSessions { get; set; }
+    public DbSet<SdkInstallation> SdkInstallations { get; set; }
 
     // Autonomous SRE sets (PRD section 16: additive, reusing the existing telemetry entities).
     public DbSet<SreIncident> SreIncidents { get; set; }
@@ -166,6 +168,27 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Result).HasMaxLength(40).IsRequired();
             entity.Property(e => e.Message).HasMaxLength(2000);
             entity.Property(e => e.DataJson).HasMaxLength(8000);
+        });
+
+        modelBuilder.Entity<SdkPairingSession>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.CodeHash).IsUnique();
+            entity.HasIndex(e => new { e.ApplicationId, e.ExpiresAt });
+            entity.Property(e => e.SdkType).HasMaxLength(30).IsRequired();
+            entity.Property(e => e.CodeHash).HasMaxLength(128).IsRequired();
+        });
+
+        modelBuilder.Entity<SdkInstallation>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.InstallationId).IsUnique();
+            entity.HasIndex(e => new { e.ProjectId, e.KeyPrefix });
+            entity.Property(e => e.SdkType).HasMaxLength(30).IsRequired();
+            entity.Property(e => e.Version).HasMaxLength(50);
+            entity.Property(e => e.InstallationId).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.KeyPrefix).HasMaxLength(16).IsRequired();
+            entity.Property(e => e.KeyHash).HasMaxLength(128).IsRequired();
         });
 
         modelBuilder.Entity<SreIncident>(entity =>

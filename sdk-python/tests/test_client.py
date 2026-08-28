@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from unittest.mock import Mock, patch
 
 from kairon_sdk import KaironClient, KaironOptions
 
@@ -60,3 +61,13 @@ def test_start_and_close_are_idempotent():
     client.start()
     client.close()
     client.close()
+
+
+def test_pairing_posts_sdk_identity_and_returns_scoped_configuration():
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {"projectId": "project", "installationId": "installation"}
+    with patch("kairon_sdk.client.httpx.post", return_value=response) as post:
+        paired = KaironClient.pair("http://localhost:8000", "pair_once")
+    assert paired["installationId"] == "installation"
+    assert post.call_args.kwargs["json"]["sdkType"] == "python"

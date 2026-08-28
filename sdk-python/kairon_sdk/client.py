@@ -45,6 +45,17 @@ class KaironClient:
         self.dropped_events = 0
         self.delivery_failures = 0
 
+    @staticmethod
+    def pair(endpoint: str, code: str, version: str = "1.0.0") -> dict[str, Any] | None:
+        """Redeems a one-time Python pairing code; failures remain contained."""
+        try:
+            response = httpx.post(endpoint.rstrip("/") + "/api/v1/sdk/pair",
+                                  json={"code": code, "sdkType": "python", "version": version}, timeout=10.0)
+            response.raise_for_status()
+            return response.json()
+        except Exception:
+            return None
+
     @property
     def pending_events(self) -> int:
         return self._queue.qsize()

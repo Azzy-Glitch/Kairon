@@ -341,6 +341,43 @@ namespace AIDIP.Backend.Migrations
                     b.ToTable("PlatformAuditEvents");
                 });
 
+            modelBuilder.Entity("AIDIP.Backend.Models.SdkPairingSession", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<Guid>("ApplicationId").HasColumnType("uniqueidentifier");
+                    b.Property<string>("CodeHash").IsRequired().HasMaxLength(128).HasColumnType("nvarchar(128)");
+                    b.Property<DateTime>("CreatedAt").HasColumnType("datetime2");
+                    b.Property<DateTime>("ExpiresAt").HasColumnType("datetime2");
+                    b.Property<Guid>("ProjectId").HasColumnType("uniqueidentifier");
+                    b.Property<DateTime?>("RedeemedAt").HasColumnType("datetime2");
+                    b.Property<DateTime?>("RevokedAt").HasColumnType("datetime2");
+                    b.Property<string>("SdkType").IsRequired().HasMaxLength(30).HasColumnType("nvarchar(30)");
+                    b.HasKey("Id");
+                    b.HasIndex("CodeHash").IsUnique();
+                    b.HasIndex("ApplicationId", "ExpiresAt");
+                    b.ToTable("SdkPairingSessions");
+                });
+
+            modelBuilder.Entity("AIDIP.Backend.Models.SdkInstallation", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<Guid>("ApplicationId").HasColumnType("uniqueidentifier");
+                    b.Property<DateTime>("CreatedAt").HasColumnType("datetime2");
+                    b.Property<string>("InstallationId").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");
+                    b.Property<string>("KeyHash").IsRequired().HasMaxLength(128).HasColumnType("nvarchar(128)");
+                    b.Property<string>("KeyPrefix").IsRequired().HasMaxLength(16).HasColumnType("nvarchar(16)");
+                    b.Property<DateTime?>("LastSeenAt").HasColumnType("datetime2");
+                    b.Property<Guid>("ProjectId").HasColumnType("uniqueidentifier");
+                    b.Property<DateTime?>("RevokedAt").HasColumnType("datetime2");
+                    b.Property<string>("SdkType").IsRequired().HasMaxLength(30).HasColumnType("nvarchar(30)");
+                    b.Property<Guid>("SourceId").HasColumnType("uniqueidentifier");
+                    b.Property<string>("Version").IsRequired().HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.HasKey("Id");
+                    b.HasIndex("InstallationId").IsUnique();
+                    b.HasIndex("ProjectId", "KeyPrefix");
+                    b.ToTable("SdkInstallations");
+                });
+
             modelBuilder.Entity("AIDIP.Backend.Models.Sre.IncidentEvent", b =>
                 {
                     b.Property<Guid>("Id")

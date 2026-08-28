@@ -76,3 +76,32 @@ public sealed class ProjectApiCredential
     public DateTime CreatedAt { get; set; }
     public DateTime? RevokedAt { get; set; }
 }
+
+public sealed class SdkPairingSession
+{
+    public Guid Id { get; set; }
+    public Guid ProjectId { get; set; }
+    public Guid ApplicationId { get; set; }
+    public string SdkType { get; set; } = string.Empty;
+    public string CodeHash { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+    public DateTime ExpiresAt { get; set; }
+    public DateTime? RedeemedAt { get; set; }
+    public DateTime? RevokedAt { get; set; }
+}
+
+public sealed class SdkInstallation
+{
+    public Guid Id { get; set; }
+    public Guid ProjectId { get; set; }
+    public Guid ApplicationId { get; set; }
+    public Guid SourceId { get; set; }
+    public string SdkType { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public string InstallationId { get; set; } = string.Empty;
+    public string KeyPrefix { get; set; } = string.Empty;
+    public string KeyHash { get; set; } = string.Empty;
+    public DateTime CreatedAt { get; set; }
+    public DateTime? LastSeenAt { get; set; }
+    public DateTime? RevokedAt { get; set; }
+}

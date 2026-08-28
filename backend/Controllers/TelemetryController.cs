@@ -17,16 +17,19 @@ public class TelemetryController : ControllerBase
     private readonly IPlatformTelemetryService _platformTelemetry;
     private readonly IProjectCredentialService _credentials;
     private readonly AIDIP.Backend.Configuration.PlatformSecurityOptions _security;
+    private readonly ISdkPairingService _pairing;
 
     public TelemetryController(
         AppDbContext db,
         IPlatformTelemetryService platformTelemetry, IProjectCredentialService credentials,
-        Microsoft.Extensions.Options.IOptions<AIDIP.Backend.Configuration.PlatformSecurityOptions> security)
+        Microsoft.Extensions.Options.IOptions<AIDIP.Backend.Configuration.PlatformSecurityOptions> security,
+        ISdkPairingService pairing)
     {
         _db = db;
         _platformTelemetry = platformTelemetry;
         _credentials = credentials;
         _security = security.Value;
+        _pairing = pairing;
     }
 
     [HttpPost("incidents")]
@@ -34,9 +37,10 @@ public class TelemetryController : ControllerBase
         [FromBody] TelemetryPayload dto,
         CancellationToken cancellationToken)
     {
-        if (!await IsAuthorized(dto.ProjectId, cancellationToken)) return Unauthorized();
-        var eventId = Guid.NewGuid();
         var application = string.IsNullOrWhiteSpace(dto.ApplicationName) ? "Unknown" : dto.ApplicationName;
+        var service = dto.Service ?? application;
+        if (!await IsAuthorized(dto.ProjectId, service, cancellationToken)) return Unauthorized();
+        var eventId = Guid.NewGuid();
         var result = await _platformTelemetry.IngestAsync(new NormalizedTelemetryBatchDto { Events = [new()
         {
             EventId = eventId, ProjectId = dto.ProjectId, Timestamp = dto.Timestamp,
@@ -64,7 +68,8 @@ public class TelemetryController : ControllerBase
         [FromBody] MetricDto dto,
         CancellationToken cancellationToken)
     {
-        if (!await IsAuthorized(dto.ProjectId, cancellationToken)) return Unauthorized();
+        var service = dto.Service ?? dto.Application ?? "Unknown";
+        if (!await IsAuthorized(dto.ProjectId, service, cancellationToken)) return Unauthorized();
         var result = await _platformTelemetry.IngestAsync(new NormalizedTelemetryBatchDto { Events = [new()
         {
             EventId = Guid.NewGuid(), ProjectId = dto.ProjectId, Timestamp = dto.Timestamp,
@@ -123,8 +128,12 @@ public class TelemetryController : ControllerBase
         return Ok(result);
     }
 
-    private Task<bool> IsAuthorized(Guid projectId, CancellationToken cancellationToken) =>
-        _credentials.AuthorizeAsync([projectId], TelemetryKey(), cancellationToken);
+    private async Task<bool> IsAuthorized(Guid projectId, string service, CancellationToken cancellationToken)
+    {
+        var key = TelemetryKey();
+        return await _credentials.AuthorizeAsync([projectId], key, cancellationToken)
+            || await _pairing.AuthorizeLegacyAsync(projectId, service, key, cancellationToken);
+    }
 
     private string TelemetryKey()
     {

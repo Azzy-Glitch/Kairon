@@ -18,3 +18,7 @@ app.UseAIDIP();
 
 Delivery is asynchronous, bounded, timeout-limited, and fail-open. The SDK never accesses the
 KAIRON database and contains no AI provider or remediation logic.
+
+KAIRON can generate a temporary pairing code for an application. Exchange it once with
+`AIDIPPairingClient.PairAsync`, then use the returned endpoint, project, service, installation, and
+credential values as the SDK configuration. The pairing code cannot be reused.
