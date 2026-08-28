@@ -22,8 +22,8 @@ when the sandbox could not reach NuGet; compilation, restore state, and tests su
 
 - The Windows packaging pipeline built the React production bundle, self-contained x64 backend and
   Agent, one-file AI gateway, and Inno Setup installer successfully.
-- Installer artifact: `KAIRON-Setup-1.0.0-win-x64.exe`, 87,962,207 bytes, SHA-256
-  `9C65429CACC579EE9C31503767053D366DF8E98120CB76B6BDE92367AAF82816`.
+- Final versioned installer artifact: `KAIRON-Setup-1.0.0-win-x64.exe`, 87,949,473 bytes,
+  SHA-256 `0C5919DFD042CF6D156583EAD4BD56B78F473ADC7E204D403DB2D0F86A62DB85`.
 - The installed `KAIRON.exe` served the bundled UI with HTTP 200 and reported readiness healthy.
 - Startup created and migrated a fresh SQLite database without interaction.
 - Installed AI gateway returned `healthy` in deterministic mock mode.
