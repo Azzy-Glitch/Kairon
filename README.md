@@ -37,6 +37,17 @@ On first startup KAIRON creates `%LOCALAPPDATA%\KAIRON` with separate `data`, `l
 `%LOCALAPPDATA%\KAIRON\data\kairon.db`, and EF migrations run automatically. An advanced/test
 deployment can override the file with `Persistence__DatabasePath`; ordinary users should not.
 
+Local persistence is maintained as a production data store. Raw telemetry retention defaults to
+14 days, legacy signals to 30 days, terminal incident history to 180 days, and administrative
+audit records to 365 days; advanced deployments can change these under `Persistence`. KAIRON uses
+SQLite's online backup API rather than copying a live database file and keeps a bounded set of
+startup/upgrade backups in the managed `backups` directory.
+
+For recovery, stop KAIRON, preserve the current `data` directory, copy a verified backup from the
+managed `backups` directory to `data/kairon.db`, and restart KAIRON. Never overwrite the active
+database while the backend is running. The readiness health check performs SQLite `quick_check`
+integrity validation and reports failure instead of silently accepting corruption.
+
 Start the zero-code Agent after the backend:
 
 ```powershell

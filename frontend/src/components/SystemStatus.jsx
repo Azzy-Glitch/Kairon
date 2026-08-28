@@ -9,7 +9,8 @@ export default function SystemStatus() {
     {isError && <div className="inline-error">KAIRON services are unreachable. Restart KAIRON and try again.</div>}
     <div className="system-health-grid">
       <HealthCard title="Local Storage" healthy={health.database}
-        detail={health.database ? `${health.persistenceProvider || 'SQLite'} · Healthy` : 'Unavailable · monitoring data cannot be persisted'} />
+        detail={health.database ? `${health.persistenceProvider || 'SQLite'} · ${formatBytes(health.databaseSizeBytes)} · raw telemetry ${health.rawTelemetryRetentionDays || 14} days · maintenance ${health.maintenanceStatus || 'pending'}`
+          : 'Unavailable · monitoring data cannot be persisted'} />
       <HealthCard title="Backend" healthy={health.backend} detail={health.backend ? 'Local API ready' : 'Unavailable'} />
       <HealthCard title="AI Gateway" healthy={health.aiService}
         detail={health.aiService ? `${health.aiMode || 'configured'} mode` : 'Unavailable · incidents continue without AI'} />
@@ -25,6 +26,12 @@ export default function SystemStatus() {
       <article><h3>Security</h3><p>Credentials are scoped and redacted. Remediation remains approval-based and only registered actions can execute.</p></article>
     </div>
   </section>;
+}
+
+function formatBytes(value) {
+  if (value == null) return 'externally managed';
+  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function HealthCard({ title, healthy, detail }) {

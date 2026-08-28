@@ -126,6 +126,7 @@ app.MapFallbackToFile("index.html");
 using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await scope.ServiceProvider.GetRequiredService<ISqliteBackupService>().CreateAsync("startup-upgrade");
     await dbContext.Database.MigrateAsync();
     if (dbContext.Database.IsSqlite())
     {

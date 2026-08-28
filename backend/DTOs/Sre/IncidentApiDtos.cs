@@ -231,6 +231,10 @@ public class SystemHealthDto
     public bool RemediationEnabled { get; set; }
     public string AiMode { get; set; } = "unknown";
     public string PersistenceProvider { get; set; } = "unknown";
+    public long? DatabaseSizeBytes { get; set; }
+    public int RawTelemetryRetentionDays { get; set; }
+    public DateTime? LastMaintenanceAt { get; set; }
+    public string MaintenanceStatus { get; set; } = "NotRun";
 }
 
 public class RemediationToolDto

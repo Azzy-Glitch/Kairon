@@ -20,17 +20,23 @@ public class HealthStatusController : ControllerBase
     private readonly IAiMicroservice _ai;
     private readonly DetectionOptions _detection;
     private readonly RemediationOptions _remediation;
+    private readonly PersistenceOptions _persistence;
+    private readonly PersistenceMaintenanceState _maintenance;
 
     public HealthStatusController(
         AppDbContext db,
         IAiMicroservice ai,
         IOptions<DetectionOptions> detection,
-        IOptions<RemediationOptions> remediation)
+        IOptions<RemediationOptions> remediation,
+        IOptions<PersistenceOptions> persistence,
+        PersistenceMaintenanceState maintenance)
     {
         _db = db;
         _ai = ai;
         _detection = detection.Value;
         _remediation = remediation.Value;
+        _persistence = persistence.Value;
+        _maintenance = maintenance;
     }
 
     [HttpGet("status")]
@@ -56,7 +62,20 @@ public class HealthStatusController : ControllerBase
             RemediationEnabled = _remediation.Enabled,
             AiMode = _ai.Mode,
             PersistenceProvider = _db.Database.ProviderName?.Contains("Sqlite", StringComparison.OrdinalIgnoreCase) == true
-                ? "SQLite" : "SqlServer"
+                ? "SQLite" : "SqlServer",
+            DatabaseSizeBytes = DatabaseSize(),
+            RawTelemetryRetentionDays = _persistence.RawTelemetryRetentionDays,
+            LastMaintenanceAt = _maintenance.LastCompletedAt,
+            MaintenanceStatus = _maintenance.Status
         });
+    }
+
+    private long? DatabaseSize()
+    {
+        if (!_persistence.Provider.Equals("SQLite", StringComparison.OrdinalIgnoreCase)) return null;
+        var paths = KaironDataPaths.Resolve(_persistence);
+        var path = string.IsNullOrWhiteSpace(_persistence.DatabasePath) ? paths.DatabasePath
+            : Path.GetFullPath(Environment.ExpandEnvironmentVariables(_persistence.DatabasePath));
+        return System.IO.File.Exists(path) ? new FileInfo(path).Length : 0;
     }
 }

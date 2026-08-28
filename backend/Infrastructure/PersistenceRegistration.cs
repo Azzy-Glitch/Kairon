@@ -11,6 +11,9 @@ public static class PersistenceRegistration
         var persistence = configuration.GetSection(PersistenceOptions.SectionName).Get<PersistenceOptions>()
                           ?? new PersistenceOptions();
         services.Configure<PersistenceOptions>(configuration.GetSection(PersistenceOptions.SectionName));
+        services.AddSingleton<PersistenceMaintenanceState>();
+        services.AddSingleton<ISqliteBackupService, SqliteBackupService>();
+        services.AddHostedService<PersistenceMaintenanceService>();
 
         if (persistence.Provider.Equals("SQLite", StringComparison.OrdinalIgnoreCase))
         {
