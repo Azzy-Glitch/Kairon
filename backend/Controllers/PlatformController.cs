@@ -58,6 +58,38 @@ public sealed class PlatformController : ControllerBase
         }).ToListAsync(cancellationToken));
     }
 
+    [HttpPost("applications/from-discovery/{discoveredApplicationId:guid}")]
+    public async Task<IActionResult> RegisterDiscoveredApplication(Guid discoveredApplicationId,
+        CancellationToken cancellationToken)
+    {
+        var discovered = await _db.DiscoveredApplications.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == discoveredApplicationId, cancellationToken);
+        if (discovered is null) return NotFound(new { error = "Discovered application not found." });
+        var project = await _db.Projects.OrderBy(x => x.CreatedAt).FirstOrDefaultAsync(cancellationToken);
+        if (project is null)
+        {
+            project = new AIDIP.Backend.Models.KaironProject { Id = Guid.NewGuid(), Name = "Local Applications",
+                Slug = "local-applications", CreatedAt = _time.GetUtcNow().UtcDateTime };
+            _db.Projects.Add(project);
+        }
+        var service = Slugify(discovered.Name);
+        if (string.IsNullOrWhiteSpace(service)) service = $"application-{discovered.Id:N}";
+        var application = await _db.MonitoredApplications.SingleOrDefaultAsync(
+            x => x.ProjectId == project.Id && x.Service == service, cancellationToken);
+        if (application is null)
+        {
+            application = new AIDIP.Backend.Models.MonitoredApplication { Id = Guid.NewGuid(), ProjectId = project.Id,
+                Name = discovered.Name, Service = service, Runtime = discovered.Runtime,
+                CreatedAt = _time.GetUtcNow().UtcDateTime };
+            _db.MonitoredApplications.Add(application);
+            _audit.Record("application.registered", Actor(), "application", application.Id.ToString(), project.Id,
+                data: new { discoveredApplicationId, application.Name, application.Service, application.Runtime });
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        return Ok(new { application.Id, application.ProjectId, application.Name, application.Service,
+            application.Runtime, application.LastTelemetryAt });
+    }
+
     [HttpPost("projects/{projectId:guid}/credentials")]
     [RequiresOperator]
     public async Task<IActionResult> CreateCredential(Guid projectId, [FromBody] CredentialNameDto request,

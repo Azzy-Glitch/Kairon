@@ -9,6 +9,7 @@ import TelemetryMonitor from './components/TelemetryMonitor';
 import SreDashboard from './components/sre/SreDashboard';
 import DemoRunner from './components/sre/DemoRunner';
 import Applications from './components/Applications';
+import SystemStatus from './components/SystemStatus';
 import { ToastProvider } from './components/Toast';
 import { useHealth } from './hooks/useDemo';
 import {
@@ -44,7 +45,8 @@ export default function App() {
     { id: 'predict', label: 'Risk Radar', icon: <IconPredict className="w-4 h-4 text-purple-400" /> },
     { id: 'rec', label: 'Arch Advisor', icon: <IconSparkles className="w-4 h-4 text-amber-400" /> },
     { id: 'history', label: 'Audit History', icon: <IconHistory className="w-4 h-4 text-emerald-400" /> },
-    { id: 'telemetry', label: 'Telemetry Monitor', icon: <IconServer className="w-4 h-4 text-sky-400" /> }
+    { id: 'telemetry', label: 'Telemetry Monitor', icon: <IconServer className="w-4 h-4 text-sky-400" /> },
+    { id: 'settings', label: 'System & Help', icon: <IconServer className="w-4 h-4 text-slate-400" /> }
   ];
 
   return (
@@ -121,6 +123,7 @@ export default function App() {
           {tab === 'rec' && <Recommender />}
           {tab === 'history' && <AuditHistory />}
           {tab === 'telemetry' && <TelemetryMonitor />}
+          {tab === 'settings' && <SystemStatus />}
         </main>
 
         {/* Footer */}
