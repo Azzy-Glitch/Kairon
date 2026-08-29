@@ -82,6 +82,13 @@ demo/Kairon.DemoApp/logs/
 # (docs/DESKTOP_SHELL.md) - rebuilt from frontend/dist by the same script that publishes it.
 backend/wwwroot/
 
+# Installer build output (installer/build-installer.ps1): published backend/agent/desktop,
+# PyInstaller's AI package, and the compiled Setup.exe. Never hand-authored, always rebuilt.
+artifacts/
+ai-service/build/
+ai-service/dist/
+ai-service/*.spec
+
 # The provider configuration template is documentation, not a credential file. It carries no real
 # key and needs to be tracked, so it is exempted from the .env.* rule above.
 !.env.example

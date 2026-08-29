@@ -138,6 +138,17 @@ public sealed class MainForm : Form
 
     private void ShowStartupFailure(StartupFailure failure)
     {
+        // The dialog below says "see Kairon logs for details" - this is what makes that true.
+        try
+        {
+            File.AppendAllText(Path.Combine(AppPaths.LocalDataLogsDirectory(), "startup.log"),
+                $"{DateTime.Now:HH:mm:ss.fff} startup failed - stage={failure.Stage} reason={failure.Reason}\n");
+        }
+        catch
+        {
+            // Logging the failure must never itself block reporting the failure to the user.
+        }
+
         MessageBox.Show(
             $"Kairon could not start.\n\nStage:\n{failure.Stage}\n\nReason:\n{failure.Reason}\n\nSee Kairon logs for details.",
             "Kairon", MessageBoxButtons.OK, MessageBoxIcon.Error);
