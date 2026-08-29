@@ -17,6 +17,11 @@ public interface IProjectCredentialService
     Task<CreatedProjectCredential?> CreateAsync(Guid projectId, string name, CancellationToken cancellationToken);
     Task<bool> RevokeAsync(Guid projectId, Guid credentialId, CancellationToken cancellationToken);
     Task<bool> AuthorizeAsync(Guid projectId, string? suppliedKey, CancellationToken cancellationToken);
+
+    /// <summary>Batch variant for the normalized telemetry endpoint (PlatformTelemetryController),
+    /// which can reference more than one project per request - authorizes only when every distinct
+    /// project id in the batch accepts the same supplied key.</summary>
+    Task<bool> AuthorizeAsync(IEnumerable<Guid> projectIds, string? suppliedKey, CancellationToken cancellationToken);
 }
 
 public sealed class ProjectCredentialService : IProjectCredentialService
@@ -74,6 +79,18 @@ public sealed class ProjectCredentialService : IProjectCredentialService
         var suppliedHash = Hash(suppliedKey);
         return candidates.Any(candidate => CryptographicOperations.FixedTimeEquals(
             Encoding.ASCII.GetBytes(candidate), Encoding.ASCII.GetBytes(suppliedHash)));
+    }
+
+    public async Task<bool> AuthorizeAsync(IEnumerable<Guid> projectIds, string? suppliedKey,
+        CancellationToken cancellationToken)
+    {
+        var ids = projectIds.Distinct().ToList();
+        if (ids.Count == 0) return false;
+        foreach (var projectId in ids)
+        {
+            if (!await AuthorizeAsync(projectId, suppliedKey, cancellationToken)) return false;
+        }
+        return true;
     }
 
     private static string Hash(string key) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));

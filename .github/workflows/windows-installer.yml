@@ -1,0 +1,34 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # Builds the desktop shell, backend, Windows Service Agent, UserAgent, and the
+      # PyInstaller-packaged AI service, then compiles the Inno Setup installer.
+      - run: pip install pyinstaller
+      - run: choco install innosetup --yes --no-progress
+      - shell: powershell
+        run: ./installer/build-installer.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kairon-Windows-Installer
+          path: artifacts/installer/*.exe
+          if-no-files-found: error

@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Diagnostics.HealthChecks;
+﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace Kairon.Backend.Infrastructure;
 
@@ -20,9 +21,20 @@ public class DatabaseHealthCheck : IHealthCheck
         try
         {
             var canConnect = await _dbContext.Database.CanConnectAsync(cancellationToken);
-            return canConnect
-                ? HealthCheckResult.Healthy("Database connection is healthy")
-                : HealthCheckResult.Unhealthy("Database connection failed");
+            if (!canConnect) return HealthCheckResult.Unhealthy("Database connection failed");
+
+            if (_dbContext.Database.ProviderName?.Contains("Sqlite", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                await using var command = _dbContext.Database.GetDbConnection().CreateCommand();
+                command.CommandText = "PRAGMA quick_check;";
+                if (command.Connection!.State != System.Data.ConnectionState.Open)
+                    await command.Connection.OpenAsync(cancellationToken);
+                var result = Convert.ToString(await command.ExecuteScalarAsync(cancellationToken));
+                if (!string.Equals(result, "ok", StringComparison.OrdinalIgnoreCase))
+                    return HealthCheckResult.Unhealthy("SQLite integrity check failed");
+            }
+
+            return HealthCheckResult.Healthy("Database connection and integrity are healthy");
         }
         catch (Exception ex)
         {

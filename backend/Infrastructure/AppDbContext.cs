@@ -36,6 +36,14 @@ public class AppDbContext : DbContext
     public DbSet<Machine> Machines { get; set; }
     public DbSet<DiscoveredApplication> DiscoveredApplications { get; set; }
 
+    // Normalized telemetry pipeline + SDK installation identity (docs/DESKTOP_SHELL.md) - additive
+    // on top of the existing Project entity, not a replacement of it.
+    public DbSet<MonitoredApplication> MonitoredApplications { get; set; }
+    public DbSet<KaironEnvironment> Environments { get; set; }
+    public DbSet<TelemetrySourceRegistration> TelemetrySources { get; set; }
+    public DbSet<SdkInstallation> SdkInstallations { get; set; }
+    public DbSet<TelemetryReceipt> TelemetryReceipts { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Incident>(entity =>
@@ -203,11 +211,65 @@ public class AppDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Name).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Slug).HasMaxLength(200);
 
             entity.HasMany<ProjectApiCredential>()
                   .WithOne()
                   .HasForeignKey(e => e.ProjectId)
                   .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<MonitoredApplication>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.Service }).IsUnique();
+            entity.Property(e => e.Name).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Service).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Runtime).HasMaxLength(50);
+        });
+
+        modelBuilder.Entity<KaironEnvironment>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.Name }).IsUnique();
+            entity.Property(e => e.Name).HasMaxLength(100).IsRequired();
+        });
+
+        modelBuilder.Entity<TelemetrySourceRegistration>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.InstallationId }).IsUnique();
+            entity.Property(e => e.SourceType).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.InstallationId).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Version).HasMaxLength(50);
+        });
+
+        modelBuilder.Entity<SdkInstallation>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.KeyPrefix });
+            entity.Property(e => e.SdkType).HasMaxLength(20).IsRequired();
+            entity.Property(e => e.Version).HasMaxLength(50);
+            entity.Property(e => e.InstallationId).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.KeyPrefix).HasMaxLength(20).IsRequired();
+            entity.Property(e => e.KeyHash).HasMaxLength(200).IsRequired();
+        });
+
+        modelBuilder.Entity<TelemetryReceipt>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            // EventId is the idempotency key - a resend is looked up by this exactly once per
+            // ingest, and the unique index is what makes "already accepted" a database-level
+            // guarantee rather than an application-level race.
+            entity.HasIndex(e => e.EventId).IsUnique();
+            entity.HasIndex(e => new { e.ProjectId, e.EventTimestamp });
+            entity.Property(e => e.EventType).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.Severity).HasMaxLength(20);
+            entity.Property(e => e.Source).HasMaxLength(50);
+            entity.Property(e => e.Application).HasMaxLength(200);
+            entity.Property(e => e.Service).HasMaxLength(200);
+            entity.Property(e => e.Environment).HasMaxLength(100);
+            entity.Property(e => e.PayloadJson).HasMaxLength(16000);
         });
 
         modelBuilder.Entity<ProjectApiCredential>(entity =>

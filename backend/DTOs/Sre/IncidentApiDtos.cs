@@ -261,6 +261,14 @@ public class SystemHealthDto
     public bool DetectionEnabled { get; set; }
     public bool RemediationEnabled { get; set; }
     public string AiMode { get; set; } = "unknown";
+
+    // Persistence detail (docs/DESKTOP_SHELL.md) - additive; null/0 under a provider or state
+    // where a field genuinely doesn't apply (e.g. DatabaseSizeBytes for SqlServer).
+    public string DatabaseProvider { get; set; } = "unknown";
+    public long? DatabaseSizeBytes { get; set; }
+    public string MaintenanceStatus { get; set; } = "NotRun";
+    public DateTime? LastMaintenanceAt { get; set; }
+    public int? LastMaintenanceDeletedRows { get; set; }
 }
 
 public class RemediationToolDto

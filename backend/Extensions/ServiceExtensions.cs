@@ -1,4 +1,5 @@
 using Kairon.Backend.Configuration;
+using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Services;
 using Kairon.Backend.Services.Audit;
 using Kairon.Backend.Services.Correlation;
@@ -38,6 +39,25 @@ public static class ServiceExtensions
         services.AddScoped<IProjectCredentialService, ProjectCredentialService>();
         services.AddScoped<ISdkPairingService, SdkPairingService>();
         services.AddScoped<IAgentRegistrationService, AgentRegistrationService>();
+
+        // Normalized telemetry pipeline + SDK installation identity (docs/DESKTOP_SHELL.md) -
+        // additive alongside the services above, not a replacement for any of them.
+        services.AddScoped<IPlatformTelemetryService, PlatformTelemetryService>();
+        services.AddScoped<ISdkInstallationService, SdkInstallationService>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// SQLite backup/retention/maintenance (docs/DESKTOP_SHELL.md) - adapted from Azzy's
+    /// productization branch. Registered unconditionally; SqliteBackupService itself is a no-op
+    /// under the SqlServer provider (an external database's own backup story applies instead).
+    /// </summary>
+    public static IServiceCollection AddPersistenceMaintenance(this IServiceCollection services)
+    {
+        services.AddSingleton<PersistenceMaintenanceState>();
+        services.AddScoped<ISqliteBackupService, SqliteBackupService>();
+        services.AddHostedService<PersistenceMaintenanceService>();
 
         return services;
     }

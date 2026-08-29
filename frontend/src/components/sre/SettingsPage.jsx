@@ -34,6 +34,11 @@ export default function SettingsPage() {
           <SettingsRow label="Detection" value={health.detectionEnabled ? 'Enabled' : 'Disabled'} online={health.detectionEnabled} />
           <SettingsRow label="Remediation" value={health.remediationEnabled ? 'Enabled' : 'Disabled'} online={health.remediationEnabled} />
           <SettingsRow label="Database" value={health.database ? 'Connected' : 'Unavailable'} online={health.database} />
+          <SettingsRow label="Database provider" value={health.databaseProvider || 'unknown'} online={health.database} />
+          {typeof health.databaseSizeBytes === 'number' && (
+            <SettingsRow label="Database size" value={formatBytes(health.databaseSizeBytes)} online={health.database} />
+          )}
+          <SettingsRow label="Persistence maintenance" value={health.maintenanceStatus || 'NotRun'} online={health.maintenanceStatus === 'Healthy'} />
           <SettingsRow label="Backend" value={health.backend ? 'Reachable' : 'Unreachable'} online={health.backend} />
         </div>
       )}
@@ -43,6 +48,12 @@ export default function SettingsPage() {
       </p>
     </div>
   );
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 KB';
+  const mb = bytes / 1024 / 1024;
+  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${(bytes / 1024).toFixed(1)} KB`;
 }
 
 function SettingsRow({ label, value, online }) {
