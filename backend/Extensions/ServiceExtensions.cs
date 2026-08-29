@@ -26,6 +26,22 @@ public static class ServiceExtensions
     }
 
     /// <summary>
+    /// Registers Projects, per-project credentials, SDK pairing, and platform-level audit -
+    /// ported from Azzy's productization branch and adapted onto this codebase's model
+    /// (docs/DESKTOP_SHELL.md).
+    /// </summary>
+    public static IServiceCollection AddPlatformServices(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.Configure<PlatformSecurityOptions>(configuration.GetSection(PlatformSecurityOptions.SectionName));
+        services.AddSingleton(TimeProvider.System);
+        services.AddScoped<IPlatformAuditService, PlatformAuditService>();
+        services.AddScoped<IProjectCredentialService, ProjectCredentialService>();
+        services.AddScoped<ISdkPairingService, SdkPairingService>();
+
+        return services;
+    }
+
+    /// <summary>
     /// Registers the Autonomous AI SRE control plane: detection, correlation, evidence, AI
     /// orchestration, remediation, verification and audit (PRD section 4.2).
     /// </summary>

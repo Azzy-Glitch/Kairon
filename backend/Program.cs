@@ -51,6 +51,9 @@ builder.Services.AddAiServices(builder.Configuration);
 // Autonomous AI SRE control plane
 builder.Services.AddAutonomousSre(builder.Configuration);
 
+// Projects, SDK pairing/credentials, platform audit
+builder.Services.AddPlatformServices(builder.Configuration);
+
 // Health checks
 builder.Services.AddHealthChecks()
     .AddCheck<DatabaseHealthCheck>("database");

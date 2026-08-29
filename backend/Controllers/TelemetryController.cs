@@ -1,3 +1,4 @@
+using Kairon.Backend.Configuration;
 using Kairon.Backend.DTOs;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models;
@@ -6,6 +7,7 @@ using Kairon.Backend.Services.Audit;
 using Kairon.Backend.Services.Orchestration;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Kairon.Backend.Controllers;
 
@@ -16,22 +18,41 @@ public class TelemetryController : ControllerBase
     private readonly AppDbContext _db;
     private readonly IContextEngine _context;
     private readonly IIncidentProcessingQueue _queue;
+    private readonly IProjectCredentialService _credentials;
+    private readonly PlatformSecurityOptions _security;
 
     public TelemetryController(
         AppDbContext db,
         IContextEngine context,
-        IIncidentProcessingQueue queue)
+        IIncidentProcessingQueue queue,
+        IProjectCredentialService credentials,
+        IOptions<PlatformSecurityOptions> security)
     {
         _db = db;
         _context = context;
         _queue = queue;
+        _credentials = credentials;
+        _security = security.Value;
     }
+
+    /// <summary>
+    /// Checks the per-project credential (docs/DESKTOP_SHELL.md) when
+    /// PlatformSecurity:RequireTelemetryKey is on. Off by default, and a project with no issued
+    /// credential keeps working unauthenticated even when it's on - this mirrors
+    /// OperatorAuthorizationFilter's fail-open-until-configured stance, and is what keeps every
+    /// existing test and the demo scenario passing unmodified.
+    /// </summary>
+    private async Task<bool> AuthorizeAsync(Guid projectId, CancellationToken cancellationToken) =>
+        await _credentials.AuthorizeAsync(projectId, Request.Headers[_security.TelemetryKeyHeader], cancellationToken);
 
     [HttpPost("incidents")]
     public async Task<IActionResult> CreateIncident(
         [FromBody] TelemetryPayload dto,
         CancellationToken cancellationToken)
     {
+        if (!await AuthorizeAsync(dto.ProjectId, cancellationToken))
+            return Unauthorized(new { error = "A valid project API key is required." });
+
         var incident = new Incident
         {
             ProjectId = dto.ProjectId,
@@ -73,6 +94,9 @@ public class TelemetryController : ControllerBase
         [FromBody] MetricDto dto,
         CancellationToken cancellationToken)
     {
+        if (!await AuthorizeAsync(dto.ProjectId, cancellationToken))
+            return Unauthorized(new { error = "A valid project API key is required." });
+
         var metric = new Metric
         {
             ProjectId = dto.ProjectId,
@@ -111,6 +135,9 @@ public class TelemetryController : ControllerBase
         [FromBody] AgentEventDto dto,
         CancellationToken cancellationToken)
     {
+        if (!await AuthorizeAsync(dto.ProjectId, cancellationToken))
+            return Unauthorized(new { error = "A valid project API key is required." });
+
         var agentEvent = new AgentEvent
         {
             ProjectId = dto.ProjectId,

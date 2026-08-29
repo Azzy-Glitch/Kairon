@@ -1,4 +1,5 @@
 using Kairon.Backend.Models;
+using Kairon.Backend.Models.Platform;
 using Kairon.Backend.Models.Sre;
 using Microsoft.EntityFrameworkCore;
 
@@ -24,6 +25,12 @@ public class AppDbContext : DbContext
     public DbSet<IncidentEvidence> IncidentEvidence { get; set; }
     public DbSet<RemediationAction> RemediationActions { get; set; }
     public DbSet<VerificationResult> VerificationResults { get; set; }
+
+    // Platform: projects, SDK pairing/credentials, platform-level audit (docs/DESKTOP_SHELL.md).
+    public DbSet<Project> Projects { get; set; }
+    public DbSet<ProjectApiCredential> ProjectApiCredentials { get; set; }
+    public DbSet<SdkPairingSession> SdkPairingSessions { get; set; }
+    public DbSet<PlatformAuditEvent> PlatformAuditEvents { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -186,6 +193,51 @@ public class AppDbContext : DbContext
             entity.Property(e => e.ComparisonsJson).HasMaxLength(8000);
             entity.Property(e => e.FailureReason).HasMaxLength(500);
             entity.Property(e => e.Status).HasConversion<string>().HasMaxLength(40);
+        });
+
+        modelBuilder.Entity<Project>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).HasMaxLength(200).IsRequired();
+
+            entity.HasMany<ProjectApiCredential>()
+                  .WithOne()
+                  .HasForeignKey(e => e.ProjectId)
+                  .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ProjectApiCredential>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.KeyPrefix });
+            entity.Property(e => e.Name).HasMaxLength(200);
+            entity.Property(e => e.KeyPrefix).HasMaxLength(20).IsRequired();
+            entity.Property(e => e.KeyHash).HasMaxLength(200).IsRequired();
+        });
+
+        modelBuilder.Entity<SdkPairingSession>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            // A pairing code is looked up by its hash exactly once, at redemption - uniqueness
+            // here is what makes "already used" a real database-level guarantee, not just an
+            // application-level check that a race could slip past.
+            entity.HasIndex(e => e.CodeHash).IsUnique();
+            entity.Property(e => e.SdkType).HasMaxLength(20).IsRequired();
+            entity.Property(e => e.CodeHash).HasMaxLength(200).IsRequired();
+        });
+
+        modelBuilder.Entity<PlatformAuditEvent>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.Timestamp });
+            entity.HasIndex(e => e.Action);
+            entity.Property(e => e.Action).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.Actor).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.TargetType).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.TargetId).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Result).HasMaxLength(40).IsRequired();
+            entity.Property(e => e.Message).HasMaxLength(2000);
+            entity.Property(e => e.DataJson).HasMaxLength(8000);
         });
     }
 }
