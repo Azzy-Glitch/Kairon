@@ -98,16 +98,31 @@ public class MachineRegistrationService : BackgroundService
                 if (matches.Length > 0)
                 {
                     var process = matches[0];
-                    processes.Add(new
+                    try
                     {
-                        processId = process.Id,
-                        startedAt = process.StartTime.ToUniversalTime(),
-                        name = _options.TargetProcessName,
-                        executable = SafeFileName(process),
-                        runtime = ".NET",
-                        cpuPercent = 0.0,
-                        memoryBytes = process.WorkingSet64
-                    });
+                        // Reading StartTime/WorkingSet64 opens a handle to the target process
+                        // requiring query rights on it - when this Agent runs as a service
+                        // account (LocalService) watching a process owned by a different user
+                        // session, that handle open legitimately fails with Access Denied. That
+                        // must not cost the machine its own heartbeat (below) - only this one
+                        // process goes unreported this cycle, same fail-open philosophy
+                        // ProcessWatcher's own PollAsync already uses.
+                        processes.Add(new
+                        {
+                            processId = process.Id,
+                            startedAt = process.StartTime.ToUniversalTime(),
+                            name = _options.TargetProcessName,
+                            executable = SafeFileName(process),
+                            runtime = ".NET",
+                            cpuPercent = 0.0,
+                            memoryBytes = process.WorkingSet64
+                        });
+                    }
+                    catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+                    {
+                        _logger.LogDebug(ex, "kairon-agent: could not read metadata for watched process {ProcessName}",
+                            _options.TargetProcessName);
+                    }
                 }
             }
             finally
