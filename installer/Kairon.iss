@@ -153,9 +153,17 @@ var
   Arguments: String;
   RegistrationAction: String;
 begin
+  // LocalSystem, not LocalService: the Agent's process watcher reads CPU/memory/start-time for
+  // an arbitrary target process, which can (and in the common single-machine demo case, does)
+  // belong to a different, interactive user session. Opening that process handle requires query
+  // rights LocalService does not have across sessions - confirmed live, not theoretical: a real
+  // registered service running as LocalService threw Win32Exception "Access is denied" reading
+  // Process.StartTime for exactly this reason (docs/DESKTOP_SHELL.md). LocalSystem has the
+  // broader access this needs; the trade-off (a more privileged service account) was a deliberate
+  // choice, not a default.
   Existing := AgentServiceExists;
   Arguments := 'binPath= "' + AgentExecutablePath + '" start= auto ' +
-    'obj= "NT AUTHORITY\LocalService" DisplayName= "Kairon Agent"';
+    'obj= LocalSystem DisplayName= "Kairon Agent"';
 
   if Existing then
   begin
