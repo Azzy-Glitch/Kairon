@@ -56,6 +56,14 @@ vi.mock('./api/index', () => ({
       remediationEnabled: true,
       aiMode: 'mock'
     })
+  },
+  sdkApi: {
+    listProjects: vi.fn().mockResolvedValue([]),
+    createProject: vi.fn().mockResolvedValue({ id: 'p1', name: 'New Project' }),
+    listCredentials: vi.fn().mockResolvedValue([]),
+    revokeCredential: vi.fn().mockResolvedValue(null),
+    createPairing: vi.fn().mockResolvedValue({ pairingId: 'pair1', code: 'pair_x', expiresAt: new Date().toISOString(), sdkType: 'dotnet' }),
+    revokePairing: vi.fn().mockResolvedValue(null)
   }
 }));
 
@@ -68,6 +76,7 @@ const NAV_TABS = [
   'History',
   'Analytics',
   'Demo Center',
+  'SDK',
   'Developer Tools',
   'Settings'
 ];

@@ -8,6 +8,7 @@ import AiInsightsPage from './components/sre/AiInsightsPage';
 import RemediationCenterPage from './components/sre/RemediationCenterPage';
 import AnalyticsPage from './components/sre/AnalyticsPage';
 import DeveloperTools from './components/sre/DeveloperTools';
+import SdkPage from './components/sre/SdkPage';
 import SettingsPage from './components/sre/SettingsPage';
 import { ToastProvider, useToast } from './components/Toast';
 import { useDemo, useHealth } from './hooks/useDemo';
@@ -21,7 +22,8 @@ import {
   IconShield,
   IconZap,
   IconTerminal,
-  IconSettings
+  IconSettings,
+  IconLink
 } from './components/Icons';
 import './index.css';
 // The SRE operator styles live in their own file so the original theme stays readable. Imported
@@ -46,6 +48,7 @@ const TABS = [
   { id: 'history', label: 'History', subtitle: 'Full audit trail of automated actions', icon: <IconHistory className="w-4 h-4" /> },
   { id: 'analytics', label: 'Analytics', subtitle: 'Trends across incidents, causes and outcomes', icon: <IconPredict className="w-4 h-4" /> },
   { id: 'demo', label: 'Demo Center', subtitle: 'Run the end-to-end incident simulation', icon: <IconAlertTriangle className="w-4 h-4" /> },
+  { id: 'sdk', label: 'SDK', subtitle: 'Connect an application: install, configure, pair', icon: <IconLink className="w-4 h-4" /> },
   { id: 'devtools', label: 'Developer Tools', subtitle: 'API validation, error analysis and prediction utilities', icon: <IconTerminal className="w-4 h-4" /> },
   { id: 'settings', label: 'Settings', subtitle: 'Provider, policy and environment configuration', icon: <IconSettings className="w-4 h-4" /> }
 ];
@@ -175,6 +178,7 @@ function AppShell() {
           {tab === 'history' && <AuditHistory />}
           {tab === 'analytics' && <AnalyticsPage />}
           {tab === 'demo' && <DemoRunner />}
+          {tab === 'sdk' && <SdkPage />}
           {tab === 'devtools' && <DeveloperTools />}
           {tab === 'settings' && <SettingsPage />}
 

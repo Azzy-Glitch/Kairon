@@ -1163,3 +1163,92 @@
   font-size: 12px;
   color: var(--text-dim);
 }
+
+/* -----------------------------------------------------------------------
+   SDK page (docs/DESKTOP_SHELL.md)
+----------------------------------------------------------------------- */
+
+.sdk-get-started, .sdk-pairing { display: flex; flex-direction: column; gap: 16px; }
+
+.sdk-step-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  margin: 14px 0 6px;
+}
+
+.sdk-code-block {
+  position: relative;
+  background: var(--bg-inner);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 12px 40px 12px 14px;
+  overflow-x: auto;
+}
+
+.sdk-code-block pre { margin: 0; }
+.sdk-code-block code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--text-main);
+  white-space: pre;
+}
+
+.sdk-code-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+.sdk-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 8px;
+  line-height: 1.5;
+}
+
+.sdk-hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg-inner);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.sdk-project-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+
+.sdk-project-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  color: var(--text-main);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.sdk-project-chip:hover { border-color: var(--primary-blue); }
+.sdk-project-chip.active { border-color: var(--primary-blue); background: rgba(37, 99, 235, 0.08); }
+
+.sdk-project-chip-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+.sdk-new-project-form { display: flex; gap: 8px; align-items: center; }
+.sdk-new-project-form .approval-input { flex: 1; margin-bottom: 0; max-width: 320px; }
+
+.sdk-pairing-form { display: flex; gap: 8px; align-items: center; }
+.sdk-sdk-select { margin-bottom: 0; width: auto; }
+
+.sdk-pairing-result { margin-top: 16px; }
+
+.sdk-pairing-code code { font-size: 15px; letter-spacing: 0.02em; }
