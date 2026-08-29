@@ -37,6 +37,7 @@ public static class ServiceExtensions
         services.AddScoped<IPlatformAuditService, PlatformAuditService>();
         services.AddScoped<IProjectCredentialService, ProjectCredentialService>();
         services.AddScoped<ISdkPairingService, SdkPairingService>();
+        services.AddScoped<IAgentRegistrationService, AgentRegistrationService>();
 
         return services;
     }

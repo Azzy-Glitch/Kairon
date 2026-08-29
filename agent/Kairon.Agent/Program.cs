@@ -20,8 +20,16 @@ builder.Services.AddHttpClient<AgentEventClient>((sp, http) =>
     http.Timeout = TimeSpan.FromSeconds(Math.Max(2, options.TimeoutSeconds + 1));
 });
 
+builder.Services.AddHttpClient<MachineRegistrationService>((sp, http) =>
+{
+    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentOptions>>().Value;
+    http.BaseAddress = new Uri(options.Endpoint.TrimEnd('/') + "/");
+    http.Timeout = TimeSpan.FromSeconds(Math.Max(2, options.TimeoutSeconds + 1));
+});
+
 builder.Services.AddHostedService<LogTailer>();
 builder.Services.AddHostedService<ProcessWatcher>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<MachineRegistrationService>());
 
 var host = builder.Build();
 host.Run();

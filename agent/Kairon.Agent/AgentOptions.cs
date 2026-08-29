@@ -49,4 +49,15 @@ public class AgentOptions
     public int ProcessPollIntervalSeconds { get; set; } = 5;
 
     public double HighCpuPercentThreshold { get; set; } = 85.0;
+
+    // --- Machine/process discovery ("Basic Monitoring", docs/DESKTOP_SHELL.md) -------------
+
+    public bool EnableMachineRegistration { get; set; } = true;
+
+    /// <summary>Proves the same Agent installation is re-registering/heartbeating, not a
+    /// different one claiming the same machine identity. Not the same secret as ApiKey - that
+    /// one authenticates telemetry to a project; this one authenticates a machine to itself.</summary>
+    public string AgentKey { get; set; } = "kairon-agent-default-key-change-me";
+
+    public int HeartbeatIntervalSeconds { get; set; } = 20;
 }

@@ -32,6 +32,10 @@ public class AppDbContext : DbContext
     public DbSet<SdkPairingSession> SdkPairingSessions { get; set; }
     public DbSet<PlatformAuditEvent> PlatformAuditEvents { get; set; }
 
+    // Machine/process discovery - "Basic Monitoring" (docs/DESKTOP_SHELL.md).
+    public DbSet<Machine> Machines { get; set; }
+    public DbSet<DiscoveredApplication> DiscoveredApplications { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Incident>(entity =>
@@ -238,6 +242,26 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Result).HasMaxLength(40).IsRequired();
             entity.Property(e => e.Message).HasMaxLength(2000);
             entity.Property(e => e.DataJson).HasMaxLength(8000);
+        });
+
+        modelBuilder.Entity<Machine>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.HostName).HasMaxLength(255).IsRequired();
+            entity.Property(e => e.OperatingSystem).HasMaxLength(500);
+            entity.Property(e => e.Architecture).HasMaxLength(50);
+            entity.Property(e => e.AgentVersion).HasMaxLength(50);
+            entity.Property(e => e.AgentCredentialHash).HasMaxLength(200).IsRequired();
+        });
+
+        modelBuilder.Entity<DiscoveredApplication>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.MachineId);
+            entity.HasIndex(e => new { e.MachineId, e.ProcessId, e.ProcessStartedAt }).IsUnique();
+            entity.Property(e => e.Name).HasMaxLength(255).IsRequired();
+            entity.Property(e => e.Executable).HasMaxLength(2000);
+            entity.Property(e => e.Runtime).HasMaxLength(50);
         });
     }
 }
