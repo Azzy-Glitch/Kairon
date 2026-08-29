@@ -36,10 +36,9 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
-// Database
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(
-        builder.Configuration.GetConnectionString("DefaultConnection")));
+// Database - SqlServer (default, existing behavior) or SQLite (opt-in local mode) via
+// Persistence:Provider. See backend/Infrastructure/PersistenceRegistration.cs.
+builder.Services.AddKaironPersistence(builder.Configuration);
 
 // Application services
 builder.Services.AddScoped<IDevOpsService, DevOpsService>();

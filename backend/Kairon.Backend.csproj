@@ -10,6 +10,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.11" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.11" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
@@ -25,5 +26,18 @@
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
   </ItemGroup>
+
+  <!-- The React app is the KAIRON product UI. Build and bundle it whenever the backend is
+       published; SkipFrontendBuild lets CI/packaging steps that already built it skip this. -->
+  <Target Name="BuildKaironFrontend" AfterTargets="Publish">
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)\..\frontend" Command="npm run build"
+          Condition="'$(SkipFrontendBuild)' != 'true'" />
+    <ItemGroup>
+      <KaironFrontendFile Include="..\frontend\dist\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(KaironFrontendFile)"
+          DestinationFiles="@(KaironFrontendFile-&gt;'$(PublishDir)wwwroot\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>
