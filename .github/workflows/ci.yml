@@ -25,8 +25,11 @@ jobs:
             ai-service/requirements.txt
             sdk-python/pyproject.toml
       # Covers every project in the solution, including the Windows Service Agent, the
-      # per-session UserAgent, and the .NET SDK - not just the backend.
-      - run: dotnet test Kairon.slnx --configuration Release
+      # per-session UserAgent, and the .NET SDK - not just the backend. EnableWindowsTargeting
+      # lets desktop/Kairon.Desktop.csproj (net10.0-windows, WinForms/WebView2) restore and build
+      # on this Linux runner via reference assemblies - it has no test project of its own, so this
+      # only needs to compile here, never actually run.
+      - run: dotnet test Kairon.slnx --configuration Release -p:EnableWindowsTargeting=true
       - working-directory: frontend
         run: npm ci && npm test -- --run && npm run build
       - working-directory: ai-service
