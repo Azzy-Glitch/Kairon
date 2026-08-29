@@ -1,6 +1,9 @@
-﻿<Solution>
+<Solution>
   <Folder Name="/backend/">
     <Project Path="backend/Kairon.Backend.csproj" />
+  </Folder>
+  <Folder Name="/desktop/">
+    <Project Path="desktop/Kairon.Desktop/Kairon.Desktop.csproj" />
   </Folder>
   <Folder Name="/sdk/">
     <Project Path="sdk/Kairon.SDK/Kairon.SDK.csproj" />
