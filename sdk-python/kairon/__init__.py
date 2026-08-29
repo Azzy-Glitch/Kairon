@@ -19,7 +19,7 @@ package never requires starlette/fastapi to be installed):
     app.add_middleware(KaironMiddleware)
 """
 
-from .client import Kairon, get_default_instance
+from .client import Kairon, get_default_instance, pair
 
-__all__ = ["Kairon", "get_default_instance", "__version__"]
+__all__ = ["Kairon", "get_default_instance", "pair", "__version__"]
 __version__ = "1.0.0"

@@ -58,6 +58,27 @@ def format_exception(exc: BaseException) -> Optional[str]:
         return None
 
 
+def pair(endpoint: str, code: str, version: str = "1.0.0", timeout_seconds: float = 10.0) -> Optional[dict]:
+    """Redeems a one-time pairing code (minted by an operator in the Kairon UI) for a
+    persistent project API key - the Python counterpart to Kairon.SDK's KaironPairingClient
+    (docs/DESKTOP_SHELL.md). Returns a dict with "apiKey"/"projectId"/"endpoint" on success, or
+    None on any failure (rejected code, malformed response, unreachable backend) - contained
+    here rather than raised, matching every other network path in this client.
+    """
+    url = endpoint.rstrip("/") + "/api/v1/sdk/pair"
+    body = json.dumps({"code": code, "sdkType": "python", "version": version}).encode("utf-8")
+    request = urllib.request.Request(
+        url, data=body, method="POST", headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, socket.timeout, ValueError):
+        return None
+    except Exception:
+        return None
+
+
 class Kairon:
     def __init__(
         self,
