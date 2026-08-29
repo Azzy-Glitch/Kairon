@@ -33,8 +33,39 @@ public sealed class ProcessSnapshotDto
 }
 
 public sealed record MachineStatusDto(Guid Id, string HostName, string OperatingSystem, string Architecture,
-    string AgentVersion, string Status, DateTime RegisteredAt, DateTime LastSeenAt, int RunningApplications);
+    string AgentVersion, string Status, DateTime RegisteredAt, DateTime LastSeenAt, int RunningApplications,
+    string UserSessionStatus, DateTime? LastUserAgentSeenAt);
 
 public sealed record ApplicationInventoryDto(Guid Id, Guid MachineId, string MachineName, int ProcessId,
     string Name, string Executable, string Runtime, double CpuPercent, long MemoryBytes, bool IsRunning,
-    DateTime LastSeenAt);
+    DateTime LastSeenAt, string Source, int? ParentProcessId, int? SessionId, string? UserName);
+
+/// <summary>Wire contract for KAIRON.UserAgent's heartbeat - the per-interactive-session
+/// counterpart to <see cref="AgentHeartbeatDto"/>. Authenticated the same way (same MachineId,
+/// same AgentKey header) so it reuses the Machine identity the Windows Service already
+/// registered - no separate pairing step.</summary>
+public sealed class UserSessionHeartbeatDto
+{
+    public DateTime Timestamp { get; set; }
+    [Range(0, int.MaxValue)] public int SessionId { get; set; }
+    [MaxLength(300)] public string UserName { get; set; } = string.Empty;
+    [MaxLength(500)] public List<UserProcessSnapshotDto> Processes { get; set; } = [];
+}
+
+public sealed class UserProcessSnapshotDto
+{
+    [Range(1, int.MaxValue)]
+    public int ProcessId { get; set; }
+    public DateTime StartedAt { get; set; }
+    [Required, MaxLength(255)] public string Name { get; set; } = string.Empty;
+    [MaxLength(2000)] public string Executable { get; set; } = string.Empty;
+    [MaxLength(50)] public string Runtime { get; set; } = "Unknown";
+
+    /// <summary>Always a real measured sample (processor-time delta over an interval) - the
+    /// UserAgent never sends a process until it has two samples, so this is never a fabricated
+    /// first-tick value.</summary>
+    [Range(0, 100)] public double CpuPercent { get; set; }
+
+    [Range(0, long.MaxValue)] public long MemoryBytes { get; set; }
+    public int? ParentProcessId { get; set; }
+}

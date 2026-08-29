@@ -56,10 +56,12 @@ public class LogTailer : BackgroundService
                 await PollAsync(stoppingToken);
                 _dedup.Prune(DateTime.UtcNow);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            // Keyed on the token actually being cancelled, not the exception's type - see the
+            // identical comment in MachineRegistrationService.ExecuteAsync: a transient failure
+            // (locked file, permission denied, transient disk error, or even an unrelated
+            // cancellation-shaped exception) must never stop the Agent - the next tick tries again.
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {
-                // A single bad poll (locked file, permission denied, transient disk error) must
-                // never stop the Agent - the next tick tries again.
                 _logger.LogWarning(ex, "kairon-agent: log poll failed");
             }
         } while (await timer.WaitForNextTickAsync(stoppingToken));

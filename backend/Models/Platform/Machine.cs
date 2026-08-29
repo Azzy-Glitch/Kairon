@@ -19,4 +19,10 @@ public sealed class Machine
 
     public DateTime RegisteredAt { get; set; }
     public DateTime LastSeenAt { get; set; }
+
+    /// <summary>Last heartbeat from the per-user-session KAIRON.UserAgent, tracked independently
+    /// of <see cref="LastSeenAt"/> (the machine-level heartbeat) so the two components' health can
+    /// be reported separately: a machine stays Online purely on its own heartbeat even while no
+    /// interactive user session is running the UserAgent, and vice versa.</summary>
+    public DateTime? LastUserAgentSeenAt { get; set; }
 }

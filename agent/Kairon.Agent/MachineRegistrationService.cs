@@ -53,7 +53,14 @@ public class MachineRegistrationService : BackgroundService
             {
                 await HeartbeatAsync(stoppingToken);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            // Deliberately keyed on the token actually being cancelled, not on the exception's
+            // type: an aborted HTTP connection (e.g. the backend restarting mid-request) also
+            // surfaces as a TaskCanceledException/OperationCanceledException even though nobody
+            // asked this service to stop. Filtering on "is not OperationCanceledException" let
+            // that transient failure escape uncaught and crash the whole host (confirmed live -
+            // killing the backend mid-heartbeat took down this Windows Service, which is exactly
+            // the kind of silent telemetry loss this Agent must never cause).
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {
                 _logger.LogDebug(ex, "kairon-agent: heartbeat failed");
             }

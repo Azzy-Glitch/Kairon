@@ -73,6 +73,7 @@ export default function MachinesPage() {
                   <th>Architecture</th>
                   <th>Agent Version</th>
                   <th>Status</th>
+                  <th>User Session</th>
                   <th>Running Apps</th>
                   <th>Last Seen</th>
                 </tr>
@@ -85,6 +86,7 @@ export default function MachinesPage() {
                     <td>{m.architecture}</td>
                     <td>{m.agentVersion}</td>
                     <td><SeverityDot online={m.status === 'Online'} label={m.status} /></td>
+                    <td><UserSessionBadge status={m.userSessionStatus} /></td>
                     <td>{m.runningApplications}</td>
                     <td>{new Date(m.lastSeenAt).toLocaleString()}</td>
                   </tr>
@@ -115,6 +117,7 @@ export default function MachinesPage() {
                 <tr>
                   <th>Application</th>
                   <th>Machine</th>
+                  <th>Source</th>
                   <th>Runtime</th>
                   <th>CPU</th>
                   <th>Memory</th>
@@ -126,9 +129,14 @@ export default function MachinesPage() {
                   <tr key={app.id}>
                     <td>
                       <strong>{app.name}</strong>
-                      <div className="panel-pending-text">PID {app.processId}{app.executable ? ` · ${app.executable}` : ''}</div>
+                      <div className="panel-pending-text">
+                        PID {app.processId}{app.executable ? ` · ${app.executable}` : ''}
+                        {app.sessionId != null ? ` · Session ${app.sessionId}` : ''}
+                        {app.userName ? ` · ${app.userName}` : ''}
+                      </div>
                     </td>
                     <td>{app.machineName}</td>
+                    <td>{app.source === 'UserAgent' ? 'User session' : 'Machine'}</td>
                     <td>{app.runtime}</td>
                     <td>{Number(app.cpuPercent || 0).toFixed(1)}%</td>
                     <td>{formatMemory(app.memoryBytes)}</td>
@@ -151,4 +159,14 @@ function SeverityDot({ online, label }) {
       {label}
     </span>
   );
+}
+
+/** Independent of the machine's own Online/Offline status - see docs/DESKTOP_SHELL.md: a machine
+ * can be Online (its Windows Service heartbeat is current) while no interactive user session is
+ * running the UserAgent, and vice versa. */
+function UserSessionBadge({ status }) {
+  if (status === 'NeverConnected') {
+    return <span className="panel-pending-text">Not connected</span>;
+  }
+  return <SeverityDot online={status === 'Online'} label={status} />;
 }

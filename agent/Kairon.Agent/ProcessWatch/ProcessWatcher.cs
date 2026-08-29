@@ -50,10 +50,12 @@ public class ProcessWatcher : BackgroundService
             {
                 await PollAsync(stoppingToken);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            // Keyed on the token actually being cancelled, not the exception's type - see the
+            // identical comment in MachineRegistrationService.ExecuteAsync. A process that exits
+            // mid-read, access-denied on a system process, or a transient network cancellation
+            // must never stop the Agent's own loop - the next tick tries again.
+            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
             {
-                // A process that exits mid-read, access-denied on a system process, etc. must
-                // never stop the Agent's own loop - the next tick tries again.
                 _logger.LogWarning(ex, "kairon-agent: process poll failed");
             }
         } while (await timer.WaitForNextTickAsync(stoppingToken));

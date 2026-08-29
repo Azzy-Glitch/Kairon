@@ -26,10 +26,11 @@ $artifacts = Join-Path $repository "artifacts"
 $package = Join-Path $artifacts "windows-package"
 $backend = Join-Path $package "backend"
 $agent = Join-Path $package "agent"
+$useragent = Join-Path $package "useragent"
 $ai = Join-Path $package "ai"
 
 $artifactsRoot = [System.IO.Path]::GetFullPath($artifacts).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-foreach ($stagingDirectory in @($package, $backend, $agent, $ai)) {
+foreach ($stagingDirectory in @($package, $backend, $agent, $useragent, $ai)) {
     $resolvedStagingDirectory = [System.IO.Path]::GetFullPath($stagingDirectory)
     if (-not $resolvedStagingDirectory.StartsWith($artifactsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to clean a staging directory outside the repository artifacts directory: $resolvedStagingDirectory"
@@ -38,7 +39,7 @@ foreach ($stagingDirectory in @($package, $backend, $agent, $ai)) {
         Remove-Item -LiteralPath $resolvedStagingDirectory -Recurse -Force
     }
 }
-New-Item -ItemType Directory -Force -Path $package, $backend, $agent, $ai, (Join-Path $artifacts "installer") | Out-Null
+New-Item -ItemType Directory -Force -Path $package, $backend, $agent, $useragent, $ai, (Join-Path $artifacts "installer") | Out-Null
 
 Push-Location (Join-Path $repository "frontend")
 try {
@@ -54,6 +55,9 @@ if ($LASTEXITCODE -ne 0) { throw "Backend publish failed." }
 
 & dotnet publish (Join-Path $repository "agent\Kairon.Agent\Kairon.Agent.csproj") -c $Configuration -r $Runtime --self-contained true -o $agent
 if ($LASTEXITCODE -ne 0) { throw "Agent publish failed." }
+
+& dotnet publish (Join-Path $repository "agent\Kairon.UserAgent\Kairon.UserAgent.csproj") -c $Configuration -r $Runtime --self-contained true -o $useragent
+if ($LASTEXITCODE -ne 0) { throw "UserAgent publish failed." }
 
 & dotnet publish (Join-Path $repository "desktop\Kairon.Desktop\Kairon.Desktop.csproj") -c $Configuration -r $Runtime --self-contained true -o $package
 if ($LASTEXITCODE -ne 0) { throw "Desktop shell publish failed." }

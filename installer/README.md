@@ -52,23 +52,37 @@ Verified, live, in this environment:
 - `Microsoft.Extensions.Hosting.WindowsServices` / `AddWindowsService()` was added to the Agent
   and confirmed **not** to change its plain console/`dotnet run` behavior at all (still starts,
   tails logs, watches the target process identically to before).
+- **The Windows Service registration is real, not just written, and the compiled installer has
+  actually been run** — a genuine `C:\Program Files\Kairon` install exists on this machine, put
+  there by `Kairon-Setup-1.0.0-win-x64.exe` itself (confirmed via the service's own registered
+  `BINARY_PATH_NAME`), after the user disabled Windows Smart App Control (their own decision — it
+  was blocking the installer's own self-extracting temp executable, not just the published
+  desktop shell).
+- **Inno Setup 6 is installed** (`winget install JRSoftware.InnoSetup`) and compilation succeeds:
+  `ISCC.exe` produces a real ~114 MB `Kairon-Setup-1.0.0-win-x64.exe` at `artifacts\installer\`.
+
+**A later pass added a second component, `KAIRON.UserAgent`** — see `docs/DESKTOP_SHELL.md` for
+the full architecture. In short: `Kairon.Agent` reverted to `LocalService` (least privilege — an
+earlier pass had switched it to `LocalSystem` to work around limited cross-session process
+visibility; that trade-off is no longer needed now that a separate, per-interactive-session
+component handles per-process telemetry instead). `Kairon.iss` now also installs `KAIRON.UserAgent`
+and registers it as a logon-triggered Scheduled Task (`Users`-group principal, least privilege) —
+live-verified on this machine: the task creates, runs, and the UserAgent reports real per-process
+CPU/memory/PID/parent-PID/session data, while the Machine's own Online status stays independent
+and unaffected. Three real bugs were found and fixed during this verification, all now covered by
+tests: an EF Core unique-index collision when both components report the same physical process; a
+crash-prone exception filter in three of the Agent's background loops that treated *any*
+cancellation-shaped exception (including an aborted HTTP connection, not just a genuine shutdown)
+as fatal; and a `schtasks /Create /XML` encoding quirk (an XML prolog declaring an encoding that
+doesn't match the file's actual bytes is rejected — `Kairon.iss` now writes a declaration-less,
+plain UTF-8 file, which is what actually gets produced and what schtasks accepts).
 
 **Not verified in this pass, disclosed rather than assumed:**
-- The **published desktop shell** (`artifacts\windows-package\Kairon.exe`, self-contained Release
-  build) could not be launched in this environment: Windows Smart App Control blocked the
-  freshly-built, unsigned binary (`FileLoadException`, "An Application Control policy has blocked
-  this file", 0x800711C7) and the block did not clear after several retries and a delay, unlike an
-  earlier, transient instance of the same block on a test DLL this session. This is a code-signing/
-  environment property, not a defect in the desktop shell's logic — the same `MainForm.cs`/
-  `AppPaths.cs` code (unchanged between Debug and Release builds) was fully live-verified end to
-  end in the earlier Debug build (native window, WebView2 loading the real UI, health-gated
-  backend/AI startup, graceful shutdown, single-instance, immediate relaunch — see the observability
-  migration's own verification notes). Signing the published binary would very likely resolve this;
-  that step wasn't available here.
-- **The actual Windows Service registration** (`sc.exe create`, `net start`) was not run against
-  this machine — that's a real, persistent system change (survives reboots, visible in
-  `services.msc`) that wasn't taken without it being an explicit, deliberate choice, not a
-  side effect of testing a build script.
-- **Inno Setup itself is not installed in this environment**, so `Kairon.iss` was not compiled
-  into an actual `Kairon-Setup-1.0.0-win-x64.exe`. The script was written and reviewed against the
-  real, verified package layout above, but the compile step itself is unverified.
+- **An actual interactive logout/login cycle and a full Windows reboot** were not performed —
+  both would end the very session this work was done in. The Scheduled Task's `LogonTrigger` and
+  the service's `AUTO_START` are the mechanism that make both cases work; verified by
+  configuration review, not by disrupting the environment they'd be tested in.
+- **The published desktop shell has not been re-tested since Smart App Control was disabled** in
+  this pass — the block that stopped it earlier was a Smart App Control property of this machine
+  (now off), not a defect in the shell's own code (already fully verified end-to-end in an earlier
+  Debug build), but re-launching the Release build to confirm wasn't repeated here.

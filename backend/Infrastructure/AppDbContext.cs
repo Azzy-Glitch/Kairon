@@ -258,10 +258,16 @@ public class AppDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.MachineId);
-            entity.HasIndex(e => new { e.MachineId, e.ProcessId, e.ProcessStartedAt }).IsUnique();
+            // Includes Source: the same physical OS process can legitimately be observed and
+            // reported by BOTH components (e.g. the Windows Service's one watched process happens
+            // to also fall in the UserAgent's own session) - each source gets its own row for it,
+            // never a unique-key collision between them.
+            entity.HasIndex(e => new { e.MachineId, e.ProcessId, e.ProcessStartedAt, e.Source }).IsUnique();
             entity.Property(e => e.Name).HasMaxLength(255).IsRequired();
             entity.Property(e => e.Executable).HasMaxLength(2000);
             entity.Property(e => e.Runtime).HasMaxLength(50);
+            entity.Property(e => e.Source).HasMaxLength(20).IsRequired().HasDefaultValue("MachineAgent");
+            entity.Property(e => e.UserName).HasMaxLength(300);
         });
     }
 }

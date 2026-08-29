@@ -54,6 +54,22 @@ public sealed class AgentController : ControllerBase
         return Ok(new { accepted = true, applications = dto.Processes.Count });
     }
 
+    /// <summary>Heartbeat from KAIRON.UserAgent - the per-interactive-session counterpart to
+    /// <see cref="Heartbeat"/>, authenticated the same way against the same Machine identity the
+    /// Windows Service already registered (docs/DESKTOP_SHELL.md). Deliberately does not affect the
+    /// machine's own online/offline status - see AgentRegistrationService.</summary>
+    [HttpPost("machines/{machineId:guid}/user-session/heartbeat")]
+    public async Task<IActionResult> UserSessionHeartbeat(Guid machineId, UserSessionHeartbeatDto dto,
+        CancellationToken cancellationToken)
+    {
+        var key = Request.Headers[AgentKeyHeader].ToString();
+        if (string.IsNullOrWhiteSpace(key) ||
+            !await _agents.RecordUserSessionHeartbeatAsync(machineId, key, dto, cancellationToken))
+            return Unauthorized(new { error = "Agent authentication failed." });
+
+        return Ok(new { accepted = true, applications = dto.Processes.Count });
+    }
+
     [HttpGet("machines")]
     public async Task<IReadOnlyList<MachineStatusDto>> Machines(CancellationToken cancellationToken)
     {
@@ -62,7 +78,10 @@ public sealed class AgentController : ControllerBase
             .OrderBy(x => x.HostName)
             .Select(x => new MachineStatusDto(x.Id, x.HostName, x.OperatingSystem, x.Architecture, x.AgentVersion,
                 x.LastSeenAt >= onlineAfter ? "Online" : "Offline", x.RegisteredAt, x.LastSeenAt,
-                _db.DiscoveredApplications.Count(a => a.MachineId == x.Id && a.IsRunning)))
+                _db.DiscoveredApplications.Count(a => a.MachineId == x.Id && a.IsRunning),
+                x.LastUserAgentSeenAt == null ? "NeverConnected"
+                    : x.LastUserAgentSeenAt >= onlineAfter ? "Online" : "Offline",
+                x.LastUserAgentSeenAt))
             .ToListAsync(cancellationToken);
     }
 
@@ -74,6 +93,7 @@ public sealed class AgentController : ControllerBase
             orderby application.IsRunning descending, application.Name
             select new ApplicationInventoryDto(application.Id, application.MachineId, machine.HostName,
                 application.ProcessId, application.Name, application.Executable, application.Runtime,
-                application.CpuPercent, application.MemoryBytes, application.IsRunning, application.LastSeenAt)
+                application.CpuPercent, application.MemoryBytes, application.IsRunning, application.LastSeenAt,
+                application.Source, application.ParentProcessId, application.SessionId, application.UserName)
         ).ToListAsync(cancellationToken);
 }
