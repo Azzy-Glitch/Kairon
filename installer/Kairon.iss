@@ -32,6 +32,7 @@ WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
 UninstallDisplayIcon={app}\Kairon.exe
+SetupIconFile=..\assets\kairon-icon.ico
 VersionInfoVersion={#MyAppVersion}
 
 [Files]
