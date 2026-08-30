@@ -222,12 +222,14 @@ the frontend.
 ## Running the tests
 
 ```bash
-dotnet test Kairon.slnx        # 232 tests: backend + SDK
-cd ai-service && pytest       # 91 tests, no API key required
-cd frontend && npm test       # 57 tests
+dotnet test Kairon.slnx        # backend, .NET SDK, Windows Service Agent, UserAgent
+cd ai-service && pytest       # AI microservice, no API key required
+cd sdk-python && pytest       # Python SDK
+cd frontend && npm test       # frontend
 ```
 
-Total: **380 tests**, none requiring a credential or a network call.
+None of these require a credential or a network call. The suite grows as capabilities are added -
+run the commands above for the current count rather than trusting a number written down here.
 
 Several exist because the live demo found a real bug — the detection rate arithmetic, the
 sustained-breach guard, the verification window, the diagnosis-staleness gap, and a metric that

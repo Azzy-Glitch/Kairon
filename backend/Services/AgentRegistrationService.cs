@@ -31,9 +31,19 @@ public sealed class AgentRegistrationService : IAgentRegistrationService
         _time = time;
     }
 
+    /// <summary>The Agent/UserAgent checked-in fallback default (AgentOptions.AgentKey /
+    /// UserAgentOptions.AgentKey) - identical across every install before AgentCredentialStore
+    /// generates a real per-install key. Refusing it here means a machine can only ever register
+    /// with a genuinely random credential, regardless of what any individual Agent build does.</summary>
+    private const string InsecureDefaultAgentKey = "kairon-agent-default-key-change-me";
+    private static readonly string InsecureDefaultAgentKeyHash = Hash(InsecureDefaultAgentKey);
+
     public async Task RegisterAsync(AgentRegistrationDto registration, CancellationToken cancellationToken)
     {
         if (registration.MachineId == Guid.Empty) throw new ArgumentException("MachineId is required.");
+        if (registration.AgentKey == InsecureDefaultAgentKey)
+            throw new UnauthorizedAccessException(
+                "Refusing to register a machine with the known, checked-in default Agent key. Upgrade the Agent/UserAgent so a real per-install credential is generated.");
         var now = _time.GetUtcNow().UtcDateTime;
         var hash = Hash(registration.AgentKey);
         var machine = await _db.Machines.SingleOrDefaultAsync(x => x.Id == registration.MachineId, cancellationToken);
@@ -44,7 +54,16 @@ public sealed class AgentRegistrationService : IAgentRegistrationService
         }
         else if (!FixedEquals(machine.AgentCredentialHash, hash))
         {
-            throw new UnauthorizedAccessException("Machine identity is already registered with a different Agent key.");
+            // One-time exception: a machine still stored under the known-insecure default's hash
+            // (from before AgentCredentialStore existed, or before it ran here) is allowed to
+            // rotate to whatever real, random key it now presents - that's the known-bad state
+            // this whole mechanism exists to move installations off of, not a credential to
+            // protect. Once a machine holds any other (genuinely random) hash, a mismatch is
+            // rejected exactly as strictly as before - this never weakens protection against a
+            // real hijack attempt on an already-rotated machine.
+            if (!FixedEquals(machine.AgentCredentialHash, InsecureDefaultAgentKeyHash))
+                throw new UnauthorizedAccessException("Machine identity is already registered with a different Agent key.");
+            machine.AgentCredentialHash = hash;
         }
 
         machine.HostName = registration.HostName;

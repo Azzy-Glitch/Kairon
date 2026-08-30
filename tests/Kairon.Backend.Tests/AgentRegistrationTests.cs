@@ -46,6 +46,41 @@ public sealed class AgentRegistrationTests : IDisposable
     }
 
     [Fact]
+    public async Task RegistrationWithTheKnownInsecureDefaultAgentKeyIsRejected()
+    {
+        var registration = Registration(Guid.NewGuid(), "kairon-agent-default-key-change-me");
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => Service.RegisterAsync(registration, default));
+        Assert.Empty(_h.Db.Machines);
+    }
+
+    [Fact]
+    public async Task MachineStuckOnTheInsecureDefaultCanRotateToARealKeyOnce()
+    {
+        var machineId = Guid.NewGuid();
+        // Simulate a machine that registered before AgentCredentialStore existed - stored under
+        // the insecure default's hash directly, bypassing the now-rejected literal-key check.
+        _h.Db.Machines.Add(new Kairon.Backend.Models.Platform.Machine
+        {
+            Id = machineId,
+            HostName = "old-host",
+            RegisteredAt = DateTime.UtcNow,
+            LastSeenAt = DateTime.UtcNow,
+            AgentCredentialHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes("kairon-agent-default-key-change-me")))
+        });
+        await _h.Db.SaveChangesAsync();
+
+        var realKey = "a-genuinely-random-generated-key-1234567890";
+        await Service.RegisterAsync(Registration(machineId, realKey), default);
+
+        Assert.True(await Service.RecordHeartbeatAsync(machineId, realKey, new AgentHeartbeatDto(), default));
+        // Having rotated once, a THIRD different key is rejected exactly as strictly as before.
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            Service.RegisterAsync(Registration(machineId, "yet-another-different-key-1234567890"), default));
+    }
+
+    [Fact]
     public async Task WrongOrReusedMachineCredentialIsRejected()
     {
         var machineId = Guid.NewGuid();
