@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 
 namespace Kairon.Desktop;
 
@@ -23,6 +25,15 @@ public sealed class ManagedProcess : IDisposable
     public async Task<StartupFailure?> StartAndWaitHealthyAsync(
         ProcessStartInfo startInfo, Uri healthUrl, TimeSpan timeout, CancellationToken cancellationToken)
     {
+        // Confirmed live, not theoretical: without this check, a stale/unrelated process already
+        // listening on this port (e.g. a leftover instance from a previous run) answers the health
+        // poll below successfully, the health check declares success, and the child this method
+        // just spawned - which failed to bind the same port and already exited - goes unnoticed.
+        // Failing fast here means an occupied port is reported clearly, never silently masked by
+        // whatever else is already listening.
+        if (IsPortAlreadyInUse(healthUrl.Port))
+            return new StartupFailure(_name, $"Port {healthUrl.Port} is already in use by another process. Close it and restart Kairon.");
+
         try
         {
             _process = Process.Start(startInfo);
@@ -58,6 +69,24 @@ public sealed class ManagedProcess : IDisposable
         }
 
         return new StartupFailure(_name, $"Did not become healthy within {timeout.TotalSeconds:0}s.");
+    }
+
+    /// <summary>A real bind attempt, not a "connect and see" probe - the latter would itself be
+    /// fooled by exactly the process this check exists to catch. Immediately releases the port
+    /// either way; this is a point-in-time check, not a reservation.</summary>
+    private static bool IsPortAlreadyInUse(int port)
+    {
+        try
+        {
+            using var listener = new TcpListener(IPAddress.Loopback, port);
+            listener.Start();
+            listener.Stop();
+            return false;
+        }
+        catch (SocketException)
+        {
+            return true;
+        }
     }
 
     /// <summary>Graceful first (CloseMainWindow, for a console/service host this is a no-op but

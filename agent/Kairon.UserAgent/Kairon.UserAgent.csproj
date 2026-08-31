@@ -13,6 +13,8 @@
          session via a logon-triggered Scheduled Task, so it must never allocate a console window. -->
     <OutputType>WinExe</OutputType>
     <UserSecretsId>kairon-useragent</UserSecretsId>
+    <!-- The installer publishes this self-contained; no .pdb is useful to ship in that output. -->
+    <DebugType>none</DebugType>
   </PropertyGroup>
 
   <ItemGroup>

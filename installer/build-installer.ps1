@@ -69,6 +69,12 @@ if (-not (Test-Path -LiteralPath $python)) {
 }
 Push-Location (Join-Path $repository "ai-service")
 try {
+    # Installed from the committed lockfile, not whatever happens to already be present in
+    # whichever Python this run found - otherwise the packaged AI service reproducibly builds from
+    # source but not from a known dependency set (matches .github/workflows/windows-installer.yml).
+    & $python -m pip install -r requirements.txt
+    if ($LASTEXITCODE -ne 0) { throw "AI service dependency install failed." }
+
     & $python -m PyInstaller --noconfirm --clean --onefile --name Kairon.AI --distpath $ai `
         --workpath (Join-Path $artifacts "pyinstaller-work") --specpath (Join-Path $artifacts "pyinstaller-spec") `
         --collect-all fastapi --collect-all uvicorn entrypoint.py

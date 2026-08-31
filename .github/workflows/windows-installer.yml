@@ -24,9 +24,44 @@ jobs:
       # Builds the desktop shell, backend, Windows Service Agent, UserAgent, and the
       # PyInstaller-packaged AI service, then compiles the Inno Setup installer.
       - run: pip install pyinstaller
+      # Installed from the committed lockfile, not whatever happens to already be on the runner -
+      # otherwise the AI service PyInstaller bundles reproducibly build from source but not from a
+      # known dependency set.
+      - run: pip install -r ai-service/requirements.txt
       - run: choco install innosetup --yes --no-progress
       - shell: powershell
         run: ./installer/build-installer.ps1
+      - name: Sign installer (if a code signing certificate is configured)
+        shell: powershell
+        env:
+          CERT_BASE64: ${{ secrets.WINDOWS_CODE_SIGNING_CERT }}
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CODE_SIGNING_CERT_PASSWORD }}
+        run: |
+          # Conditional and honest: with no certificate secret configured, this step logs that the
+          # installer is unsigned and exits cleanly - it never fabricates or skips silently.
+          if ([string]::IsNullOrWhiteSpace($env:CERT_BASE64)) {
+            Write-Host "No WINDOWS_CODE_SIGNING_CERT secret configured - the installer will ship unsigned."
+            exit 0
+          }
+
+          $installer = Get-ChildItem -Path artifacts/installer -Filter *.exe | Select-Object -First 1
+          if (-not $installer) { throw "No installer .exe found to sign in artifacts/installer." }
+
+          $certPath = Join-Path $env:RUNNER_TEMP "kairon-signing-cert.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:CERT_BASE64))
+          try {
+            $signtool = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -like "*x64*" } | Select-Object -First 1
+            if (-not $signtool) { throw "signtool.exe was not found on this runner." }
+
+            & $signtool.FullName sign /f $certPath /p $env:CERT_PASSWORD /fd SHA256 `
+              /tr http://timestamp.digicert.com /td SHA256 $installer.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE." }
+
+            Write-Host "Signed $($installer.Name)."
+          } finally {
+            Remove-Item $certPath -Force -ErrorAction SilentlyContinue
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: Kairon-Windows-Installer

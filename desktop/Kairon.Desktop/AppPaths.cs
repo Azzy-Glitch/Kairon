@@ -15,6 +15,17 @@ namespace Kairon.Desktop;
 /// </summary>
 public static class AppPaths
 {
+    /// <summary>The real, self-contained apphost - published with --self-contained true -r
+    /// win-x64 (installer/build-installer.ps1), it bundles its own .NET runtime and runs directly,
+    /// no globally-installed `dotnet` required on the target machine. Preferred over
+    /// FindPublishedBackendDll, which requires shelling out to `dotnet` - that path only exists
+    /// for a framework-dependent publish, which this product does not ship.</summary>
+    public static string? FindPublishedBackendExe()
+    {
+        var candidate = Path.Combine(AppContext.BaseDirectory, "backend", "Kairon.Backend.exe");
+        return File.Exists(candidate) ? candidate : null;
+    }
+
     public static string? FindPublishedBackendDll()
     {
         var candidate = Path.Combine(AppContext.BaseDirectory, "backend", "Kairon.Backend.dll");

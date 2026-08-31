@@ -1,3 +1,4 @@
+using Kairon.Backend.DTOs.Sre;
 using Kairon.Backend.Models.Sre;
 using Kairon.Backend.Services;
 using Kairon.Backend.Services.Remediation;
@@ -144,5 +145,47 @@ public class VerificationWindowTests : IDisposable
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => _h.CreateVerificationService().VerifyAsync(incident, action, cts.Token));
+    }
+
+    [Fact]
+    public async Task TelemetrySamplingPicksTheChronologicallyOldestRowsWhenOverTheCap()
+    {
+        // VerificationService.SampleAsync's telemetry query used to have no OrderBy before its
+        // Take(500) - a non-deterministic subset under any provider that doesn't happen to scan in
+        // timestamp order. This seeds more than 500 telemetry rows, deliberately inserted in the
+        // OPPOSITE order from their timestamps (the high-latency rows first, low-latency rows
+        // last), and checks that the "after" window's latency - which falls back to averaging raw
+        // telemetry when there are no Metric rows - reflects exactly the 500 chronologically
+        // earliest (low-latency) rows, proving Take(500) is applied to a genuinely ordered query
+        // rather than whatever order the rows happen to have been inserted in.
+        _h.Verification.SettleSeconds = 0;
+
+        var incident = _h.SeedIncident(IncidentStatus.Verifying);
+        incident.CorrelatedMetricsJson = SreJson.Serialize(new List<CorrelatedSignalSnapshot>
+        {
+            new() { Rule = "latency-threshold", MetricName = "latency", Symptom = "Latency high",
+                    Observed = 2000, Threshold = 500, Unit = "ms", Severity = "High", DetectedAt = DateTime.UtcNow }
+        });
+        _h.Db.SaveChanges();
+
+        var executedAt = DateTime.UtcNow.AddSeconds(-120);
+        var action = ExecutedAction(incident, executedAt);
+        var settleFrom = executedAt; // SettleSeconds = 0
+
+        // Inserted FIRST but timestamped LATER - must be excluded by a correctly ordered Take(500).
+        for (var i = 0; i < 50; i++)
+            _h.SeedTelemetry(settleFrom.AddSeconds(10 + i * 0.01), durationMs: 9000, statusCode: 200,
+                errorType: null, errorMessage: null);
+
+        // Inserted SECOND but timestamped EARLIER - the 500 rows that must be selected.
+        for (var i = 0; i < 500; i++)
+            _h.SeedTelemetry(settleFrom.AddSeconds(i * 0.01), durationMs: 100, statusCode: 200,
+                errorType: null, errorMessage: null);
+
+        var result = await _h.CreateVerificationService().VerifyAsync(incident, action);
+        var comparisons = SreJson.Deserialize(result.ComparisonsJson, new List<MetricComparison>());
+        var latency = comparisons.First(c => c.Metric == "latency");
+
+        Assert.Equal(100, latency.After);
     }
 }

@@ -144,6 +144,7 @@ public class DetectionSweepWorker : BackgroundService
                 var pending = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.ToListAsync(
                     db.SreIncidents
                         .Where(i => i.Status == Models.Sre.IncidentStatus.Detected && i.Timestamp <= ready)
+                        .OrderBy(i => i.Timestamp)
                         .Select(i => new { i.Id, i.ProjectId, i.Environment, i.Service })
                         .Take(50),
                     stoppingToken);

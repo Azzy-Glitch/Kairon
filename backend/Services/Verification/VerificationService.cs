@@ -200,6 +200,7 @@ public class VerificationService : IVerificationService
                         && i.Environment == incident.Environment
                         && i.Timestamp >= from
                         && i.Timestamp <= to)
+            .OrderBy(i => i.Timestamp)
             .Take(500)
             .ToListAsync(cancellationToken);
 

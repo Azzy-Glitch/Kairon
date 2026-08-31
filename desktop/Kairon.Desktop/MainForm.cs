@@ -58,11 +58,26 @@ public sealed class MainForm : Form
 
     private Task<StartupFailure?> StartBackendAsync(CancellationToken cancellationToken)
     {
+        var publishedExe = AppPaths.FindPublishedBackendExe();
         var publishedDll = AppPaths.FindPublishedBackendDll();
         ProcessStartInfo startInfo;
 
-        if (publishedDll is not null)
+        if (publishedExe is not null)
         {
+            // The self-contained apphost - runs directly with its own bundled runtime, no
+            // globally-installed `dotnet` needed on the target machine (docs/DESKTOP_SHELL.md).
+            startInfo = new ProcessStartInfo(publishedExe, $"--urls {BackendUrl}")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(publishedExe)!
+            };
+        }
+        else if (publishedDll is not null)
+        {
+            // Fallback for a framework-dependent publish (no self-contained apphost present) -
+            // this product doesn't ship this way today, but a `dotnet` on PATH still works if it
+            // ever does.
             startInfo = new ProcessStartInfo("dotnet", $"\"{publishedDll}\" --urls {BackendUrl}")
             {
                 UseShellExecute = false,

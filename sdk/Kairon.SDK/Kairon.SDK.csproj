@@ -9,10 +9,15 @@
 		<Version>1.0.0</Version>
 		<Authors>Kairon</Authors>
 		<Description>Kairon telemetry and observability SDK for .NET applications.</Description>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Include="README.md" Pack="true" PackagePath="\" />
 	</ItemGroup>
 
 </Project>

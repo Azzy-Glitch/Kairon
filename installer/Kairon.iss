@@ -45,7 +45,12 @@ Source: "{#PackageRoot}\useragent\*"; DestDir: "{app}\useragent"; Flags: ignorev
 Source: "{#PackageRoot}\ai\*"; DestDir: "{app}\ai"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
-Name: "{commonappdata}\Kairon\config"; Permissions: users-modify
+; No Permissions clause here: Inno's Permissions directive only ever ADDS grants, it never removes
+; an inherited or previously-installed one, so it cannot be trusted to narrow this folder's ACL by
+; itself (confirmed live - a folder that has been through an older installer revision using
+; `Permissions: users-modify` kept that grant across upgrades). GrantAgentCredentialAcl below resets
+; this folder's whole ACL from scratch on every install/upgrade instead.
+Name: "{commonappdata}\Kairon\config"
 
 [Icons]
 Name: "{group}\Kairon"; Filename: "{app}\Kairon.exe"; WorkingDir: "{app}"
@@ -154,7 +159,8 @@ procedure InstallOrReconfigureAgentService;
 var
   Existing: Boolean;
   ResultCode: Integer;
-  Arguments: String;
+  CreateArguments: String;
+  ConfigArguments: String;
   RegistrationAction: String;
 begin
   // LocalService, least privilege: per-process telemetry (CPU/memory/start-time/parent PID for
@@ -166,21 +172,32 @@ begin
   // Windows Service's own limited cross-session process visibility - docs/DESKTOP_SHELL.md - but
   // that traded away least privilege for a problem the UserAgent now solves properly.)
   Existing := AgentServiceExists;
-  Arguments := 'binPath= "' + AgentExecutablePath + '" start= auto ' +
+  // `sc create ... obj= LocalService` (no password= needed - it's a passwordless virtual account)
+  // is what correctly set SERVICE_START_NAME to NT AUTHORITY\LocalService in the first place, and
+  // still works fine for a brand new service. But `sc config` on an EXISTING service is different:
+  // confirmed live (a battery of side-by-side variants, run standalone outside the installer) that
+  // passing obj= LocalService to `config` at all - with or without password= - fails with error
+  // 1057 ("account name is invalid or password is invalid"), while the EXACT SAME config call with
+  // obj=/password= omitted entirely succeeds immediately (exit 0). Since this service's account
+  // never changes between installs (it is always LocalService, hard-coded, never user-configurable),
+  // there is nothing to reconfigure there on an upgrade - so config simply doesn't ask.
+  CreateArguments := 'binPath= "' + AgentExecutablePath + '" start= auto ' +
     'obj= LocalService DisplayName= "Kairon Agent"';
+  ConfigArguments := 'binPath= "' + AgentExecutablePath + '" start= auto ' +
+    'DisplayName= "Kairon Agent"';
 
   if Existing then
   begin
     RegistrationAction := 'reconfigure';
     ValidateExistingAgentService;
-    if not RunServiceControl('config ' + AgentServiceName + ' ' + Arguments,
+    if not RunServiceControl('config ' + AgentServiceName + ' ' + ConfigArguments,
       'reconfiguring the existing service', ResultCode) then
       RaiseException('Kairon Setup could not launch Service Control Manager tooling to reconfigure the Agent.');
   end
   else
   begin
     RegistrationAction := 'create';
-    if not RunServiceControl('create ' + AgentServiceName + ' ' + Arguments,
+    if not RunServiceControl('create ' + AgentServiceName + ' ' + CreateArguments,
       'creating the service', ResultCode) then
       RaiseException('Kairon Setup could not launch Service Control Manager tooling to create the Agent.');
   end;
@@ -287,10 +304,134 @@ begin
   Result := '';
 end;
 
+function RunIcacls(const ConfigDir, Arguments, Action: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\icacls.exe'), '"' + ConfigDir + '" ' + Arguments,
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not Result then
+    RaiseException(Format('Kairon Setup could not launch icacls to %s.', [Action]));
+  if ResultCode <> 0 then
+    RaiseException(Format('Kairon Setup could not %s (icacls exit code %d).', [Action, ResultCode]));
+end;
+
+// icacls's own /setowner does NOT auto-enable SeTakeOwnershipPrivilege, and fails Access Denied
+// even under a fully elevated Administrator token if that token doesn't already have WRITE_OWNER
+// on the object - confirmed live (whoami /priv shows SeTakeOwnershipPrivilege as Disabled even
+// while elevated, and icacls /setowner failed on exactly this file with exit code 5). takeown.exe
+// enables that privilege itself before acting, which is why it succeeds where icacls /setowner
+// does not - confirmed live with a side-by-side takeown /F attempt on the same file that
+// succeeded immediately. /A assigns ownership to the Administrators group rather than the single
+// installing user, matching what GrantAgentCredentialAcl's later icacls calls expect to own.
+function RunTakeown(const Path, ExtraArgs, Action: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\takeown.exe'), '/F "' + Path + '" /A ' + ExtraArgs,
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not Result then
+    RaiseException(Format('Kairon Setup could not launch takeown to %s.', [Action]));
+  if ResultCode <> 0 then
+    RaiseException(Format('Kairon Setup could not %s (takeown exit code %d).', [Action, ResultCode]));
+end;
+
+function RunTakeownOnConfigDir(const ConfigDir, Action: String): Boolean;
+begin
+  // /R (recurse) is valid only for a directory target - passing it against a plain file makes
+  // takeown reject the whole call (confirmed live: exit code 1) - hence the split into two
+  // wrappers rather than one flag set reused for both a folder and a file target.
+  Result := RunTakeown(ConfigDir, '/R /D Y', Action);
+end;
+
+function RunTakeownOnFile(const FilePath, Action: String): Boolean;
+begin
+  // /D (default answer to the "deny read permission" prompt) is - like /R - only valid alongside
+  // /R; a single file target takes neither (confirmed live: takeown rejects /D without /R).
+  Result := RunTakeown(FilePath, '', Action);
+end;
+
+// Resets this folder's whole ACL from scratch on every install/upgrade, rather than only adding a
+// grant on top of whatever is already there. Three things confirmed live make an additive-only
+// grant insufficient: (1) every subfolder created under %ProgramData% inherits a standard Windows
+// ACE - BUILTIN\Users:(WD,AD,WEA,WA) - that alone lets an ordinary user overwrite a file here, with
+// no explicit Modify grant needed; (2) a folder that has been through an older installer revision
+// (e.g. one that used `Permissions: users-modify`) can carry a leftover explicit grant that
+// `icacls /grant` alone never strips; (3) resetting the FOLDER's own ACL does not retroactively
+// touch a file that already exists inside it - agent-credential.json, generated by an earlier
+// install/run under a broader grant, kept its own stale BUILTIN\Users:(M) ACE even after the
+// folder above it was reset, since a parent's ACE only propagates to children created after the
+// ACE is set, never to ones that already existed. /T (recurse into existing children) on every
+// call below is what actually reaches that already-existing file, not just the folder. Breaking
+// inheritance (/inheritance:r) removes case (1); explicitly removing any existing Users grant
+// before re-adding a clean one handles case (2); /T handles case (3); /grant:r (replace, not add)
+// for every trustee means the result is always exactly the same four entries on the folder and
+// every file in it, regardless of this folder's install history.
+procedure GrantAgentCredentialAcl;
+var
+  ConfigDir: String;
+  CredentialFile: String;
+begin
+  ConfigDir := ExpandConstant('{commonappdata}\Kairon\config');
+  CredentialFile := ConfigDir + '\agent-credential.json';
+
+  // Setup runs elevated as the installing Administrator, but that alone does not grant WRITE_DAC
+  // (permission to change an object's ACL) on a file this folder already contains - confirmed
+  // live: agent-credential.json's owner was NT AUTHORITY\LOCAL SERVICE (the Agent service created
+  // it itself, in an earlier run), its only ACE was BUILTIN\Users:(M), and Modify does not include
+  // WRITE_DAC, so even elevated Setup got Access Denied (icacls exit code 5) trying to reset its
+  // ACL directly. Taking ownership first is what actually grants WRITE_DAC - NTFS ownership always
+  // implies the right to change permissions, regardless of the object's existing ACL.
+  RunTakeownOnConfigDir(ConfigDir, 'take ownership of its credential folder');
+  RunIcacls(ConfigDir, '/inheritance:r /T',
+    'remove inherited permissions from its credential folder');
+  RunIcacls(ConfigDir, '/remove:g "BUILTIN\Users" /T',
+    'strip any previously granted permissions for the Users group from its credential folder');
+  RunIcacls(ConfigDir, '/grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /T',
+    'grant SYSTEM access to its credential folder');
+  RunIcacls(ConfigDir, '/grant:r "BUILTIN\Administrators:(OI)(CI)F" /T',
+    'grant Administrators access to its credential folder');
+  RunIcacls(ConfigDir, '/grant:r "BUILTIN\Users:(OI)(CI)RX" /T',
+    'grant Users read-only access to its credential folder');
+  RunIcacls(ConfigDir, '/grant:r "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)M" /T',
+    'grant the Agent service account access to its credential folder');
+
+  Log('Kairon Agent: reset the credential config folder ACL to SYSTEM/Administrators full control, Users read-only, LocalService modify.');
+
+  // The six calls above, despite /T, do NOT reliably land on a file that already exists inside the
+  // folder - confirmed live: after all six ran cleanly (exit 0, and the FOLDER's own ACL came out
+  // exactly right), the pre-existing agent-credential.json was left with a completely EMPTY DACL
+  // (zero ACEs - verified with both icacls and Get-Acl), meaning nobody, not even LocalService,
+  // could actually open it; a (OI)(CI)-qualified grant is only meaningful on a container; applying
+  // it through /T to a plain file apparently discards the grant on that file entirely rather than
+  // stripping the now-meaningless inheritance qualifiers and keeping the underlying right. The
+  // fix is to not depend on propagation at all: repeat the same reset directly against the file
+  // path itself, with plain (non-qualified) rights, which unambiguously apply to a single object.
+  if FileExists(CredentialFile) then
+  begin
+    RunTakeownOnFile(CredentialFile, 'take ownership of its existing credential file');
+    RunIcacls(CredentialFile, '/inheritance:r',
+      'remove inherited permissions from its existing credential file');
+    RunIcacls(CredentialFile, '/remove:g "BUILTIN\Users"',
+      'strip any previously granted permissions for the Users group from its existing credential file');
+    RunIcacls(CredentialFile, '/grant:r "NT AUTHORITY\SYSTEM:F"',
+      'grant SYSTEM access to its existing credential file');
+    RunIcacls(CredentialFile, '/grant:r "BUILTIN\Administrators:F"',
+      'grant Administrators access to its existing credential file');
+    RunIcacls(CredentialFile, '/grant:r "BUILTIN\Users:RX"',
+      'grant Users read-only access to its existing credential file');
+    RunIcacls(CredentialFile, '/grant:r "NT AUTHORITY\LOCAL SERVICE:M"',
+      'grant the Agent service account access to its existing credential file');
+
+    Log('Kairon Agent: also reset the ACL directly on the pre-existing credential file itself.');
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    GrantAgentCredentialAcl;
     InstallOrReconfigureAgentService;
     InstallOrReconfigureUserAgentTask;
   end;
