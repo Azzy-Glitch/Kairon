@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
+from kairon import __version__
 from kairon.client import pair
 
 
@@ -60,6 +61,7 @@ def test_successful_pairing_returns_the_issued_credential(pairing_server):
     request_body = _PairingHandler.received[0]
     assert request_body["code"] == "pair_validcode"
     assert request_body["sdkType"] == "python"
+    assert request_body["version"] == __version__
 
 
 def test_rejected_pairing_code_returns_none_not_an_exception(pairing_server):

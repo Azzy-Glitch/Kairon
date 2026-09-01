@@ -58,7 +58,7 @@ def format_exception(exc: BaseException) -> Optional[str]:
         return None
 
 
-def pair(endpoint: str, code: str, version: str = "1.0.0", timeout_seconds: float = 10.0) -> Optional[dict]:
+def pair(endpoint: str, code: str, version: str = "1.0.1", timeout_seconds: float = 10.0) -> Optional[dict]:
     """Redeems a one-time pairing code (minted by an operator in the Kairon UI) for a
     persistent project API key - the Python counterpart to Kairon.SDK's KaironPairingClient
     (docs/DESKTOP_SHELL.md). Returns a dict with "apiKey"/"projectId"/"endpoint" on success, or
