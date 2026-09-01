@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Json;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -41,17 +42,42 @@ public class MachineRegistrationService : BackgroundService
             return;
         }
 
-        if (!await RegisterAsync(stoppingToken))
-        {
-            _logger.LogDebug("kairon-agent: initial machine registration did not succeed; heartbeats will keep retrying");
-        }
+        var registered = false;
+        var consecutiveRegistrationFailures = 0;
 
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(Math.Max(5, _options.HeartbeatIntervalSeconds)));
-        do
+        while (!stoppingToken.IsCancellationRequested)
         {
+            if (!registered)
+            {
+                registered = await RegisterAsync(stoppingToken);
+                if (!registered)
+                {
+                    consecutiveRegistrationFailures++;
+                    var retryDelay = RegistrationRetryDelay(consecutiveRegistrationFailures);
+                    _logger.LogDebug(
+                        "kairon-agent: machine registration attempt {Attempt} failed; retrying in {DelaySeconds}s",
+                        consecutiveRegistrationFailures, retryDelay.TotalSeconds);
+                    await DelayAsync(retryDelay, stoppingToken);
+                    continue;
+                }
+
+                consecutiveRegistrationFailures = 0;
+                _logger.LogInformation("kairon-agent: machine registration succeeded");
+            }
+
             try
             {
-                await HeartbeatAsync(stoppingToken);
+                var status = await HeartbeatAsync(stoppingToken);
+                if (status == HttpStatusCode.NotFound)
+                {
+                    // A fresh/recreated backend database legitimately forgets the machine. Move
+                    // back through registration instead of emitting useless 404 heartbeats.
+                    registered = false;
+                    continue;
+                }
+
+                if ((int)status >= 400)
+                    _logger.LogDebug("kairon-agent: heartbeat returned HTTP {StatusCode}", (int)status);
             }
             // Deliberately keyed on the token actually being cancelled, not on the exception's
             // type: an aborted HTTP connection (e.g. the backend restarting mid-request) also
@@ -64,8 +90,22 @@ public class MachineRegistrationService : BackgroundService
             {
                 _logger.LogDebug(ex, "kairon-agent: heartbeat failed");
             }
-        } while (await timer.WaitForNextTickAsync(stoppingToken));
+
+            await DelayAsync(TimeSpan.FromSeconds(Math.Max(5, _options.HeartbeatIntervalSeconds)), stoppingToken);
+        }
     }
+
+    private static TimeSpan RegistrationRetryDelay(int consecutiveFailures)
+    {
+        // 5s, 10s, 20s, then a 30s ceiling. The service keeps trying for its lifetime so normal
+        // desktop/backend startup ordering always recovers, but it can never become an aggressive
+        // request loop while the backend is intentionally offline.
+        var exponent = Math.Clamp(consecutiveFailures - 1, 0, 3);
+        return TimeSpan.FromSeconds(Math.Min(30, 5 * (1 << exponent)));
+    }
+
+    protected virtual Task DelayAsync(TimeSpan delay, CancellationToken cancellationToken)
+        => Task.Delay(delay, cancellationToken);
 
     private async Task<bool> RegisterAsync(CancellationToken cancellationToken)
     {
@@ -86,6 +126,10 @@ public class MachineRegistrationService : BackgroundService
             var response = await _http.PostAsJsonAsync("api/agent/register", registration, timeout.Token);
             return response.IsSuccessStatusCode;
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "kairon-agent: machine registration failed");
@@ -93,7 +137,7 @@ public class MachineRegistrationService : BackgroundService
         }
     }
 
-    private async Task HeartbeatAsync(CancellationToken cancellationToken)
+    private async Task<HttpStatusCode> HeartbeatAsync(CancellationToken cancellationToken)
     {
         var processes = new List<object>();
 
@@ -149,7 +193,8 @@ public class MachineRegistrationService : BackgroundService
         };
         request.Headers.Add("X-Kairon-Agent-Key", _options.AgentKey);
 
-        await _http.SendAsync(request, timeout.Token);
+        using var response = await _http.SendAsync(request, timeout.Token);
+        return response.StatusCode;
     }
 
     private static string SafeFileName(Process process)
