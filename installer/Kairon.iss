@@ -8,7 +8,7 @@
 ; layout, validate-before-reconfigure, recovery policy, SCM verification at every step) is
 ; unchanged in substance from the source branch - it did not need adapting.
 #define MyAppName "Kairon"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "Kairon"
 #ifndef PackageRoot
   #define PackageRoot "..\artifacts\windows-package"
@@ -65,7 +65,6 @@ Filename: "{app}\Kairon.exe"; Description: "Launch Kairon"; Flags: nowait postin
 [UninstallRun]
 Filename: "{sys}\sc.exe"; Parameters: "stop Kairon.Agent"; Flags: runhidden waituntilterminated; RunOnceId: "StopAgent"
 Filename: "{sys}\sc.exe"; Parameters: "delete Kairon.Agent"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteAgent"
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""Kairon\UserAgent"" /F"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteUserAgentTask"
 
 [Code]
 const
@@ -235,6 +234,136 @@ begin
   Result := ExpandConstant('{app}\useragent\Kairon.UserAgent.exe');
 end;
 
+// Returns every running process whose image name and full executable path both identify the
+// UserAgent installed by this exact Kairon installation. The name narrows the WMI query only; the
+// path comparison is the security boundary that prevents an unrelated process with the same name
+// from being touched. WMI sees processes in all interactive sessions when the uninstaller runs
+// elevated, so this also handles more than one legitimate UserAgent instance.
+function ProcessInstalledUserAgents(TerminateMatches: Boolean): Integer;
+var
+  Locator: Variant;
+  Services: Variant;
+  Processes: Variant;
+  Process: Variant;
+  I: Integer;
+  ProcessId: Integer;
+  SessionId: Integer;
+  TerminateResult: Integer;
+  ProcessPath: String;
+  ExpectedPath: String;
+begin
+  Result := 0;
+  ExpectedPath := ExpandFileName(UserAgentExecutablePath);
+
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    // Terminating a process owned by another interactive session can require SeDebugPrivilege.
+    // The uninstaller is already elevated; enable that existing token privilege only for this WMI
+    // connection rather than introducing a service/helper or changing the UserAgent identity.
+    try
+      Locator.Security_.Privileges.AddAsString('SeDebugPrivilege', True);
+    except
+      Log('Kairon UserAgent: SeDebugPrivilege was unavailable; continuing with the elevated uninstall token.');
+    end;
+    Services := Locator.ConnectServer('.', 'root\cimv2');
+    Services.Security_.ImpersonationLevel := 3;
+    Processes := Services.ExecQuery(
+      'SELECT ProcessId, SessionId, ExecutablePath FROM Win32_Process ' +
+      'WHERE Name = ''Kairon.UserAgent.exe''');
+
+    for I := 0 to Processes.Count - 1 do
+    begin
+      Process := Processes.ItemIndex(I);
+      if not VarIsNull(Process.ExecutablePath) then
+      begin
+        ProcessPath := ExpandFileName(Process.ExecutablePath);
+        if CompareText(ProcessPath, ExpectedPath) = 0 then
+        begin
+          Result := Result + 1;
+          ProcessId := Process.ProcessId;
+          SessionId := Process.SessionId;
+          if TerminateMatches then
+          begin
+            Log(Format(
+              'Kairon UserAgent: terminating verified installed process PID %d in session %d (%s).', [ProcessId, SessionId, ProcessPath]));
+            TerminateResult := Process.Terminate(0);
+            if TerminateResult <> 0 then
+              RaiseException(Format(
+                'Kairon Uninstall could not terminate its verified UserAgent process PID %d ' +
+                '(WMI result %d). Close the process and retry uninstall.', [ProcessId, TerminateResult]));
+          end;
+        end
+        else
+          Log(Format(
+            'Kairon UserAgent: leaving same-named process PID %d untouched because its path is %s.', [Integer(Process.ProcessId), ProcessPath]));
+      end;
+    end;
+  except
+    RaiseException('Kairon Uninstall could not inspect/stop its UserAgent processes: ' +
+      GetExceptionMessage + '. No same-named process was terminated without path verification.');
+  end;
+end;
+
+function WaitForInstalledUserAgentsToExit(TimeoutMilliseconds: Integer): Boolean;
+var
+  WaitedMilliseconds: Integer;
+begin
+  WaitedMilliseconds := 0;
+  while (ProcessInstalledUserAgents(False) > 0) and
+        (WaitedMilliseconds < TimeoutMilliseconds) do
+  begin
+    Sleep(250);
+    WaitedMilliseconds := WaitedMilliseconds + 250;
+  end;
+  Result := ProcessInstalledUserAgents(False) = 0;
+end;
+
+procedure StopInstalledUserAgentsForUninstall;
+var
+  MatchCount: Integer;
+begin
+  MatchCount := ProcessInstalledUserAgents(False);
+  if MatchCount = 0 then
+  begin
+    Log('Kairon UserAgent: no running process belonging to this installation was found.');
+    Exit;
+  end;
+
+  Log(Format('Kairon UserAgent: found %d verified installed process(es) to stop before file removal.', [MatchCount]));
+  ProcessInstalledUserAgents(True);
+  if not WaitForInstalledUserAgentsToExit(5000) then
+    RaiseException('Kairon Uninstall timed out waiting for its verified UserAgent process(es) to exit. ' +
+      'Installed files will not be removed while they may still be locked.');
+
+  Log('Kairon UserAgent: all verified installed processes exited before file removal.');
+end;
+
+procedure RemoveUserAgentTaskForUninstall;
+var
+  ResultCode: Integer;
+begin
+  // Query first so uninstall remains idempotent when the task was already removed. If it exists,
+  // require deletion to succeed so Windows cannot later launch a now-uninstalled executable.
+  if not Exec(ExpandConstant('{sys}\schtasks.exe'),
+      '/Query /TN "' + UserAgentTaskName + '"', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode) then
+    RaiseException('Kairon Uninstall could not query its UserAgent scheduled task.');
+
+  if ResultCode <> 0 then
+  begin
+    Log('Kairon UserAgent: scheduled task was already absent.');
+    Exit;
+  end;
+
+  if not (Exec(ExpandConstant('{sys}\schtasks.exe'),
+      '/Delete /TN "' + UserAgentTaskName + '" /F', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode) and (ResultCode = 0)) then
+    RaiseException(Format(
+      'Kairon Uninstall could not remove its UserAgent scheduled task (schtasks.exe exit code %d).', [ResultCode]));
+
+  Log('Kairon UserAgent: scheduled task removed after all verified processes exited.');
+end;
+
 // KAIRON.UserAgent runs *as the interactive user*, not as a service - it needs the process
 // visibility the LocalService-based Kairon.Agent Windows Service deliberately does not have
 // (docs/DESKTOP_SHELL.md). A Scheduled Task with a LogonTrigger and a "Users" group principal
@@ -399,5 +528,18 @@ begin
     GrantAgentCredentialAcl;
     InstallOrReconfigureAgentService;
     InstallOrReconfigureUserAgentTask;
+  end;
+end;
+
+var
+  UserAgentUninstallPrepared: Boolean;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if (CurUninstallStep = usUninstall) and not UserAgentUninstallPrepared then
+  begin
+    UserAgentUninstallPrepared := True;
+    StopInstalledUserAgentsForUninstall;
+    RemoveUserAgentTaskForUninstall;
   end;
 end;

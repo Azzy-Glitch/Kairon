@@ -23,6 +23,22 @@ param(
 $ErrorActionPreference = "Stop"
 $repository = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $artifacts = Join-Path $repository "artifacts"
+$versionPropsPath = Join-Path $repository "Directory.Build.props"
+[xml]$versionProps = Get-Content -LiteralPath $versionPropsPath -Raw
+$productVersion = [string]$versionProps.Project.PropertyGroup.VersionPrefix
+if ($productVersion -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Directory.Build.props VersionPrefix must be a three-part release version; found '$productVersion'."
+}
+
+$installerScriptPath = Join-Path $PSScriptRoot "Kairon.iss"
+$installerScript = Get-Content -LiteralPath $installerScriptPath -Raw
+if ($installerScript -notmatch '(?m)^#define MyAppVersion "([^"]+)"$') {
+    throw "Kairon.iss does not define MyAppVersion."
+}
+if ($Matches[1] -ne $productVersion) {
+    throw "Release version mismatch: Directory.Build.props=$productVersion, Kairon.iss=$($Matches[1])."
+}
+
 $package = Join-Path $artifacts "windows-package"
 $backend = Join-Path $package "backend"
 $agent = Join-Path $package "agent"
@@ -75,7 +91,38 @@ try {
     & $python -m pip install -r requirements.txt
     if ($LASTEXITCODE -ne 0) { throw "AI service dependency install failed." }
 
-    & $python -m PyInstaller --noconfirm --clean --onefile --name Kairon.AI --distpath $ai `
+    $versionParts = $productVersion.Split('.') | ForEach-Object { [int]$_ }
+    $aiVersionFile = Join-Path $artifacts "pyinstaller-version.txt"
+    $aiVersionResource = @"
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=($($versionParts[0]), $($versionParts[1]), $($versionParts[2]), 0),
+    prodvers=($($versionParts[0]), $($versionParts[1]), $($versionParts[2]), 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable('040904B0', [
+        StringStruct('CompanyName', 'Kairon'),
+        StringStruct('FileDescription', 'Kairon AI Service'),
+        StringStruct('FileVersion', '$productVersion.0'),
+        StringStruct('ProductName', 'Kairon'),
+        StringStruct('ProductVersion', '$productVersion')
+      ])
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+"@
+    Set-Content -LiteralPath $aiVersionFile -Value $aiVersionResource -Encoding Ascii
+
+    & $python -m PyInstaller --noconfirm --clean --onefile --name Kairon.AI `
+        --version-file $aiVersionFile --distpath $ai `
         --workpath (Join-Path $artifacts "pyinstaller-work") --specpath (Join-Path $artifacts "pyinstaller-spec") `
         --collect-all fastapi --collect-all uvicorn entrypoint.py
     if ($LASTEXITCODE -ne 0) { throw "AI service packaging failed." }
@@ -96,5 +143,5 @@ if ([string]::IsNullOrWhiteSpace($InnoCompiler)) {
 if (-not $InnoCompiler -or -not (Test-Path -LiteralPath $InnoCompiler)) {
     throw "Inno Setup 6 compiler was not found. Install it, or pass -SkipInstallerCompile to stop after staging the package at $package."
 }
-& $InnoCompiler "/DPackageRoot=$package" (Join-Path $PSScriptRoot "Kairon.iss")
+& $InnoCompiler "/DPackageRoot=$package" $installerScriptPath
 if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed." }

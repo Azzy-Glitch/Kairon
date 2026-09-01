@@ -54,12 +54,12 @@ Verified, live, in this environment:
   tails logs, watches the target process identically to before).
 - **The Windows Service registration is real, not just written, and the compiled installer has
   actually been run** — a genuine `C:\Program Files\Kairon` install exists on this machine, put
-  there by `Kairon-Setup-1.0.0-win-x64.exe` itself (confirmed via the service's own registered
+  there by a versioned `Kairon-Setup-<version>-win-x64.exe` itself (confirmed via the service's own registered
   `BINARY_PATH_NAME`), after the user disabled Windows Smart App Control (their own decision — it
   was blocking the installer's own self-extracting temp executable, not just the published
   desktop shell).
 - **Inno Setup 6 is installed** (`winget install JRSoftware.InnoSetup`) and compilation succeeds:
-  `ISCC.exe` produces a real ~114 MB `Kairon-Setup-1.0.0-win-x64.exe` at `artifacts\installer\`.
+  `ISCC.exe` produces a real versioned `Kairon-Setup-<version>-win-x64.exe` at `artifacts\installer\`.
 
 **A later pass added a second component, `KAIRON.UserAgent`** — see `docs/DESKTOP_SHELL.md` for
 the full architecture. In short: `Kairon.Agent` reverted to `LocalService` (least privilege — an

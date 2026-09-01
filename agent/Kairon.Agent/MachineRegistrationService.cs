@@ -115,7 +115,8 @@ public class MachineRegistrationService : BackgroundService
             hostName = System.Environment.MachineName,
             operatingSystem = RuntimeInformation.OSDescription,
             architecture = RuntimeInformation.OSArchitecture.ToString(),
-            agentVersion = "1.0.0",
+            agentVersion = typeof(MachineRegistrationService).Assembly.GetName().Version?.ToString(3)
+                ?? "unknown",
             agentKey = _options.AgentKey
         };
 

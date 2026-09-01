@@ -32,7 +32,7 @@ public static class KaironPairingClient
                 Timeout = TimeSpan.FromSeconds(10)
             };
             var version = typeof(KaironPairingClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
-                .InformationalVersion ?? "1.0.0";
+                .InformationalVersion ?? "1.0.1";
 
             var response = await client.PostAsJsonAsync("api/v1/sdk/pair",
                 new { code = pairingCode, sdkType = "dotnet", version }, cancellationToken);
