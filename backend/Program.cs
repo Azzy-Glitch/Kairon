@@ -1,6 +1,7 @@
 using Kairon.Backend.Extensions;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Services;
+using Kairon.Backend.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
 using Serilog;
@@ -8,12 +9,22 @@ using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Resolve the same writable runtime-data layout used by SQLite before Serilog opens its file
+// sink. The installed desktop backend runs as the interactive user and cannot write beneath
+// Program Files; %LOCALAPPDATA%\Kairon\logs (or the explicit database path's sibling logs folder)
+// remains writable without weakening binary-directory ACLs.
+var persistenceOptions = builder.Configuration
+    .GetSection(PersistenceOptions.SectionName)
+    .Get<PersistenceOptions>() ?? new PersistenceOptions();
+var dataPaths = KaironDataPaths.Resolve(persistenceOptions);
+dataPaths.EnsureLogsCreated();
+
 // Configure Serilog
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
     .Enrich.FromLogContext()
     .WriteTo.Console()
-    .WriteTo.File("logs/kairon-.txt", rollingInterval: RollingInterval.Day)
+    .WriteTo.File(Path.Combine(dataPaths.Logs, "kairon-.txt"), rollingInterval: RollingInterval.Day)
     .CreateLogger();
 
 builder.Host.UseSerilog();
@@ -40,8 +51,8 @@ builder.Services.AddSwaggerGen(options =>
 // Database - SQLite (default, packaged desktop product) or SqlServer (centralized/cloud
 // deployments) via Persistence:Provider. See backend/Infrastructure/PersistenceRegistration.cs.
 builder.Services.AddKaironPersistence(builder.Configuration);
-builder.Services.Configure<Kairon.Backend.Configuration.PersistenceOptions>(
-    builder.Configuration.GetSection(Kairon.Backend.Configuration.PersistenceOptions.SectionName));
+builder.Services.Configure<PersistenceOptions>(
+    builder.Configuration.GetSection(PersistenceOptions.SectionName));
 builder.Services.AddPersistenceMaintenance();
 
 builder.Services.AddRateLimiter(options =>

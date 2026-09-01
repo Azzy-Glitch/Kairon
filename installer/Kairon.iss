@@ -8,7 +8,7 @@
 ; layout, validate-before-reconfigure, recovery policy, SCM verification at every step) is
 ; unchanged in substance from the source branch - it did not need adapting.
 #define MyAppName "Kairon"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "Kairon"
 #ifndef PackageRoot
   #define PackageRoot "..\artifacts\windows-package"
@@ -65,7 +65,6 @@ Filename: "{app}\Kairon.exe"; Description: "Launch Kairon"; Flags: nowait postin
 [UninstallRun]
 Filename: "{sys}\sc.exe"; Parameters: "stop Kairon.Agent"; Flags: runhidden waituntilterminated; RunOnceId: "StopAgent"
 Filename: "{sys}\sc.exe"; Parameters: "delete Kairon.Agent"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteAgent"
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""Kairon\UserAgent"" /F"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteUserAgentTask"
 
 [Code]
 const
@@ -172,19 +171,15 @@ begin
   // Windows Service's own limited cross-session process visibility - docs/DESKTOP_SHELL.md - but
   // that traded away least privilege for a problem the UserAgent now solves properly.)
   Existing := AgentServiceExists;
-  // `sc create ... obj= LocalService` (no password= needed - it's a passwordless virtual account)
-  // is what correctly set SERVICE_START_NAME to NT AUTHORITY\LocalService in the first place, and
-  // still works fine for a brand new service. But `sc config` on an EXISTING service is different:
-  // confirmed live (a battery of side-by-side variants, run standalone outside the installer) that
-  // passing obj= LocalService to `config` at all - with or without password= - fails with error
-  // 1057 ("account name is invalid or password is invalid"), while the EXACT SAME config call with
-  // obj=/password= omitted entirely succeeds immediately (exit 0). Since this service's account
-  // never changes between installs (it is always LocalService, hard-coded, never user-configurable),
-  // there is nothing to reconfigure there on an upgrade - so config simply doesn't ask.
+  // sc.exe requires the built-in account's fully qualified name. The shorthand `LocalService`
+  // fails on a fresh create with error 1057 on current Windows builds. Use the canonical account
+  // for both create and upgrade so an older installation can never retain a more privileged
+  // identity merely because Setup took the reconfigure path. LocalService is passwordless, so no
+  // password= argument is required.
   CreateArguments := 'binPath= "' + AgentExecutablePath + '" start= auto ' +
-    'obj= LocalService DisplayName= "Kairon Agent"';
+    'obj= "NT AUTHORITY\LocalService" DisplayName= "Kairon Agent"';
   ConfigArguments := 'binPath= "' + AgentExecutablePath + '" start= auto ' +
-    'DisplayName= "Kairon Agent"';
+    'obj= "NT AUTHORITY\LocalService" DisplayName= "Kairon Agent"';
 
   if Existing then
   begin
@@ -237,6 +232,153 @@ end;
 function UserAgentExecutablePath: String;
 begin
   Result := ExpandConstant('{app}\useragent\Kairon.UserAgent.exe');
+end;
+
+// Returns every running process whose image name and full executable path both identify the
+// UserAgent installed by this exact Kairon installation. The name narrows the WMI query only; the
+// path comparison is the security boundary that prevents an unrelated process with the same name
+// from being touched. WMI sees processes in all interactive sessions when the uninstaller runs
+// elevated, so this also handles more than one legitimate UserAgent instance.
+function ProcessInstalledUserAgents(TerminateMatches: Boolean): Integer;
+var
+  Locator: Variant;
+  Services: Variant;
+  Processes: Variant;
+  Process: Variant;
+  I: Integer;
+  ProcessId: Integer;
+  SessionId: Integer;
+  TerminateResult: Integer;
+  ProcessPath: String;
+  ExpectedPath: String;
+begin
+  Result := 0;
+  ExpectedPath := ExpandFileName(UserAgentExecutablePath);
+
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    // Terminating a process owned by another interactive session can require SeDebugPrivilege.
+    // The uninstaller is already elevated; enable that existing token privilege only for this WMI
+    // connection rather than introducing a service/helper or changing the UserAgent identity.
+    try
+      Locator.Security_.Privileges.AddAsString('SeDebugPrivilege', True);
+    except
+      Log('Kairon UserAgent: SeDebugPrivilege was unavailable; continuing with the elevated uninstall token.');
+    end;
+    Services := Locator.ConnectServer('.', 'root\cimv2');
+    Services.Security_.ImpersonationLevel := 3;
+    Processes := Services.ExecQuery(
+      'SELECT ProcessId, SessionId, ExecutablePath FROM Win32_Process ' +
+      'WHERE Name = ''Kairon.UserAgent.exe''');
+
+    for I := 0 to Processes.Count - 1 do
+    begin
+      Process := Processes.ItemIndex(I);
+      if not VarIsNull(Process.ExecutablePath) then
+      begin
+        ProcessPath := ExpandFileName(Process.ExecutablePath);
+        if CompareText(ProcessPath, ExpectedPath) = 0 then
+        begin
+          Result := Result + 1;
+          ProcessId := Process.ProcessId;
+          SessionId := Process.SessionId;
+          if TerminateMatches then
+          begin
+            Log(Format(
+              'Kairon UserAgent: terminating verified installed process PID %d in session %d (%s).', [ProcessId, SessionId, ProcessPath]));
+            TerminateResult := Process.Terminate(0);
+            if TerminateResult <> 0 then
+              RaiseException(Format(
+                'Kairon Uninstall could not terminate its verified UserAgent process PID %d ' +
+                '(WMI result %d). Close the process and retry uninstall.', [ProcessId, TerminateResult]));
+          end;
+        end
+        else
+          Log(Format(
+            'Kairon UserAgent: leaving same-named process PID %d untouched because its path is %s.', [Integer(Process.ProcessId), ProcessPath]));
+      end;
+    end;
+  except
+    RaiseException('Kairon Uninstall could not inspect/stop its UserAgent processes: ' +
+      GetExceptionMessage + '. No same-named process was terminated without path verification.');
+  end;
+end;
+
+function WaitForInstalledUserAgentsToExit(TimeoutMilliseconds: Integer): Boolean;
+var
+  WaitedMilliseconds: Integer;
+begin
+  WaitedMilliseconds := 0;
+  while (ProcessInstalledUserAgents(False) > 0) and
+        (WaitedMilliseconds < TimeoutMilliseconds) do
+  begin
+    Sleep(250);
+    WaitedMilliseconds := WaitedMilliseconds + 250;
+  end;
+  Result := ProcessInstalledUserAgents(False) = 0;
+end;
+
+procedure StopInstalledUserAgentsForLifecycle;
+var
+  MatchCount: Integer;
+begin
+  MatchCount := ProcessInstalledUserAgents(False);
+  if MatchCount = 0 then
+  begin
+    Log('Kairon UserAgent: no running process belonging to this installation was found.');
+    Exit;
+  end;
+
+  Log(Format('Kairon UserAgent: found %d verified installed process(es) to stop before file replacement/removal.', [MatchCount]));
+  ProcessInstalledUserAgents(True);
+  if not WaitForInstalledUserAgentsToExit(5000) then
+    RaiseException('Kairon Uninstall timed out waiting for its verified UserAgent process(es) to exit. ' +
+      'Installed files will not be removed while they may still be locked.');
+
+  Log('Kairon UserAgent: all verified installed processes exited before file removal.');
+end;
+
+procedure StartInstalledUserAgentTask;
+var
+  ResultCode: Integer;
+begin
+  // The logon trigger does not fire merely because Setup created/replaced the task in an already
+  // interactive session. Start it once after successful installation so fresh installs and
+  // upgrades immediately run the newly installed version; IgnoreNew prevents a duplicate if an
+  // instance is already active.
+  if not (Exec(ExpandConstant('{sys}\schtasks.exe'),
+      '/Run /TN "' + UserAgentTaskName + '"', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode) and (ResultCode = 0)) then
+    RaiseException(Format(
+      'Kairon Setup registered its UserAgent task but could not start it (schtasks.exe exit code %d).', [ResultCode]));
+
+  Log('Kairon UserAgent: scheduled task start requested successfully.');
+end;
+
+procedure RemoveUserAgentTaskForUninstall;
+var
+  ResultCode: Integer;
+begin
+  // Query first so uninstall remains idempotent when the task was already removed. If it exists,
+  // require deletion to succeed so Windows cannot later launch a now-uninstalled executable.
+  if not Exec(ExpandConstant('{sys}\schtasks.exe'),
+      '/Query /TN "' + UserAgentTaskName + '"', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode) then
+    RaiseException('Kairon Uninstall could not query its UserAgent scheduled task.');
+
+  if ResultCode <> 0 then
+  begin
+    Log('Kairon UserAgent: scheduled task was already absent.');
+    Exit;
+  end;
+
+  if not (Exec(ExpandConstant('{sys}\schtasks.exe'),
+      '/Delete /TN "' + UserAgentTaskName + '" /F', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode) and (ResultCode = 0)) then
+    RaiseException(Format(
+      'Kairon Uninstall could not remove its UserAgent scheduled task (schtasks.exe exit code %d).', [ResultCode]));
+
+  Log('Kairon UserAgent: scheduled task removed after all verified processes exited.');
 end;
 
 // KAIRON.UserAgent runs *as the interactive user*, not as a service - it needs the process
@@ -296,6 +438,10 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  // Restart Manager cannot close the hidden WinExe UserAgent because it has no top-level window.
+  // Stop only exact-path instances before Restart Manager evaluates the remaining desktop-owned
+  // processes, otherwise a silent upgrade aborts while the UserAgent keeps its binaries locked.
+  StopInstalledUserAgentsForLifecycle;
   if AgentServiceExists then
   begin
     ValidateExistingAgentService;
@@ -344,36 +490,18 @@ begin
   Result := RunTakeown(ConfigDir, '/R /D Y', Action);
 end;
 
-function RunTakeownOnFile(const FilePath, Action: String): Boolean;
-begin
-  // /D (default answer to the "deny read permission" prompt) is - like /R - only valid alongside
-  // /R; a single file target takes neither (confirmed live: takeown rejects /D without /R).
-  Result := RunTakeown(FilePath, '', Action);
-end;
-
-// Resets this folder's whole ACL from scratch on every install/upgrade, rather than only adding a
-// grant on top of whatever is already there. Three things confirmed live make an additive-only
-// grant insufficient: (1) every subfolder created under %ProgramData% inherits a standard Windows
-// ACE - BUILTIN\Users:(WD,AD,WEA,WA) - that alone lets an ordinary user overwrite a file here, with
-// no explicit Modify grant needed; (2) a folder that has been through an older installer revision
-// (e.g. one that used `Permissions: users-modify`) can carry a leftover explicit grant that
-// `icacls /grant` alone never strips; (3) resetting the FOLDER's own ACL does not retroactively
-// touch a file that already exists inside it - agent-credential.json, generated by an earlier
-// install/run under a broader grant, kept its own stale BUILTIN\Users:(M) ACE even after the
-// folder above it was reset, since a parent's ACE only propagates to children created after the
-// ACE is set, never to ones that already existed. /T (recurse into existing children) on every
-// call below is what actually reaches that already-existing file, not just the folder. Breaking
-// inheritance (/inheritance:r) removes case (1); explicitly removing any existing Users grant
-// before re-adding a clean one handles case (2); /T handles case (3); /grant:r (replace, not add)
-// for every trustee means the result is always exactly the same four entries on the folder and
-// every file in it, regardless of this folder's install history.
+// Resets this folder's whole ACL from scratch on every install/upgrade. The transition must remain
+// writable by elevated Setup at every step: removing inheritance before adding an explicit
+// Administrators ACE can remove Setup's only effective access and make the very next icacls call
+// fail with Access Denied. First establish explicit SYSTEM/Administrators access recursively,
+// then remove inheritance and apply the final least-privilege ACL. Plain rights are applied with
+// /T so existing files receive valid file ACEs; the root container is then replaced with inheritable
+// (OI)(CI) entries so files created later receive the same policy.
 procedure GrantAgentCredentialAcl;
 var
   ConfigDir: String;
-  CredentialFile: String;
 begin
   ConfigDir := ExpandConstant('{commonappdata}\Kairon\config');
-  CredentialFile := ConfigDir + '\agent-credential.json';
 
   // Setup runs elevated as the installing Administrator, but that alone does not grant WRITE_DAC
   // (permission to change an object's ACL) on a file this folder already contains - confirmed
@@ -383,48 +511,35 @@ begin
   // ACL directly. Taking ownership first is what actually grants WRITE_DAC - NTFS ownership always
   // implies the right to change permissions, regardless of the object's existing ACL.
   RunTakeownOnConfigDir(ConfigDir, 'take ownership of its credential folder');
+  RunIcacls(ConfigDir, '/grant:r "BUILTIN\Administrators:F" /T',
+    'preserve Administrator access while hardening its credential folder');
+  RunIcacls(ConfigDir, '/grant:r "NT AUTHORITY\SYSTEM:F" /T',
+    'preserve SYSTEM access while hardening its credential folder');
   RunIcacls(ConfigDir, '/inheritance:r /T',
     'remove inherited permissions from its credential folder');
   RunIcacls(ConfigDir, '/remove:g "BUILTIN\Users" /T',
     'strip any previously granted permissions for the Users group from its credential folder');
-  RunIcacls(ConfigDir, '/grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /T',
-    'grant SYSTEM access to its credential folder');
-  RunIcacls(ConfigDir, '/grant:r "BUILTIN\Administrators:(OI)(CI)F" /T',
-    'grant Administrators access to its credential folder');
-  RunIcacls(ConfigDir, '/grant:r "BUILTIN\Users:(OI)(CI)RX" /T',
-    'grant Users read-only access to its credential folder');
-  RunIcacls(ConfigDir, '/grant:r "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)M" /T',
-    'grant the Agent service account access to its credential folder');
+  RunIcacls(ConfigDir, '/grant:r "NT AUTHORITY\SYSTEM:F" /T',
+    'grant SYSTEM access to existing credential files');
+  RunIcacls(ConfigDir, '/grant:r "BUILTIN\Administrators:F" /T',
+    'grant Administrators access to existing credential files');
+  RunIcacls(ConfigDir, '/grant:r "BUILTIN\Users:RX" /T',
+    'grant Users read-only access to existing credential files');
+  RunIcacls(ConfigDir, '/grant:r "NT AUTHORITY\LOCAL SERVICE:M" /T',
+    'grant the Agent service account access to existing credential files');
+
+  // Replace the root folder's plain transition ACEs with inheritable container ACEs. Existing
+  // files keep the explicit plain ACEs applied above; future files inherit the same rights.
+  RunIcacls(ConfigDir, '/grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F"',
+    'make SYSTEM access inheritable on its credential folder');
+  RunIcacls(ConfigDir, '/grant:r "BUILTIN\Administrators:(OI)(CI)F"',
+    'make Administrators access inheritable on its credential folder');
+  RunIcacls(ConfigDir, '/grant:r "BUILTIN\Users:(OI)(CI)RX"',
+    'make Users read-only access inheritable on its credential folder');
+  RunIcacls(ConfigDir, '/grant:r "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)M"',
+    'make the Agent service account access inheritable on its credential folder');
 
   Log('Kairon Agent: reset the credential config folder ACL to SYSTEM/Administrators full control, Users read-only, LocalService modify.');
-
-  // The six calls above, despite /T, do NOT reliably land on a file that already exists inside the
-  // folder - confirmed live: after all six ran cleanly (exit 0, and the FOLDER's own ACL came out
-  // exactly right), the pre-existing agent-credential.json was left with a completely EMPTY DACL
-  // (zero ACEs - verified with both icacls and Get-Acl), meaning nobody, not even LocalService,
-  // could actually open it; a (OI)(CI)-qualified grant is only meaningful on a container; applying
-  // it through /T to a plain file apparently discards the grant on that file entirely rather than
-  // stripping the now-meaningless inheritance qualifiers and keeping the underlying right. The
-  // fix is to not depend on propagation at all: repeat the same reset directly against the file
-  // path itself, with plain (non-qualified) rights, which unambiguously apply to a single object.
-  if FileExists(CredentialFile) then
-  begin
-    RunTakeownOnFile(CredentialFile, 'take ownership of its existing credential file');
-    RunIcacls(CredentialFile, '/inheritance:r',
-      'remove inherited permissions from its existing credential file');
-    RunIcacls(CredentialFile, '/remove:g "BUILTIN\Users"',
-      'strip any previously granted permissions for the Users group from its existing credential file');
-    RunIcacls(CredentialFile, '/grant:r "NT AUTHORITY\SYSTEM:F"',
-      'grant SYSTEM access to its existing credential file');
-    RunIcacls(CredentialFile, '/grant:r "BUILTIN\Administrators:F"',
-      'grant Administrators access to its existing credential file');
-    RunIcacls(CredentialFile, '/grant:r "BUILTIN\Users:RX"',
-      'grant Users read-only access to its existing credential file');
-    RunIcacls(CredentialFile, '/grant:r "NT AUTHORITY\LOCAL SERVICE:M"',
-      'grant the Agent service account access to its existing credential file');
-
-    Log('Kairon Agent: also reset the ACL directly on the pre-existing credential file itself.');
-  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -434,5 +549,19 @@ begin
     GrantAgentCredentialAcl;
     InstallOrReconfigureAgentService;
     InstallOrReconfigureUserAgentTask;
+    StartInstalledUserAgentTask;
+  end;
+end;
+
+var
+  UserAgentUninstallPrepared: Boolean;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if (CurUninstallStep = usUninstall) and not UserAgentUninstallPrepared then
+  begin
+    UserAgentUninstallPrepared := True;
+    StopInstalledUserAgentsForLifecycle;
+    RemoveUserAgentTaskForUninstall;
   end;
 end;

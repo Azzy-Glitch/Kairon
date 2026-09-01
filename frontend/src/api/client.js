@@ -7,7 +7,10 @@ import axios from 'axios';
  * timeouts live in one place instead of being re-invented in each component (frontend PRD 16).
  */
 const client = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000/api',
+  // Production is served by the backend itself, so relative /api keeps the WebView2 page and
+  // API same-origin (127.0.0.1 stays 127.0.0.1). Vite proxies /api during local development;
+  // VITE_API_URL remains available for an explicitly configured remote backend.
+  baseURL: import.meta.env.VITE_API_URL || '/api',
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' }
 });

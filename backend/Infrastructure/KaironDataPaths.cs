@@ -42,4 +42,10 @@ public sealed record KaironDataPaths(string Root, string Data, string Logs, stri
         Directory.CreateDirectory(Cache);
         Directory.CreateDirectory(Backups);
     }
+
+    /// <summary>Creates only the runtime log directory. Logging is initialized before the
+    /// application service graph, so Program calls this explicitly before Serilog opens its file
+    /// sink. It also works for an explicit database path, where the rest of the layout is not
+    /// managed automatically.</summary>
+    public void EnsureLogsCreated() => Directory.CreateDirectory(Logs);
 }

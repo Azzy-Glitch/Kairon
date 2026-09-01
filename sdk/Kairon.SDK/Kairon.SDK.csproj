@@ -6,7 +6,6 @@
 		<Nullable>enable</Nullable>
 		<GeneratePackageOnBuild>false</GeneratePackageOnBuild>
 		<PackageId>Kairon.SDK</PackageId>
-		<Version>1.0.0</Version>
 		<Authors>Kairon</Authors>
 		<Description>Kairon telemetry and observability SDK for .NET applications.</Description>
 		<PackageReadmeFile>README.md</PackageReadmeFile>

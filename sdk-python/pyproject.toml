@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kairon-sdk"
-version = "1.0.0"
+version = "1.0.1"
 description = "Kairon telemetry SDK for Python applications - a collector, not a dependency on the Kairon platform."
 readme = "README.md"
 requires-python = ">=3.9"
