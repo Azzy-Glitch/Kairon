@@ -318,7 +318,7 @@ begin
   Result := ProcessInstalledUserAgents(False) = 0;
 end;
 
-procedure StopInstalledUserAgentsForUninstall;
+procedure StopInstalledUserAgentsForLifecycle;
 var
   MatchCount: Integer;
 begin
@@ -329,13 +329,30 @@ begin
     Exit;
   end;
 
-  Log(Format('Kairon UserAgent: found %d verified installed process(es) to stop before file removal.', [MatchCount]));
+  Log(Format('Kairon UserAgent: found %d verified installed process(es) to stop before file replacement/removal.', [MatchCount]));
   ProcessInstalledUserAgents(True);
   if not WaitForInstalledUserAgentsToExit(5000) then
     RaiseException('Kairon Uninstall timed out waiting for its verified UserAgent process(es) to exit. ' +
       'Installed files will not be removed while they may still be locked.');
 
   Log('Kairon UserAgent: all verified installed processes exited before file removal.');
+end;
+
+procedure StartInstalledUserAgentTask;
+var
+  ResultCode: Integer;
+begin
+  // The logon trigger does not fire merely because Setup created/replaced the task in an already
+  // interactive session. Start it once after successful installation so fresh installs and
+  // upgrades immediately run the newly installed version; IgnoreNew prevents a duplicate if an
+  // instance is already active.
+  if not (Exec(ExpandConstant('{sys}\schtasks.exe'),
+      '/Run /TN "' + UserAgentTaskName + '"', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode) and (ResultCode = 0)) then
+    RaiseException(Format(
+      'Kairon Setup registered its UserAgent task but could not start it (schtasks.exe exit code %d).', [ResultCode]));
+
+  Log('Kairon UserAgent: scheduled task start requested successfully.');
 end;
 
 procedure RemoveUserAgentTaskForUninstall;
@@ -421,6 +438,10 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  // Restart Manager cannot close the hidden WinExe UserAgent because it has no top-level window.
+  // Stop only exact-path instances before Restart Manager evaluates the remaining desktop-owned
+  // processes, otherwise a silent upgrade aborts while the UserAgent keeps its binaries locked.
+  StopInstalledUserAgentsForLifecycle;
   if AgentServiceExists then
   begin
     ValidateExistingAgentService;
@@ -528,6 +549,7 @@ begin
     GrantAgentCredentialAcl;
     InstallOrReconfigureAgentService;
     InstallOrReconfigureUserAgentTask;
+    StartInstalledUserAgentTask;
   end;
 end;
 
@@ -539,7 +561,7 @@ begin
   if (CurUninstallStep = usUninstall) and not UserAgentUninstallPrepared then
   begin
     UserAgentUninstallPrepared := True;
-    StopInstalledUserAgentsForUninstall;
+    StopInstalledUserAgentsForLifecycle;
     RemoveUserAgentTaskForUninstall;
   end;
 end;
