@@ -62,6 +62,8 @@ class AiConfig:
     timeout_seconds: float = 30.0
     max_retries: int = 2
     temperature: float = 0.2
+    max_output_tokens: int = 2048
+    max_response_bytes: int = 65536
     force_mock: bool = False
 
     # Credentials. Server-side only; never serialized, never logged.
@@ -86,6 +88,8 @@ class AiConfig:
             timeout_seconds=_env_float("AI__TimeoutSeconds", _env_float("AI_TIMEOUT_SECONDS", 30.0)),
             max_retries=_env_int("AI__MaxRetries", _env_int("AI_MAX_RETRIES", 2)),
             temperature=_env_float("AI__Temperature", 0.2),
+            max_output_tokens=_env_int("AI__MaxOutputTokens", 2048),
+            max_response_bytes=_env_int("AI__MaxResponseBytes", 65536),
             force_mock=force_mock,
             qwen_api_key=_env("QWEN_API_KEY"),
             gemini_api_key=_env("GEMINI_API_KEY"),
@@ -122,6 +126,7 @@ class AiConfig:
             "model": self.model,
             "timeout_seconds": self.timeout_seconds,
             "max_retries": self.max_retries,
+            "max_output_tokens": self.max_output_tokens,
             "mock_mode": self.effective_provider == "mock",
             "credentials_configured": {
                 "qwen": not is_placeholder(self.qwen_api_key),

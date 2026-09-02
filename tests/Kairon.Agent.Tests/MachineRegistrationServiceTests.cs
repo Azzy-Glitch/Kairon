@@ -18,6 +18,7 @@ public sealed class MachineRegistrationServiceTests
         {
             EnableMachineRegistration = true,
             AgentKey = "unit-test-agent-key",
+            UserAgentKey = "unit-test-user-agent-key-that-is-long-enough",
             HeartbeatIntervalSeconds = 20,
             TimeoutSeconds = 1
         }));

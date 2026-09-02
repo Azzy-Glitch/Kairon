@@ -10,29 +10,30 @@ public sealed class AgentCredentialStoreTests : IDisposable
     [Fact]
     public void ExplicitNonDefaultKeyIsHonoredUnchanged()
     {
-        var result = AgentCredentialStore.Resolve("my-custom-test-key", _path);
+        var result = AgentCredentialStore.TryResolve("my-custom-test-key", _path);
 
         Assert.Equal("my-custom-test-key", result);
         Assert.False(File.Exists(_path));
     }
 
     [Fact]
-    public void InsecureDefaultTriggersGenerationAndPersistence()
+    public void MissingScopedCredentialFailsClosedWithoutCreatingAFile()
     {
-        var generated = AgentCredentialStore.Resolve(AgentCredentialStore.InsecureDefaultAgentKey, _path);
+        var result = AgentCredentialStore.TryResolve(AgentCredentialStore.InsecureDefaultAgentKey, _path);
 
-        Assert.NotEqual(AgentCredentialStore.InsecureDefaultAgentKey, generated);
-        Assert.True(generated.Length > 20);
-        Assert.True(File.Exists(_path));
+        Assert.Null(result);
+        Assert.False(File.Exists(_path));
     }
 
     [Fact]
-    public void SecondCallReusesThePersistedKeyRatherThanGeneratingANewOne()
+    public void ReadsTheScopedCredentialCreatedByTheWindowsService()
     {
-        var first = AgentCredentialStore.Resolve(AgentCredentialStore.InsecureDefaultAgentKey, _path);
-        var second = AgentCredentialStore.Resolve(AgentCredentialStore.InsecureDefaultAgentKey, _path);
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        File.WriteAllText(_path, "{\"AgentKey\":\"generated-useragent-key-that-is-long-enough\"}");
 
-        Assert.Equal(first, second);
+        var result = AgentCredentialStore.TryResolve(AgentCredentialStore.InsecureDefaultAgentKey, _path);
+
+        Assert.Equal("generated-useragent-key-that-is-long-enough", result);
     }
 
     public void Dispose()

@@ -32,7 +32,10 @@ if ($productVersion -notmatch '^\d+\.\d+\.\d+$') {
 
 $installerScriptPath = Join-Path $PSScriptRoot "Kairon.iss"
 $installerScript = Get-Content -LiteralPath $installerScriptPath -Raw
-if ($installerScript -notmatch '(?m)^#define MyAppVersion "([^"]+)"$') {
+# Accept either repository line-ending convention. In multiline .NET regex mode `$` matches
+# before `\n` but not before the preceding `\r`, so a strict end anchor rejects a valid CRLF
+# Inno source file before any packaging work starts.
+if ($installerScript -notmatch '(?m)^#define MyAppVersion "([^"]+)"\r?$') {
     throw "Kairon.iss does not define MyAppVersion."
 }
 if ($Matches[1] -ne $productVersion) {
@@ -44,9 +47,10 @@ $backend = Join-Path $package "backend"
 $agent = Join-Path $package "agent"
 $useragent = Join-Path $package "useragent"
 $ai = Join-Path $package "ai"
+$pythonBuildEnvironment = Join-Path $artifacts "python-build-venv"
 
 $artifactsRoot = [System.IO.Path]::GetFullPath($artifacts).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-foreach ($stagingDirectory in @($package, $backend, $agent, $useragent, $ai)) {
+foreach ($stagingDirectory in @($package, $backend, $agent, $useragent, $ai, $pythonBuildEnvironment)) {
     $resolvedStagingDirectory = [System.IO.Path]::GetFullPath($stagingDirectory)
     if (-not $resolvedStagingDirectory.StartsWith($artifactsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to clean a staging directory outside the repository artifacts directory: $resolvedStagingDirectory"
@@ -78,17 +82,18 @@ if ($LASTEXITCODE -ne 0) { throw "UserAgent publish failed." }
 & dotnet publish (Join-Path $repository "desktop\Kairon.Desktop\Kairon.Desktop.csproj") -c $Configuration -r $Runtime --self-contained true -o $package
 if ($LASTEXITCODE -ne 0) { throw "Desktop shell publish failed." }
 
-$python = Join-Path $repository "ai-service\.venv\Scripts\python.exe"
-if (-not (Test-Path -LiteralPath $python)) {
-    $python = (Get-Command python -ErrorAction SilentlyContinue).Source
-    if (-not $python) { throw "No Python found (looked for ai-service/.venv or 'python' on PATH)." }
-}
+$bootstrapPython = (Get-Command python -ErrorAction SilentlyContinue).Source
+if (-not $bootstrapPython) { throw "No Python interpreter was found on PATH to create the isolated packaging environment." }
+
+& $bootstrapPython -m venv $pythonBuildEnvironment
+if ($LASTEXITCODE -ne 0) { throw "Could not create the isolated AI packaging environment." }
+$python = Join-Path $pythonBuildEnvironment "Scripts\python.exe"
+
 Push-Location (Join-Path $repository "ai-service")
 try {
-    # Installed from the committed lockfile, not whatever happens to already be present in
-    # whichever Python this run found - otherwise the packaged AI service reproducibly builds from
-    # source but not from a known dependency set (matches .github/workflows/windows-installer.yml).
-    & $python -m pip install -r requirements.txt
+    # Install only into artifacts/python-build-venv. Packaging never mutates the developer's
+    # global interpreter or a pre-existing project environment.
+    & $python -m pip install --disable-pip-version-check -r requirements-build.txt
     if ($LASTEXITCODE -ne 0) { throw "AI service dependency install failed." }
 
     $versionParts = $productVersion.Split('.') | ForEach-Object { [int]$_ }

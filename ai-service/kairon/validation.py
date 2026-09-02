@@ -15,6 +15,12 @@ from .schemas import EvidencePackage, InvestigationResult, Recommendation
 
 SEVERITIES = {"info", "low", "medium", "high", "critical"}
 RISKS = {"low", "medium", "high", "critical"}
+MAX_TEXT_CHARS = 4000
+MAX_SHORT_TEXT_CHARS = 500
+MAX_LIST_ITEMS = 12
+MAX_LIST_ITEM_CHARS = 1000
+MAX_RECOMMENDATIONS = 10
+MAX_PARAMETERS = 20
 
 # Models routinely wrap JSON in prose or fences; these are the shapes worth recovering from before
 # giving up on a response.
@@ -58,14 +64,18 @@ def extract_json(text: str) -> Any:
     raise AiResponseError("Model response contained no JSON object")
 
 
-def _as_list_of_str(value: Any, limit: int = 12) -> List[str]:
+def _text(value: Any, limit: int = MAX_TEXT_CHARS) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _as_list_of_str(value: Any, limit: int = MAX_LIST_ITEMS) -> List[str]:
     if value is None:
         return []
     if isinstance(value, str):
-        return [value][:limit]
+        return [_text(value, MAX_LIST_ITEM_CHARS)][:limit]
     if isinstance(value, (list, tuple)):
-        return [str(v) for v in value if v is not None][:limit]
-    return [str(value)][:limit]
+        return [_text(v, MAX_LIST_ITEM_CHARS) for v in value if v is not None][:limit]
+    return [_text(value, MAX_LIST_ITEM_CHARS)][:limit]
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
@@ -98,7 +108,7 @@ def validate_investigation(
     if not isinstance(raw, dict):
         raise AiResponseError("Model response was not a JSON object")
 
-    root_cause = str(raw.get("root_cause") or raw.get("rootCause") or "").strip()
+    root_cause = _text(raw.get("root_cause") or raw.get("rootCause"))
     if not root_cause:
         raise AiResponseError("Model response is missing a root cause")
 
@@ -121,41 +131,46 @@ def validate_investigation(
         if not isinstance(item, dict):
             continue
 
-        action = str(item.get("action") or "").strip()
+        action = _text(item.get("action"), MAX_SHORT_TEXT_CHARS)
         if not action:
             continue
 
         # A recommendation naming a tool the backend never offered is dropped here rather than
         # forwarded. Backend policy would refuse it anyway; refusing it at the source keeps the
         # operator's recommendation list honest.
-        if allowed_actions and action.lower() not in allowed_actions:
+        if evidence is not None and action.lower() not in allowed_actions:
             continue
 
         parameters = item.get("parameters")
         if not isinstance(parameters, dict):
             parameters = None
         else:
-            parameters = {str(k): str(v) for k, v in parameters.items()}
+            parameters = {
+                _text(k, 100): _text(v, MAX_LIST_ITEM_CHARS)
+                for k, v in list(parameters.items())[:MAX_PARAMETERS]
+            }
 
         recommendations.append(
             Recommendation(
                 action=action,
-                reason=str(item.get("reason") or "").strip(),
-                expected_outcome=str(item.get("expected_outcome") or item.get("expectedOutcome") or "").strip(),
+                reason=_text(item.get("reason")),
+                expected_outcome=_text(item.get("expected_outcome") or item.get("expectedOutcome")),
                 risk_level=_normalize_choice(item.get("risk_level") or item.get("riskLevel"), RISKS, "medium"),
                 parameters=parameters,
             )
         )
+        if len(recommendations) >= MAX_RECOMMENDATIONS:
+            break
 
     return InvestigationResult(
-        summary=str(raw.get("summary") or "").strip(),
+        summary=_text(raw.get("summary")),
         root_cause=root_cause,
         contributing_factors=_as_list_of_str(raw.get("contributing_factors") or raw.get("contributingFactors")),
         evidence=_as_list_of_str(raw.get("evidence")),
         confidence=confidence,
         severity=_normalize_choice(raw.get("severity"), SEVERITIES, "medium"),
         affected_components=_as_list_of_str(raw.get("affected_components") or raw.get("affectedComponents")),
-        predicted_failure=str(raw.get("predicted_failure") or raw.get("predictedFailure") or "").strip(),
+        predicted_failure=_text(raw.get("predicted_failure") or raw.get("predictedFailure")),
         estimated_risk=_normalize_choice(raw.get("estimated_risk") or raw.get("estimatedRisk"), RISKS, "medium"),
         recommendations=recommendations,
         provider=provider,
@@ -168,7 +183,7 @@ def validate_error_analysis(raw: Any) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise AiResponseError("Model response was not a JSON object")
 
-    root_cause = str(raw.get("root_cause") or "").strip()
+    root_cause = _text(raw.get("root_cause"))
     if not root_cause:
         raise AiResponseError("Model response is missing a root cause")
 
@@ -179,7 +194,7 @@ def validate_error_analysis(raw: Any) -> Dict[str, Any]:
         "severity": _normalize_choice(raw.get("severity"), SEVERITIES, "medium"),
         "severity_score": int(max(0, min(100, score))),
         "fixes": _as_list_of_str(raw.get("fixes")),
-        "prevention": str(raw.get("prevention") or "").strip(),
+        "prevention": _text(raw.get("prevention")),
     }
 
 
@@ -193,7 +208,7 @@ def validate_prediction(raw: Any) -> Dict[str, Any]:
     return {
         "failure_risk_score": int(max(0, min(100, score))),
         "risk_level": _normalize_choice(raw.get("risk_level"), {"low", "moderate", "high"}, "moderate"),
-        "reasoning": str(raw.get("reasoning") or "").strip(),
+        "reasoning": _text(raw.get("reasoning")),
     }
 
 
@@ -203,15 +218,18 @@ def validate_recommendations(raw: Any) -> Dict[str, Any]:
         raise AiResponseError("Model response was not a JSON object")
 
     items = []
-    for item in raw.get("recommendations") or []:
+    candidates = raw.get("recommendations") or []
+    if not isinstance(candidates, (list, tuple)):
+        candidates = []
+    for item in candidates[:MAX_RECOMMENDATIONS]:
         if not isinstance(item, dict):
             continue
-        suggestion = str(item.get("suggestion") or "").strip()
+        suggestion = _text(item.get("suggestion"))
         if not suggestion:
             continue
         items.append(
             {
-                "category": str(item.get("category") or "general").strip(),
+                "category": _text(item.get("category") or "general", MAX_SHORT_TEXT_CHARS),
                 "suggestion": suggestion,
             }
         )
@@ -225,15 +243,18 @@ def validate_fix_suggestions(raw: Any) -> Dict[str, Any]:
         raise AiResponseError("Model response was not a JSON object")
 
     items = []
-    for item in raw.get("suggestions") or []:
+    candidates = raw.get("suggestions") or []
+    if not isinstance(candidates, (list, tuple)):
+        candidates = []
+    for item in candidates[:MAX_RECOMMENDATIONS]:
         if not isinstance(item, dict):
             continue
-        explanation = str(item.get("explanation") or "").strip()
+        explanation = _text(item.get("explanation"))
         if not explanation:
             continue
         items.append(
             {
-                "path": str(item.get("path") or "").strip(),
+                "path": _text(item.get("path"), MAX_LIST_ITEM_CHARS),
                 "explanation": explanation,
             }
         )

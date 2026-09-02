@@ -7,6 +7,7 @@ rather than requiring an installed package.
 from __future__ import annotations
 
 import sys
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# The production service fails closed when this secret is absent. Tests use a synthetic key and
+# never rely on a developer credential or a checked-in production secret.
+os.environ.setdefault("KAIRON_AI_API_KEY", "kairon-ai-test-key-not-for-production")
 
 from kairon.config import AiConfig  # noqa: E402
 from kairon.schemas import (  # noqa: E402

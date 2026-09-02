@@ -101,6 +101,50 @@ public class ReInvestigationTests : IDisposable
     // --- Re-investigation ---
 
     [Fact]
+    public async Task AutomaticProcessingDoesNotReInvestigateAnAlreadyDiagnosedIncident()
+    {
+        var incident = _h.SeedIncident();
+        await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
+        var callsAfterInitialInvestigation = _h.Ai.InvestigateCalls;
+
+        await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
+
+        Assert.Equal(callsAfterInitialInvestigation, _h.Ai.InvestigateCalls);
+        Assert.Equal(IncidentStatus.AwaitingApproval, incident.Status);
+    }
+
+    [Fact]
+    public async Task PerIncidentAiBudgetBlocksFurtherOperatorRequestsDurably()
+    {
+        _h.AiOptions.MaxInvestigationsPerIncident = 1;
+        var incident = _h.SeedIncident();
+        await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
+
+        await _h.CreateOrchestrator().ReinvestigateAsync(incident.Id);
+
+        Assert.Equal(1, _h.Ai.InvestigateCalls);
+        Assert.Equal(IncidentStatus.AwaitingApproval, incident.Status);
+        Assert.Contains(_h.Db.IncidentEvents, e =>
+            e.IncidentId == incident.Id && e.EventType == IncidentEventTypes.AiBudgetExceeded);
+    }
+
+    [Fact]
+    public async Task GlobalHourlyAiBudgetBlocksAnotherIncident()
+    {
+        _h.AiOptions.MaxInvestigationsPerHour = 1;
+        var first = _h.SeedIncident(correlationKey: "first");
+        var second = _h.SeedIncident(correlationKey: "second");
+
+        await _h.CreateOrchestrator().InvestigateAsync(first.Id);
+        await _h.CreateOrchestrator().InvestigateAsync(second.Id);
+
+        Assert.Equal(1, _h.Ai.InvestigateCalls);
+        Assert.Equal(IncidentStatus.Investigating, second.Status);
+        Assert.Contains(_h.Db.IncidentEvents, e =>
+            e.IncidentId == second.Id && e.EventType == IncidentEventTypes.AiBudgetExceeded);
+    }
+
+    [Fact]
     public async Task ReInvestigationProducesAFreshDiagnosisAndClearsStaleness()
     {
         var incident = _h.SeedIncident();
@@ -111,7 +155,7 @@ public class ReInvestigationTests : IDisposable
         _h.Ai.NextResult = FakeAiService.DefaultResult();
         _h.Ai.NextResult.RootCause = "Revised: controlled retry loop is the leading signal.";
 
-        await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
+        await _h.CreateOrchestrator().ReinvestigateAsync(incident.Id);
 
         var updated = await _h.Db.SreIncidents.FirstAsync(i => i.Id == incident.Id);
 
@@ -128,7 +172,7 @@ public class ReInvestigationTests : IDisposable
 
         var original = await _h.Db.RemediationActions.FirstAsync(a => a.IncidentId == incident.Id);
 
-        await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
+        await _h.CreateOrchestrator().ReinvestigateAsync(incident.Id);
 
         var actions = await _h.Db.RemediationActions
             .Where(a => a.IncidentId == incident.Id)
@@ -157,7 +201,7 @@ public class ReInvestigationTests : IDisposable
         await _h.Db.SaveChangesAsync();
 
         var callsBefore = _h.Ai.InvestigateCalls;
-        await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
+        await _h.CreateOrchestrator().ReinvestigateAsync(incident.Id);
 
         var updated = await _h.Db.SreIncidents.FirstAsync(i => i.Id == incident.Id);
 
@@ -176,7 +220,7 @@ public class ReInvestigationTests : IDisposable
         await _h.Db.SaveChangesAsync();
 
         var callsBefore = _h.Ai.InvestigateCalls;
-        await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
+        await _h.CreateOrchestrator().ReinvestigateAsync(incident.Id);
 
         Assert.Equal(callsBefore, _h.Ai.InvestigateCalls);
     }
@@ -186,7 +230,7 @@ public class ReInvestigationTests : IDisposable
     {
         var incident = _h.SeedIncident(IncidentStatus.Resolved);
 
-        await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
+        await _h.CreateOrchestrator().ReinvestigateAsync(incident.Id);
 
         Assert.Equal(0, _h.Ai.InvestigateCalls);
     }
@@ -196,7 +240,7 @@ public class ReInvestigationTests : IDisposable
     {
         var incident = _h.SeedIncident();
         await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
-        await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
+        await _h.CreateOrchestrator().ReinvestigateAsync(incident.Id);
 
         var operatorEvents = _h.Db.IncidentEvents
             .Where(e => e.IncidentId == incident.Id

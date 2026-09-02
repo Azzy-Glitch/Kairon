@@ -45,6 +45,10 @@ public class IncidentProcessingWorker : BackgroundService
                 _logger.LogError(ex, "Failed to process work item {Kind} for project {ProjectId}",
                     item.Kind, item.ProjectId);
             }
+            finally
+            {
+                _queue.Complete(item);
+            }
         }
 
         _logger.LogInformation("Incident processing worker stopped");
@@ -64,6 +68,10 @@ public class IncidentProcessingWorker : BackgroundService
 
             case WorkItemKind.ProcessIncident when item.IncidentId.HasValue:
                 await orchestrator.InvestigateAsync(item.IncidentId.Value, cancellationToken);
+                break;
+
+            case WorkItemKind.ReinvestigateIncident when item.IncidentId.HasValue:
+                await orchestrator.ReinvestigateAsync(item.IncidentId.Value, cancellationToken);
                 break;
 
             case WorkItemKind.ExecuteRemediation when item.IncidentId.HasValue && item.ActionId.HasValue:

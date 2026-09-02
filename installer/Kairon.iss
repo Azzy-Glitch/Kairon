@@ -494,9 +494,9 @@ end;
 // writable by elevated Setup at every step: removing inheritance before adding an explicit
 // Administrators ACE can remove Setup's only effective access and make the very next icacls call
 // fail with Access Denied. First establish explicit SYSTEM/Administrators access recursively,
-// then remove inheritance and apply the final least-privilege ACL. Plain rights are applied with
-// /T so existing files receive valid file ACEs; the root container is then replaced with inheritable
-// (OI)(CI) entries so files created later receive the same policy.
+// then remove inheritance and apply the final least-privilege ACL. Interactive Users receive
+// traverse access to the directory only; read access is added solely to the scoped UserAgent file
+// after the LocalService Agent creates it. The machine credential is never readable by Users.
 procedure GrantAgentCredentialAcl;
 var
   ConfigDir: String;
@@ -523,8 +523,6 @@ begin
     'grant SYSTEM access to existing credential files');
   RunIcacls(ConfigDir, '/grant:r "BUILTIN\Administrators:F" /T',
     'grant Administrators access to existing credential files');
-  RunIcacls(ConfigDir, '/grant:r "BUILTIN\Users:RX" /T',
-    'grant Users read-only access to existing credential files');
   RunIcacls(ConfigDir, '/grant:r "NT AUTHORITY\LOCAL SERVICE:M" /T',
     'grant the Agent service account access to existing credential files');
 
@@ -534,12 +532,57 @@ begin
     'make SYSTEM access inheritable on its credential folder');
   RunIcacls(ConfigDir, '/grant:r "BUILTIN\Administrators:(OI)(CI)F"',
     'make Administrators access inheritable on its credential folder');
-  RunIcacls(ConfigDir, '/grant:r "BUILTIN\Users:(OI)(CI)RX"',
-    'make Users read-only access inheritable on its credential folder');
+  RunIcacls(ConfigDir, '/grant:r "BUILTIN\Users:RX"',
+    'grant Users directory traversal without inheriting access to credential files');
   RunIcacls(ConfigDir, '/grant:r "NT AUTHORITY\LOCAL SERVICE:(OI)(CI)M"',
     'make the Agent service account access inheritable on its credential folder');
 
-  Log('Kairon Agent: reset the credential config folder ACL to SYSTEM/Administrators full control, Users read-only, LocalService modify.');
+  Log('Kairon Agent: reset credential folder ACL; machine credentials are not readable by Users.');
+end;
+
+procedure HardenCredentialFile(const CredentialPath: String; GrantUsersRead: Boolean);
+begin
+  RunTakeown(CredentialPath, '', 'take ownership of a generated credential file');
+  RunIcacls(CredentialPath, '/grant:r "BUILTIN\Administrators:F"',
+    'preserve Administrator access to a generated credential file');
+  RunIcacls(CredentialPath, '/grant:r "NT AUTHORITY\SYSTEM:F"',
+    'preserve SYSTEM access to a generated credential file');
+  RunIcacls(CredentialPath, '/inheritance:r',
+    'remove inherited access from a generated credential file');
+  RunIcacls(CredentialPath, '/remove:g "BUILTIN\Users"',
+    'remove broad Users access from a generated credential file');
+  RunIcacls(CredentialPath, '/grant:r "NT AUTHORITY\LOCAL SERVICE:M"',
+    'grant LocalService access to a generated credential file');
+
+  if GrantUsersRead then
+    RunIcacls(CredentialPath, '/grant:r "BUILTIN\Users:R"',
+      'grant Users read access to the scoped UserAgent credential');
+end;
+
+procedure HardenGeneratedAgentCredentials;
+var
+  AgentCredential: String;
+  UserAgentCredential: String;
+  I: Integer;
+begin
+  AgentCredential := ExpandConstant('{commonappdata}\Kairon\config\agent-credential.json');
+  UserAgentCredential := ExpandConstant('{commonappdata}\Kairon\config\useragent-credential.json');
+
+  // Agent resolves both credentials before its hosted service starts. Allow a bounded startup
+  // window, then fail installation rather than start UserAgent with missing/insecure material.
+  for I := 1 to 100 do
+  begin
+    if FileExists(AgentCredential) and FileExists(UserAgentCredential) then
+      Break;
+    Sleep(100);
+  end;
+
+  if not FileExists(AgentCredential) or not FileExists(UserAgentCredential) then
+    RaiseException('Kairon Setup started the Agent, but its scoped credentials were not generated within 10 seconds.');
+
+  HardenCredentialFile(AgentCredential, False);
+  HardenCredentialFile(UserAgentCredential, True);
+  Log('Kairon Agent: hardened separate machine and interactive UserAgent credentials.');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -548,6 +591,7 @@ begin
   begin
     GrantAgentCredentialAcl;
     InstallOrReconfigureAgentService;
+    HardenGeneratedAgentCredentials;
     InstallOrReconfigureUserAgentTask;
     StartInstalledUserAgentTask;
   end;

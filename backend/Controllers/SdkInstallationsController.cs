@@ -15,6 +15,7 @@ namespace Kairon.Backend.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/platform")]
+[RequiresOperator]
 public sealed class SdkInstallationsController : ControllerBase
 {
     private readonly ISdkInstallationService _installations;

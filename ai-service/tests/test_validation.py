@@ -164,12 +164,33 @@ class TestInvestigationValidation:
         assert result.contributing_factors == ["just one"]
         assert result.evidence == []
 
-    def test_no_available_actions_means_no_filtering(self):
-        """With an empty evidence package the validator cannot filter, so it does not pretend to."""
+    def test_no_available_actions_means_no_recommendations(self):
+        """An explicitly empty tool boundary must fail closed, not allow arbitrary actions."""
         payload = {"root_cause": "x", "recommendations": [{"action": "Anything"}]}
         result = validate_investigation(payload, evidence=EvidencePackage())
 
-        assert len(result.recommendations) == 1
+        assert result.recommendations == []
+
+    def test_model_output_text_lists_and_parameters_are_bounded(self, retry_storm_evidence):
+        payload = self._valid()
+        payload["root_cause"] = "x" * 10_000
+        payload["contributing_factors"] = ["y" * 2_000] * 30
+        payload["recommendations"] = [
+            {
+                "action": "DisableDemoRetryLoop",
+                "reason": "z" * 10_000,
+                "parameters": {f"key-{i}": "v" * 2_000 for i in range(50)},
+            }
+        ] * 20
+
+        result = validate_investigation(payload, evidence=retry_storm_evidence)
+
+        assert len(result.root_cause) == 4_000
+        assert len(result.contributing_factors) == 12
+        assert all(len(value) <= 1_000 for value in result.contributing_factors)
+        assert len(result.recommendations) == 10
+        assert all(len(item.reason) <= 4_000 for item in result.recommendations)
+        assert all(len(item.parameters or {}) <= 20 for item in result.recommendations)
 
     def test_provider_metadata_is_attached(self, retry_storm_evidence):
         result = validate_investigation(

@@ -117,7 +117,9 @@ public class MachineRegistrationService : BackgroundService
             architecture = RuntimeInformation.OSArchitecture.ToString(),
             agentVersion = typeof(MachineRegistrationService).Assembly.GetName().Version?.ToString(3)
                 ?? "unknown",
-            agentKey = _options.AgentKey
+            agentKey = _options.AgentKey,
+            userAgentKey = _options.UserAgentKey,
+            previousAgentKey = _options.PreviousAgentKey
         };
 
         try
@@ -125,6 +127,8 @@ public class MachineRegistrationService : BackgroundService
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.TimeoutSeconds)));
             var response = await _http.PostAsJsonAsync("api/agent/register", registration, timeout.Token);
+            if (response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(_options.PreviousAgentKey))
+                AgentCredentialStore.CompleteRotation();
             return response.IsSuccessStatusCode;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

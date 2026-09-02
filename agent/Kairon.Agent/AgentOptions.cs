@@ -59,5 +59,14 @@ public class AgentOptions
     /// one authenticates telemetry to a project; this one authenticates a machine to itself.</summary>
     public string AgentKey { get; set; } = "kairon-agent-default-key-change-me";
 
+    /// <summary>
+    /// Separate, narrowly scoped credential issued to the interactive UserAgent. A desktop user
+    /// must never receive the Windows service's machine credential.
+    /// </summary>
+    public string UserAgentKey { get; set; } = "kairon-useragent-default-key-change-me";
+
+    /// <summary>Previous machine key used only to authenticate a one-time v1-to-v2 rotation.</summary>
+    public string? PreviousAgentKey { get; set; }
+
     public int HeartbeatIntervalSeconds { get; set; } = 20;
 }

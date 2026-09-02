@@ -15,6 +15,11 @@ namespace Kairon.Desktop;
 /// </summary>
 public static class AppPaths
 {
+    private const long MaximumStartupLogBytes = 1024 * 1024;
+    private const int RetainedCrashLogCount = 20;
+    public const long MaximumWebView2CacheBytes = 100L * 1024 * 1024;
+    private static readonly object LogSync = new();
+
     /// <summary>The real, self-contained apphost - published with --self-contained true -r
     /// win-x64 (installer/build-installer.ps1), it bundles its own .NET runtime and runs directly,
     /// no globally-installed `dotnet` required on the target machine. Preferred over
@@ -74,5 +79,59 @@ public static class AppPaths
         var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kairon", "logs");
         Directory.CreateDirectory(dir);
         return dir;
+    }
+
+    public static string WebView2DataDirectory() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kairon", "webview2");
+
+    public static bool WebView2DataExceedsLimit()
+    {
+        try
+        {
+            var directory = new DirectoryInfo(WebView2DataDirectory());
+            if (!directory.Exists) return false;
+
+            long total = 0;
+            foreach (var file in directory.EnumerateFiles("*", SearchOption.AllDirectories))
+            {
+                total += file.Length;
+                if (total > MaximumWebView2CacheBytes) return true;
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+
+        return false;
+    }
+
+    public static void AppendStartupLog(string message)
+    {
+        lock (LogSync)
+        {
+            var path = Path.Combine(LocalDataLogsDirectory(), "startup.log");
+            using var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read);
+            if (stream.Length >= MaximumStartupLogBytes)
+                stream.SetLength(0);
+            stream.Seek(0, SeekOrigin.End);
+            using var writer = new StreamWriter(stream);
+            writer.WriteLine(message);
+        }
+    }
+
+    public static void WriteCrashLog(Exception? exception)
+    {
+        var directory = LocalDataLogsDirectory();
+        var path = Path.Combine(directory, $"crash-{DateTime.UtcNow:yyyyMMdd-HHmmss-fffffff}.txt");
+        File.WriteAllText(path, exception?.ToString() ?? "Unknown error.");
+
+        foreach (var stale in new DirectoryInfo(directory)
+                     .EnumerateFiles("crash-*.txt")
+                     .OrderByDescending(file => file.CreationTimeUtc)
+                     .Skip(RetainedCrashLogCount))
+        {
+            try { stale.Delete(); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 }

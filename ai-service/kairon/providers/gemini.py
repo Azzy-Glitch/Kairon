@@ -38,6 +38,7 @@ class GeminiProvider(AIProvider):
                 "temperature": self.config.temperature,
                 # Asking for JSON at the API level is far more reliable than asking for it in prose.
                 "responseMimeType": "application/json",
+                "maxOutputTokens": max(1, self.config.max_output_tokens),
             },
         }
 
@@ -65,6 +66,9 @@ class GeminiProvider(AIProvider):
                 transient=transient,
                 status_code=response.status_code,
             )
+
+        if len(response.content) > max(1024, self.config.max_response_bytes):
+            raise ProviderError("Gemini response exceeded the configured size limit", transient=False)
 
         try:
             body = response.json()

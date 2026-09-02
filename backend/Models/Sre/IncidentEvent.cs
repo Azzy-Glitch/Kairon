@@ -38,6 +38,8 @@ public static class IncidentEventTypes
     public const string Detected = "Detected";
     public const string Correlated = "Correlated";
     public const string Investigating = "Investigating";
+    public const string AiRequestStarted = "AiRequestStarted";
+    public const string AiBudgetExceeded = "AiBudgetExceeded";
     public const string Diagnosed = "Diagnosed";
     public const string Predicted = "Predicted";
     public const string Recommended = "Recommended";

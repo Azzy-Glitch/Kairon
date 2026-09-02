@@ -14,7 +14,10 @@ import main
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(main.app)
+    return TestClient(
+        main.app,
+        headers={"X-Kairon-AI-Key": "kairon-ai-test-key-not-for-production"},
+    )
 
 
 class TestHealthAndProviders:
@@ -24,6 +27,18 @@ class TestHealthAndProviders:
         assert response.status_code == 200
         assert response.json()["status"] == "healthy"
         assert response.json()["mode"] in {"mock", "live"}
+
+    def test_health_is_the_only_credential_free_endpoint(self):
+        unauthenticated = TestClient(main.app)
+
+        assert unauthenticated.get("/health").status_code == 200
+        assert unauthenticated.get("/providers").status_code == 401
+        assert unauthenticated.post("/analyze", json={}).status_code == 401
+
+    def test_wrong_credential_is_rejected(self):
+        wrong = TestClient(main.app, headers={"X-Kairon-AI-Key": "wrong"})
+
+        assert wrong.post("/analyze", json={}).status_code == 401
 
     def test_providers_lists_all_four(self, client):
         body = client.get("/providers").json()
@@ -106,6 +121,24 @@ class TestAnalyzeEndpoint:
         response = client.post("/analyze", json={"incident": "should be an object"})
 
         assert response.status_code == 422
+
+    def test_oversized_request_is_rejected_before_model_execution(self, client):
+        response = client.post("/analyze-error", json={"log": "x" * 70_000})
+
+        assert response.status_code == 413
+
+
+def test_rate_limiter_is_bounded():
+    limiter = main.AiApiSecurityMiddleware.__module__
+    assert limiter == "kairon.security"
+
+    from kairon.security import FixedWindowRequestLimiter
+
+    budget = FixedWindowRequestLimiter(permit_limit=2, window_seconds=60)
+    assert budget.allow("backend", now=1)
+    assert budget.allow("backend", now=2)
+    assert not budget.allow("backend", now=3)
+    assert budget.allow("backend", now=62)
 
 
 class TestLegacyEndpointsPreserved:

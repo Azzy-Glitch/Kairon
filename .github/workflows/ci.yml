@@ -30,10 +30,11 @@ jobs:
       # on this Linux runner via reference assemblies - it has no test project of its own, so this
       # only needs to compile here, never actually run.
       - run: dotnet test Kairon.slnx --configuration Release -p:EnableWindowsTargeting=true
+      - run: dotnet list Kairon.slnx package --vulnerable --include-transitive
       - working-directory: frontend
-        run: npm ci && npm test -- --run && npm run build
+        run: npm ci && npm audit --omit=dev --audit-level=high && npm test -- --run && npm run build
       - working-directory: ai-service
-        run: pip install -r requirements.txt && pytest -q
+        run: pip install -r requirements.txt pip-audit==2.10.1 && pip-audit --strict -r requirements.txt && pytest -q
       - working-directory: sdk-python
         run: pip install build -e ".[test]" && pytest -q && python -m build
       - run: dotnet pack sdk/Kairon.SDK/Kairon.SDK.csproj -c Release -o artifacts/packages

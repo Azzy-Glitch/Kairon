@@ -6,6 +6,7 @@ using Kairon.Backend.Services;
 using Kairon.Backend.Services.Audit;
 using Kairon.Backend.Services.Orchestration;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -46,6 +47,7 @@ public class TelemetryController : ControllerBase
         await _credentials.AuthorizeAsync(projectId, Request.Headers[_security.TelemetryKeyHeader], cancellationToken);
 
     [HttpPost("incidents")]
+    [EnableRateLimiting("telemetry")]
     public async Task<IActionResult> CreateIncident(
         [FromBody] TelemetryPayload dto,
         CancellationToken cancellationToken)
@@ -90,6 +92,7 @@ public class TelemetryController : ControllerBase
     }
 
     [HttpPost("metrics")]
+    [EnableRateLimiting("telemetry")]
     public async Task<IActionResult> CreateMetric(
         [FromBody] MetricDto dto,
         CancellationToken cancellationToken)
@@ -131,6 +134,7 @@ public class TelemetryController : ControllerBase
     /// are already structured - the message is scrubbed here before it is ever persisted.
     /// </summary>
     [HttpPost("events")]
+    [EnableRateLimiting("telemetry")]
     public async Task<IActionResult> CreateEvent(
         [FromBody] AgentEventDto dto,
         CancellationToken cancellationToken)
@@ -167,6 +171,7 @@ public class TelemetryController : ControllerBase
     }
 
     [HttpGet("incidents")]
+    [RequiresOperator]
     public async Task<IActionResult> GetIncidents([FromQuery] string? projectId, CancellationToken ct)
     {
         var q = _db.Incidents.AsQueryable();
@@ -188,6 +193,7 @@ public class TelemetryController : ControllerBase
     }
 
     [HttpGet("metrics")]
+    [RequiresOperator]
     public async Task<IActionResult> GetMetrics(
         [FromQuery] string? projectId,
         [FromQuery] string? service,

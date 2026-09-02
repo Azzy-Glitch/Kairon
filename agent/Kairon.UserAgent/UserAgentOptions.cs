@@ -2,19 +2,16 @@ namespace Kairon.UserAgent;
 
 /// <summary>
 /// Configuration for KAIRON.UserAgent (docs/DESKTOP_SHELL.md) - the per-interactive-session
-/// counterpart to the KAIRON.Agent Windows Service. Endpoint/AgentKey default to the exact same
-/// values as agent/Kairon.Agent/AgentOptions.cs so both components authenticate against the same
-/// Machine identity out of the box, with no separate pairing step required.
+/// counterpart to the KAIRON.Agent Windows Service. It authenticates with a distinct scoped key
+/// so interactive users never receive the service's machine credential.
 /// </summary>
 public class UserAgentOptions
 {
     public string Endpoint { get; set; } = "http://localhost:8000";
 
-    /// <summary>Must match Kairon.Agent's AgentOptions.AgentKey default - see the comment there.
-    /// Not a new weakness introduced by the UserAgent: both components have always shared one
-    /// static default credential in this codebase; rotating it per-install is a separate,
-    /// pre-existing hardening task, out of scope here.</summary>
-    public string AgentKey { get; set; } = "kairon-agent-default-key-change-me";
+    /// <summary>Public sentinel only; it is never sent. The service-generated scoped key is read
+    /// from ProgramData at runtime and missing credentials defer heartbeats safely.</summary>
+    public string AgentKey { get; set; } = "kairon-useragent-default-key-change-me";
 
     public int TimeoutSeconds { get; set; } = 5;
 

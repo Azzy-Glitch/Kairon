@@ -1,4 +1,5 @@
 using Kairon.Backend.DTOs;
+using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Services.Demo;
 using Kairon.Backend.Services.Orchestration;
 using Microsoft.AspNetCore.Mvc;
@@ -11,6 +12,7 @@ namespace Kairon.Backend.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/demo")]
+[RequiresOperator]
 public class DemoController : ControllerBase
 {
     private readonly IDemoEnvironmentClient _demo;

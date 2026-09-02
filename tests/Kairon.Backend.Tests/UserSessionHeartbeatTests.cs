@@ -39,13 +39,29 @@ public sealed class UserSessionHeartbeatTests : IDisposable
     }
 
     [Fact]
+    public async Task MachineAndInteractiveCredentialsAreNotInterchangeable()
+    {
+        var machineId = Guid.NewGuid();
+        var machineKey = "correct-agent-key-that-is-long-enough";
+        var userKey = UserKey(machineKey);
+        await Service.RegisterAsync(Registration(machineId, machineKey), default);
+
+        Assert.False(await Service.RecordUserSessionHeartbeatAsync(
+            machineId, machineKey, new UserSessionHeartbeatDto(), default));
+        Assert.False(await Service.RecordHeartbeatAsync(
+            machineId, userKey, new AgentHeartbeatDto(), default));
+        Assert.True(await Service.RecordUserSessionHeartbeatAsync(
+            machineId, userKey, new UserSessionHeartbeatDto(), default));
+    }
+
+    [Fact]
     public async Task UserSessionHeartbeatReusesTheSameMachineTheWindowsServiceAlreadyRegistered()
     {
         var machineId = Guid.NewGuid();
         var key = "correct-agent-key-that-is-long-enough";
         await Service.RegisterAsync(Registration(machineId, key), default);
 
-        var accepted = await Service.RecordUserSessionHeartbeatAsync(machineId, key, new UserSessionHeartbeatDto
+        var accepted = await Service.RecordUserSessionHeartbeatAsync(machineId, UserKey(key), new UserSessionHeartbeatDto
         {
             SessionId = 2,
             UserName = "HOST\\alice",
@@ -84,7 +100,7 @@ public sealed class UserSessionHeartbeatTests : IDisposable
             Processes = [new ProcessSnapshotDto { ProcessId = 1, StartedAt = DateTime.UtcNow, Name = "machine-watched" }]
         }, default);
 
-        await Service.RecordUserSessionHeartbeatAsync(machineId, key, new UserSessionHeartbeatDto
+        await Service.RecordUserSessionHeartbeatAsync(machineId, UserKey(key), new UserSessionHeartbeatDto
         {
             SessionId = 1,
             UserName = "HOST\\bob",
@@ -97,7 +113,7 @@ public sealed class UserSessionHeartbeatTests : IDisposable
 
         // A second UserAgent heartbeat reporting nothing must only mark the UserAgent row stale,
         // never the MachineAgent one.
-        await Service.RecordUserSessionHeartbeatAsync(machineId, key, new UserSessionHeartbeatDto
+        await Service.RecordUserSessionHeartbeatAsync(machineId, UserKey(key), new UserSessionHeartbeatDto
         {
             SessionId = 1,
             UserName = "HOST\\bob"
@@ -128,7 +144,7 @@ public sealed class UserSessionHeartbeatTests : IDisposable
         await Service.RegisterAsync(Registration(machineId, key), default);
         var registeredAt = _h.Db.Machines.Single().LastSeenAt;
 
-        await Service.RecordUserSessionHeartbeatAsync(machineId, key, new UserSessionHeartbeatDto
+        await Service.RecordUserSessionHeartbeatAsync(machineId, UserKey(key), new UserSessionHeartbeatDto
         {
             SessionId = 1,
             UserName = "HOST\\carol"
@@ -146,8 +162,11 @@ public sealed class UserSessionHeartbeatTests : IDisposable
         OperatingSystem = "Windows",
         Architecture = "X64",
         AgentVersion = "1.0",
-        AgentKey = key
+        AgentKey = key,
+        UserAgentKey = UserKey(key)
     };
+
+    private static string UserKey(string machineKey) => $"user-{machineKey}";
 
     public void Dispose() => _h.Dispose();
 

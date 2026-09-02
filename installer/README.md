@@ -31,6 +31,12 @@ service with PyInstaller, and compiles the installer with Inno Setup 6 if it's f
 `-SkipInstallerCompile` to stop after staging `artifacts\windows-package\` without requiring Inno
 Setup at all.
 
+AI runtime dependencies are pinned in `ai-service/requirements.txt`; the packaging-only
+PyInstaller dependency is pinned in `ai-service/requirements-build.txt`. Both local and CI
+installer builds consume the latter manifest. The build script creates a clean, disposable
+Python environment under `artifacts/python-build-venv`; it does not install packages into the
+system interpreter or reuse a developer environment.
+
 ## What's actually been verified in this pass, and what hasn't
 
 Verified, live, in this environment:

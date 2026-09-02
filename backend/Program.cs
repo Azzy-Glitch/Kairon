@@ -24,7 +24,12 @@ Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
     .Enrich.FromLogContext()
     .WriteTo.Console()
-    .WriteTo.File(Path.Combine(dataPaths.Logs, "kairon-.txt"), rollingInterval: RollingInterval.Day)
+    .WriteTo.File(
+        Path.Combine(dataPaths.Logs, "kairon-.txt"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 31,
+        fileSizeLimitBytes: 10 * 1024 * 1024,
+        rollOnFileSizeLimit: true)
     .CreateLogger();
 
 builder.Host.UseSerilog();
@@ -57,9 +62,8 @@ builder.Services.AddPersistenceMaintenance();
 
 builder.Services.AddRateLimiter(options =>
 {
-    // Scoped to the new normalized telemetry endpoint only (PlatformTelemetryController) - the
-    // existing /api/telemetry/* routes have no rate-limit tests today and don't need a new
-    // failure mode introduced here.
+    // Shared by normalized and legacy ingestion. It bounds local abuse before work can reach
+    // persistence/detection while keeping SDK sends non-blocking (rejected work receives 429).
     options.AddPolicy("telemetry", context => RateLimitPartition.GetFixedWindowLimiter(
         context.Connection.RemoteIpAddress?.ToString() ?? "local",
         _ => new FixedWindowRateLimiterOptions
@@ -163,19 +167,7 @@ using (var scope = app.Services.CreateScope())
 
     if (dbContext.Database.IsSqlite())
     {
-        // The existing Migrations/ history was generated against SqlServer only - every column
-        // carries an explicit, baked-in SqlServer type string (e.g. "nvarchar(max)"), which
-        // Migrate() would send to SQLite verbatim and fail on ("near 'max': syntax error" -
-        // confirmed live, not theoretical). EnsureCreated() instead builds the schema directly
-        // from the current model with SQLite's own type mappings, sidestepping the migrations
-        // history entirely. This is safe for every SQLite install that exists today, because
-        // SQLite has only just become the real default - there is no installed base yet whose
-        // existing database this could silently fail to upgrade. EnsureCreated() is also a safe
-        // no-op against an already-created database (restart persistence keeps working). Before
-        // the next schema change ships to real SQLite users, this needs a genuine SQLite-specific
-        // migration history (EF Core requires a separate migrations assembly per provider once
-        // column types diverge like this) - tracked, not swept under the rug.
-        await dbContext.Database.EnsureCreatedAsync();
+        await scope.ServiceProvider.GetRequiredService<ILocalSchemaMigrator>().MigrateAsync();
 
         // WAL lets the single backend writer and any concurrent readers coexist predictably in
         // the packaged desktop product; foreign_keys/busy_timeout are SQLite session settings,

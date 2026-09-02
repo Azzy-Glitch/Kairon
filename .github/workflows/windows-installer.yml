@@ -23,11 +23,10 @@ jobs:
           python-version: "3.13"
       # Builds the desktop shell, backend, Windows Service Agent, UserAgent, and the
       # PyInstaller-packaged AI service, then compiles the Inno Setup installer.
-      - run: pip install pyinstaller
-      # Installed from the committed lockfile, not whatever happens to already be on the runner -
-      # otherwise the AI service PyInstaller bundles reproducibly build from source but not from a
-      # known dependency set.
-      - run: pip install -r ai-service/requirements.txt
+      # Runtime and packaging dependencies are both pinned. The same manifest is consumed by the
+      # local installer script, preventing CI and developer builds from silently using different
+      # PyInstaller releases.
+      - run: pip install -r ai-service/requirements-build.txt
       - run: choco install innosetup --yes --no-progress
       - shell: powershell
         run: ./installer/build-installer.ps1

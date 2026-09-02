@@ -16,7 +16,6 @@ import re
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from kairon.config import AiConfig
@@ -30,6 +29,7 @@ from kairon.schemas import (
 )
 from kairon.providers import available_providers
 from kairon.service import AiService, AiServiceError
+from kairon.security import AiApiSecurityMiddleware
 
 load_dotenv()
 
@@ -42,9 +42,18 @@ logger = logging.getLogger("kairon.api")
 app = FastAPI(
     title="Kairon AI Service",
     description="Provider-independent AI intelligence layer for Kairon Autonomous AI SRE.",
-    version="2.0.0",
+    version="1.0.1",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    AiApiSecurityMiddleware,
+    api_key=os.getenv("KAIRON_AI_API_KEY", "").strip(),
+    max_request_bytes=int(os.getenv("KAIRON_AI_MAX_REQUEST_BYTES", "65536")),
+    requests_per_minute=int(os.getenv("KAIRON_AI_REQUESTS_PER_MINUTE", "12")),
+    requests_per_hour=int(os.getenv("KAIRON_AI_REQUESTS_PER_HOUR", "120")),
+)
 
 CONFIG = AiConfig.from_env()
 SERVICE = AiService(CONFIG)

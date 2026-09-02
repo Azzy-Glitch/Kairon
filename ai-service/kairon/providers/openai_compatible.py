@@ -34,6 +34,7 @@ class OpenAICompatibleProvider(AIProvider):
                 {"role": "user", "content": user},
             ],
             "temperature": self.config.temperature,
+            "max_tokens": max(1, self.config.max_output_tokens),
         }
 
         try:
@@ -60,6 +61,9 @@ class OpenAICompatibleProvider(AIProvider):
                 transient=transient,
                 status_code=response.status_code,
             )
+
+        if len(response.content) > max(1024, self.config.max_response_bytes):
+            raise ProviderError(f"{self.name} response exceeded the configured size limit", transient=False)
 
         try:
             body = response.json()

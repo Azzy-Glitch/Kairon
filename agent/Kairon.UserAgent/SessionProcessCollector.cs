@@ -16,7 +16,8 @@ namespace Kairon.UserAgent;
 ///
 /// MachineId is derived identically to Kairon.Agent's own copy (same hostname -> same SHA-256 ->
 /// same GUID), so both components' telemetry lands on the same Machine with zero pairing step.
-/// Authenticates with the same AgentKey the Windows Service already registered the machine with.
+/// Authenticates with a scoped UserAgent key registered by the Windows Service, never the
+/// service's higher-privilege machine credential.
 /// </summary>
 public sealed class SessionProcessCollector : BackgroundService
 {
@@ -26,6 +27,7 @@ public sealed class SessionProcessCollector : BackgroundService
     private readonly Guid _machineId;
     private readonly int _sessionId;
     private readonly string _userName;
+    private string? _userAgentKey;
     private readonly CpuBaselineCache _cpuCache = new();
 
     public SessionProcessCollector(HttpClient http, IOptions<UserAgentOptions> options,
@@ -69,6 +71,14 @@ public sealed class SessionProcessCollector : BackgroundService
 
     private async Task PollAndSendAsync(CancellationToken cancellationToken)
     {
+        _userAgentKey ??= AgentCredentialStore.TryResolve(_options.AgentKey);
+        if (string.IsNullOrWhiteSpace(_userAgentKey))
+        {
+            _logger.LogWarning(
+                "kairon-useragent: scoped credential is not available yet; heartbeat deferred");
+            return;
+        }
+
         using var source = new SystemProcessSnapshotSource(_sessionId);
         var samples = CollectSamples(source, _logger);
         var parentIds = ToolhelpProcessSnapshot.GetParentProcessIds();
@@ -114,7 +124,7 @@ public sealed class SessionProcessCollector : BackgroundService
         {
             Content = JsonContent.Create(heartbeat)
         };
-        request.Headers.Add("X-Kairon-Agent-Key", _options.AgentKey);
+        request.Headers.Add("X-Kairon-Agent-Key", _userAgentKey);
 
         await _http.SendAsync(request, timeout.Token);
     }

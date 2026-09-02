@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using Microsoft.Web.WebView2.WinForms;
 
 namespace Kairon.Desktop;
@@ -25,6 +26,8 @@ public sealed class MainForm : Form
 
     private readonly ManagedProcess _backend = new("Backend");
     private readonly ManagedProcess _ai = new("AI service");
+    private readonly string _operatorKey = CreateEphemeralKey();
+    private readonly string _aiApiKey = CreateEphemeralKey();
     private WebView2? _webView;
     private bool _shuttingDown;
 
@@ -101,6 +104,10 @@ public sealed class MainForm : Form
             };
         }
 
+        startInfo.Environment["SreSecurity__RequireOperatorKey"] = "true";
+        startInfo.Environment["SreSecurity__OperatorKey"] = _operatorKey;
+        startInfo.Environment["AiService__ApiKey"] = _aiApiKey;
+
         return _backend.StartAndWaitHealthyAsync(startInfo, new Uri($"{BackendUrl}/api/health"),
             TimeSpan.FromSeconds(45), cancellationToken);
     }
@@ -133,6 +140,8 @@ public sealed class MainForm : Form
             };
         }
 
+        startInfo.Environment["KAIRON_AI_API_KEY"] = _aiApiKey;
+
         return _ai.StartAndWaitHealthyAsync(startInfo, new Uri($"{AiUrl}/health"),
             TimeSpan.FromSeconds(30), cancellationToken);
     }
@@ -142,22 +151,49 @@ public sealed class MainForm : Form
         _webView = new WebView2 { Dock = DockStyle.Fill };
         Controls.Add(_webView);
 
-        var userDataFolder = Path.Combine(AppPaths.LocalDataLogsDirectory(), "..", "webview2");
+        var userDataFolder = AppPaths.WebView2DataDirectory();
         var environment = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(
-            userDataFolder: Path.GetFullPath(userDataFolder));
+            userDataFolder: userDataFolder);
         await _webView.EnsureCoreWebView2Async(environment);
+
+        // Bound only disposable browser cache. Cookies/local storage/settings are preserved, and
+        // failure to inspect or clear cache never prevents the product from starting.
+        if (AppPaths.WebView2DataExceedsLimit())
+        {
+            try
+            {
+                await _webView.CoreWebView2.Profile.ClearBrowsingDataAsync(
+                    Microsoft.Web.WebView2.Core.CoreWebView2BrowsingDataKinds.DiskCache);
+            }
+            catch (Exception ex)
+            {
+                AppPaths.AppendStartupLog(
+                    $"{DateTime.Now:HH:mm:ss.fff} WebView2 cache cleanup skipped - {ex.GetType().Name}");
+            }
+        }
+
+        // The key stays in the native host. It is attached at the WebView network boundary and is
+        // never embedded in JavaScript, local storage, a URL, or a checked-in configuration file.
+        _webView.CoreWebView2.AddWebResourceRequestedFilter(
+            $"{BackendUrl}/api/*",
+            Microsoft.Web.WebView2.Core.CoreWebView2WebResourceContext.All);
+        _webView.CoreWebView2.WebResourceRequested += (_, args) =>
+            args.Request.Headers.SetHeader("X-Kairon-Operator-Key", _operatorKey);
 
         Controls.Remove(_statusLabel);
         _webView.CoreWebView2.Navigate(BackendUrl);
     }
+
+    private static string CreateEphemeralKey() =>
+        Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
     private void ShowStartupFailure(StartupFailure failure)
     {
         // The dialog below says "see Kairon logs for details" - this is what makes that true.
         try
         {
-            File.AppendAllText(Path.Combine(AppPaths.LocalDataLogsDirectory(), "startup.log"),
-                $"{DateTime.Now:HH:mm:ss.fff} startup failed - stage={failure.Stage} reason={failure.Reason}\n");
+            AppPaths.AppendStartupLog(
+                $"{DateTime.Now:HH:mm:ss.fff} startup failed - stage={failure.Stage} reason={failure.Reason}");
         }
         catch
         {

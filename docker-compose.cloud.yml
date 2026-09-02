@@ -11,6 +11,7 @@ services:
       QWEN_API_KEY: ${QWEN_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      KAIRON_AI_API_KEY: ${KAIRON_AI_SERVICE_KEY:?Set KAIRON_AI_SERVICE_KEY}
     networks: [kairon]
 
   backend:
@@ -29,6 +30,7 @@ services:
       ConnectionStrings__DefaultConnection: ${KAIRON_SQL_CONNECTION:?Set KAIRON_SQL_CONNECTION}
       AiService__BaseUrl: http://ai:8001
       AiService__MockMode: ${KAIRON_AI_MOCK_MODE:-false}
+      AiService__ApiKey: ${KAIRON_AI_SERVICE_KEY:?Set KAIRON_AI_SERVICE_KEY}
       PlatformSecurity__RequireTelemetryKey: "true"
       SreSecurity__RequireOperatorKey: "true"
       SreSecurity__OperatorKey: ${KAIRON_OPERATOR_KEY:?Set KAIRON_OPERATOR_KEY}

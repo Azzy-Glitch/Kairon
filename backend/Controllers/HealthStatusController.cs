@@ -40,6 +40,7 @@ public class HealthStatusController : ControllerBase
     }
 
     [HttpGet("status")]
+    [RequiresOperator]
     public async Task<IActionResult> Status(CancellationToken cancellationToken)
     {
         bool database;

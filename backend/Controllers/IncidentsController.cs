@@ -14,6 +14,7 @@ namespace Kairon.Backend.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/incidents")]
+[RequiresOperator]
 public class IncidentsController : ControllerBase
 {
     private readonly IIncidentQueryService _query;
@@ -84,6 +85,7 @@ public class IncidentsController : ControllerBase
     /// hold an HTTP request open (PRD section 6).
     /// </summary>
     [HttpPost("{id:guid}/investigate")]
+    [RequiresOperator]
     public async Task<IActionResult> Investigate(Guid id, CancellationToken cancellationToken)
     {
         var incident = await _query.GetAsync(id, cancellationToken);
@@ -91,7 +93,7 @@ public class IncidentsController : ControllerBase
             return NotFound(Error("Incident not found.", "INCIDENT_NOT_FOUND", StatusCodes.Status404NotFound));
 
         var queued = _queue.TryEnqueue(new IncidentWorkItem(
-            WorkItemKind.ProcessIncident, Guid.Empty, incident.Environment, incident.Service, id));
+            WorkItemKind.ReinvestigateIncident, Guid.Empty, incident.Environment, incident.Service, id));
 
         if (!queued)
         {

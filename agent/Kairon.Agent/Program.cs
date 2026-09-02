@@ -14,7 +14,13 @@ builder.Services.AddWindowsService(options => options.ServiceName = "Kairon.Agen
 builder.Services.Configure<AgentOptions>(builder.Configuration.GetSection("Agent"));
 // Replaces the checked-in default AgentKey with a real, per-installation credential the first
 // time this Agent runs - see AgentCredentialStore for why and where it's persisted.
-builder.Services.PostConfigure<AgentOptions>(options => options.AgentKey = AgentCredentialStore.Resolve(options.AgentKey));
+builder.Services.PostConfigure<AgentOptions>(options =>
+{
+    var credentials = AgentCredentialStore.ResolveCredentials(options.AgentKey, options.UserAgentKey);
+    options.AgentKey = credentials.AgentKey;
+    options.UserAgentKey = credentials.UserAgentKey;
+    options.PreviousAgentKey = credentials.PreviousAgentKey;
+});
 
 builder.Services.AddHttpClient<AgentEventClient>((sp, http) =>
 {

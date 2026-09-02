@@ -31,39 +31,52 @@ public sealed class AgentRegistrationService : IAgentRegistrationService
         _time = time;
     }
 
-    /// <summary>The Agent/UserAgent checked-in fallback default (AgentOptions.AgentKey /
-    /// UserAgentOptions.AgentKey) - identical across every install before AgentCredentialStore
-    /// generates a real per-install key. Refusing it here means a machine can only ever register
-    /// with a genuinely random credential, regardless of what any individual Agent build does.</summary>
+    /// <summary>Known checked-in fallback defaults. Neither is ever accepted for registration.</summary>
     private const string InsecureDefaultAgentKey = "kairon-agent-default-key-change-me";
+    private const string InsecureDefaultUserAgentKey = "kairon-useragent-default-key-change-me";
     private static readonly string InsecureDefaultAgentKeyHash = Hash(InsecureDefaultAgentKey);
+    private const string CredentialV2Prefix = "v2$";
 
     public async Task RegisterAsync(AgentRegistrationDto registration, CancellationToken cancellationToken)
     {
         if (registration.MachineId == Guid.Empty) throw new ArgumentException("MachineId is required.");
-        if (registration.AgentKey == InsecureDefaultAgentKey)
+        if (string.IsNullOrWhiteSpace(registration.AgentKey) ||
+            string.IsNullOrWhiteSpace(registration.UserAgentKey) ||
+            registration.AgentKey == InsecureDefaultAgentKey ||
+            registration.UserAgentKey == InsecureDefaultUserAgentKey ||
+            registration.AgentKey == registration.UserAgentKey)
             throw new UnauthorizedAccessException(
-                "Refusing to register a machine with the known, checked-in default Agent key. Upgrade the Agent/UserAgent so a real per-install credential is generated.");
+                "Refusing to register a machine without distinct, generated Agent and UserAgent credentials.");
         var now = _time.GetUtcNow().UtcDateTime;
-        var hash = Hash(registration.AgentKey);
+        var agentHash = Hash(registration.AgentKey);
+        var userAgentHash = Hash(registration.UserAgentKey);
         var machine = await _db.Machines.SingleOrDefaultAsync(x => x.Id == registration.MachineId, cancellationToken);
         if (machine is null)
         {
-            machine = new Machine { Id = registration.MachineId, RegisteredAt = now, AgentCredentialHash = hash };
+            machine = new Machine
+            {
+                Id = registration.MachineId,
+                RegisteredAt = now,
+                AgentCredentialHash = EncodeCredentials(agentHash, userAgentHash)
+            };
             _db.Machines.Add(machine);
         }
-        else if (!FixedEquals(machine.AgentCredentialHash, hash))
+        else
         {
-            // One-time exception: a machine still stored under the known-insecure default's hash
-            // (from before AgentCredentialStore existed, or before it ran here) is allowed to
-            // rotate to whatever real, random key it now presents - that's the known-bad state
-            // this whole mechanism exists to move installations off of, not a credential to
-            // protect. Once a machine holds any other (genuinely random) hash, a mismatch is
-            // rejected exactly as strictly as before - this never weakens protection against a
-            // real hijack attempt on an already-rotated machine.
-            if (!FixedEquals(machine.AgentCredentialHash, InsecureDefaultAgentKeyHash))
+            var stored = DecodeCredentials(machine.AgentCredentialHash);
+            var currentMatches = FixedEquals(stored.AgentHash, agentHash);
+            var previousMatches = !string.IsNullOrWhiteSpace(registration.PreviousAgentKey) &&
+                                  FixedEquals(stored.AgentHash, Hash(registration.PreviousAgentKey));
+            var insecureLegacy = stored.IsLegacy &&
+                                 FixedEquals(stored.AgentHash, InsecureDefaultAgentKeyHash);
+
+            if (!currentMatches && !previousMatches && !insecureLegacy)
                 throw new UnauthorizedAccessException("Machine identity is already registered with a different Agent key.");
-            machine.AgentCredentialHash = hash;
+
+            // The machine credential authorizes rotation of the lower-privilege UserAgent key.
+            // PreviousAgentKey is accepted once so an installation whose old shared key may have
+            // been exposed can rotate the machine key at the same time.
+            machine.AgentCredentialHash = EncodeCredentials(agentHash, userAgentHash);
         }
 
         machine.HostName = registration.HostName;
@@ -78,7 +91,8 @@ public sealed class AgentRegistrationService : IAgentRegistrationService
         CancellationToken cancellationToken)
     {
         var machine = await _db.Machines.SingleOrDefaultAsync(x => x.Id == machineId, cancellationToken);
-        if (machine is null || !FixedEquals(machine.AgentCredentialHash, Hash(agentKey))) return false;
+        if (machine is null || !FixedEquals(DecodeCredentials(machine.AgentCredentialHash).AgentHash, Hash(agentKey)))
+            return false;
 
         var now = _time.GetUtcNow().UtcDateTime;
         machine.LastSeenAt = now;
@@ -129,7 +143,8 @@ public sealed class AgentRegistrationService : IAgentRegistrationService
         UserSessionHeartbeatDto heartbeat, CancellationToken cancellationToken)
     {
         var machine = await _db.Machines.SingleOrDefaultAsync(x => x.Id == machineId, cancellationToken);
-        if (machine is null || !FixedEquals(machine.AgentCredentialHash, Hash(agentKey))) return false;
+        if (machine is null || !FixedEquals(DecodeCredentials(machine.AgentCredentialHash).UserAgentHash, Hash(agentKey)))
+            return false;
 
         var now = _time.GetUtcNow().UtcDateTime;
         // Deliberately NOT machine.LastSeenAt - that field reflects only the Windows Service's own
@@ -181,6 +196,28 @@ public sealed class AgentRegistrationService : IAgentRegistrationService
     }
 
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+
+    private static string EncodeCredentials(string agentHash, string userAgentHash) =>
+        $"{CredentialV2Prefix}{agentHash}${userAgentHash}";
+
+    private static StoredCredentialHashes DecodeCredentials(string value)
+    {
+        if (value.StartsWith(CredentialV2Prefix, StringComparison.Ordinal))
+        {
+            var parts = value.Split('$');
+            if (parts.Length == 3 && parts[1].Length > 0 && parts[2].Length > 0)
+                return new StoredCredentialHashes(parts[1], parts[2], IsLegacy: false);
+        }
+
+        // Existing 1.0.1 databases stored one shared hash. Accept it only during authenticated
+        // registration/rotation; heartbeat authorization becomes split as soon as v2 registers.
+        return new StoredCredentialHashes(value, value, IsLegacy: true);
+    }
+
+    private readonly record struct StoredCredentialHashes(
+        string AgentHash,
+        string UserAgentHash,
+        bool IsLegacy);
 
     private static bool FixedEquals(string left, string right) =>
         CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(left), Encoding.ASCII.GetBytes(right));

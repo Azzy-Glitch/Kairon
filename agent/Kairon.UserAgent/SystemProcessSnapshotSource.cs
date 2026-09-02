@@ -13,26 +13,34 @@ namespace Kairon.UserAgent;
 public sealed class SystemProcessSnapshotSource : IProcessSnapshotSource, IDisposable
 {
     private readonly int _sessionId;
-    private Process[] _processes = [];
+    private readonly Dictionary<int, Process> _processes = new();
 
     public SystemProcessSnapshotSource(int sessionId) => _sessionId = sessionId;
 
     public IReadOnlyList<int> GetCandidateProcessIds()
     {
         Dispose();
-        _processes = Process.GetProcesses();
 
         var ids = new List<int>();
-        foreach (var process in _processes)
+        foreach (var process in Process.GetProcesses())
         {
             try
             {
-                if (process.SessionId == _sessionId) ids.Add(process.Id);
+                if (process.SessionId == _sessionId)
+                {
+                    _processes[process.Id] = process;
+                    ids.Add(process.Id);
+                }
+                else
+                {
+                    process.Dispose();
+                }
             }
             catch
             {
                 // SessionId itself can throw for a small number of protected system processes -
                 // just exclude them, same fail-open philosophy as everywhere else in the Agent.
+                process.Dispose();
             }
         }
 
@@ -41,8 +49,8 @@ public sealed class SystemProcessSnapshotSource : IProcessSnapshotSource, IDispo
 
     public RawProcessSample ReadSample(int processId)
     {
-        var process = Array.Find(_processes, p => p.Id == processId)
-            ?? throw new InvalidOperationException($"Process {processId} is no longer available.");
+        if (!_processes.TryGetValue(processId, out var process))
+            throw new InvalidOperationException($"Process {processId} is no longer available.");
 
         process.Refresh();
         return new RawProcessSample(process.Id, process.StartTime.ToUniversalTime(), process.ProcessName,
@@ -64,7 +72,7 @@ public sealed class SystemProcessSnapshotSource : IProcessSnapshotSource, IDispo
 
     public void Dispose()
     {
-        foreach (var process in _processes) process.Dispose();
-        _processes = [];
+        foreach (var process in _processes.Values) process.Dispose();
+        _processes.Clear();
     }
 }

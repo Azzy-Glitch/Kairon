@@ -28,8 +28,7 @@ static class Program
     {
         try
         {
-            var logPath = Path.Combine(AppPaths.LocalDataLogsDirectory(), $"crash-{DateTime.UtcNow:yyyyMMdd-HHmmss}.txt");
-            File.WriteAllText(logPath, exception?.ToString() ?? "Unknown error.");
+            AppPaths.WriteCrashLog(exception);
         }
         catch
         {

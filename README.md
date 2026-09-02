@@ -15,28 +15,33 @@ validated by policy and approved by a named human before it can touch anything.
 
 ## Quick start
 
-Run all four in separate terminals. Nothing needs an API key.
+Run all four in separate terminals. No paid AI-provider key is needed: mock mode is deterministic.
+The two values below are local development transport keys; replace them outside a local machine.
 
 ```bash
 # 1. AI service (Python)
 cd ai-service
 pip install -r requirements.txt
+export KAIRON_AI_API_KEY=kairon-local-development-ai-transport-key
 python -m uvicorn main:app --port 8001
 
-# 2. Backend (.NET 10) - applies migrations on start
+# 2. Backend (.NET 10) - initializes/version-checks SQLite on start
 cd backend
+export AiService__ApiKey=kairon-local-development-ai-transport-key
+export SreSecurity__OperatorKey=kairon-local-development-operator-key
 dotnet run --urls http://localhost:8000
 
 # 3. Frontend (React + Vite)
 cd frontend
-npm install && npm run dev      # http://localhost:5173
+export KAIRON_OPERATOR_KEY=kairon-local-development-operator-key
+npm ci && npm run dev           # http://127.0.0.1:5173
 
 # 4. Demo application (optional - see "The demo" below)
 cd demo/Kairon.DemoApp
 dotnet run                      # http://localhost:5080
 ```
 
-Open <http://localhost:5173>, go to **Incident Simulation**, and press **Run Incident Simulation**.
+Open <http://127.0.0.1:5173>, go to **Incident Simulation**, and press **Run Incident Simulation**.
 
 ---
 
@@ -245,10 +250,10 @@ All in `backend/appsettings.json`.
 | Section | Controls |
 |---|---|
 | `Detection` | Thresholds, evaluation window, sustained-breach period, dedup cooldown, correlation window, sweep interval |
-| `AiOrchestration` | AI timeout, bounded retries, evidence caps, queue capacity, investigation delay |
+| `AiOrchestration` | AI timeout, durable per-incident/hour request budgets, evidence caps, queue capacity, investigation delay |
 | `Remediation` | Master switch, approval requirement, risk ceiling, allow/block lists, permitted environments, execution timeout, per-incident action limit |
 | `Verification` | Settle period, comparison window, max wait for settled telemetry, required recovery score |
-| `SreSecurity` | Optional operator key on approve/reject/cancel (`RequireOperatorKey`) |
+| `SreSecurity` | Required-by-default operator key for UI/control-plane and sensitive read APIs |
 | `DemoEnvironment` | Demo app URL, tick rate, in-process simulator fallback |
 
 ---

@@ -12,6 +12,8 @@ public sealed class AgentRegistrationDto
     [Required, MaxLength(50)] public string Architecture { get; set; } = string.Empty;
     [Required, MaxLength(50)] public string AgentVersion { get; set; } = string.Empty;
     [Required, MinLength(32), MaxLength(256)] public string AgentKey { get; set; } = string.Empty;
+    [Required, MinLength(32), MaxLength(256)] public string UserAgentKey { get; set; } = string.Empty;
+    [MinLength(32), MaxLength(256)] public string? PreviousAgentKey { get; set; }
 }
 
 public sealed class AgentHeartbeatDto
@@ -42,8 +44,8 @@ public sealed record ApplicationInventoryDto(Guid Id, Guid MachineId, string Mac
 
 /// <summary>Wire contract for KAIRON.UserAgent's heartbeat - the per-interactive-session
 /// counterpart to <see cref="AgentHeartbeatDto"/>. Authenticated the same way (same MachineId,
-/// same AgentKey header) so it reuses the Machine identity the Windows Service already
-/// registered - no separate pairing step.</summary>
+/// a distinct, UserAgent-scoped key registered by the Windows Service. It reuses the Machine
+/// identity without exposing the service's machine credential to interactive users.</summary>
 public sealed class UserSessionHeartbeatDto
 {
     public DateTime Timestamp { get; set; }

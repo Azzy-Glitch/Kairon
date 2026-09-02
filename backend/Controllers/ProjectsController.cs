@@ -15,6 +15,7 @@ namespace Kairon.Backend.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/v1/projects")]
+[RequiresOperator]
 public sealed class ProjectsController : ControllerBase
 {
     private readonly AppDbContext _db;

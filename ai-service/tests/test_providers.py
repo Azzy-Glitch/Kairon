@@ -14,6 +14,34 @@ from kairon.providers.mock import MockProvider
 from kairon.providers.openai_compatible import GroqProvider, QwenProvider
 
 
+class _HttpResponse:
+    def __init__(self, body: dict, content: bytes = b"{}"):
+        self.status_code = 200
+        self.content = content
+        self._body = body
+
+    def json(self):
+        return self._body
+
+
+class _CapturingAsyncClient:
+    response = _HttpResponse({})
+    last_json = None
+
+    def __init__(self, **_kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def post(self, _url, **kwargs):
+        type(self).last_json = kwargs["json"]
+        return type(self).response
+
+
 class TestProviderSelection:
     def test_every_required_provider_is_registered(self):
         assert set(available_providers()) == {"qwen", "gemini", "groq", "mock"}
@@ -166,3 +194,56 @@ class TestNoPaidCredentialsRequired:
         for name, provider_class in PROVIDERS.items():
             provider = provider_class(config)
             assert provider.name == name or name == "mock"
+
+
+class TestProviderBounds:
+    async def test_openai_compatible_provider_sends_output_token_limit(self, monkeypatch):
+        config = AiConfig(provider="qwen", qwen_api_key="synthetic", max_output_tokens=321)
+        _CapturingAsyncClient.response = _HttpResponse(
+            {"choices": [{"message": {"content": "{}"}}]}
+        )
+        monkeypatch.setattr("kairon.providers.openai_compatible.httpx.AsyncClient", _CapturingAsyncClient)
+
+        await QwenProvider(config)._invoke("system", "user")
+
+        assert _CapturingAsyncClient.last_json["max_tokens"] == 321
+
+    async def test_gemini_provider_sends_output_token_limit(self, monkeypatch):
+        config = AiConfig(provider="gemini", gemini_api_key="synthetic", max_output_tokens=654)
+        _CapturingAsyncClient.response = _HttpResponse(
+            {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]}
+        )
+        monkeypatch.setattr("kairon.providers.gemini.httpx.AsyncClient", _CapturingAsyncClient)
+
+        await GeminiProvider(config)._invoke("system", "user")
+
+        assert _CapturingAsyncClient.last_json["generationConfig"]["maxOutputTokens"] == 654
+
+    @pytest.mark.parametrize(
+        "provider,module,response",
+        [
+            (
+                lambda config: QwenProvider(config),
+                "kairon.providers.openai_compatible.httpx.AsyncClient",
+                {"choices": [{"message": {"content": "{}"}}]},
+            ),
+            (
+                lambda config: GeminiProvider(config),
+                "kairon.providers.gemini.httpx.AsyncClient",
+                {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]},
+            ),
+        ],
+    )
+    async def test_provider_rejects_oversized_response(self, monkeypatch, provider, module, response):
+        config = AiConfig(
+            provider="qwen",
+            qwen_api_key="synthetic",
+            gemini_api_key="synthetic",
+            max_retries=0,
+            max_response_bytes=1024,
+        )
+        _CapturingAsyncClient.response = _HttpResponse(response, content=b"x" * 1025)
+        monkeypatch.setattr(module, _CapturingAsyncClient)
+
+        with pytest.raises(ProviderError, match="size limit"):
+            await provider(config)._invoke("system", "user")

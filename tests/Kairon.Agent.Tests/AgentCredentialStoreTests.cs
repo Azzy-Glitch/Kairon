@@ -6,6 +6,7 @@ namespace Kairon.Agent.Tests;
 public sealed class AgentCredentialStoreTests : IDisposable
 {
     private readonly string _path = Path.Combine(Path.GetTempPath(), "kairon-credential-tests-" + Guid.NewGuid().ToString("N"), "agent-credential.json");
+    private string UserPath => Path.Combine(Path.GetDirectoryName(_path)!, "useragent-credential.json");
 
     [Fact]
     public void ExplicitNonDefaultKeyIsHonoredUnchanged()
@@ -42,6 +43,47 @@ public sealed class AgentCredentialStoreTests : IDisposable
 
         Assert.NotEmpty(generated);
         Assert.True(File.Exists(_path));
+    }
+
+    [Fact]
+    public void FreshCredentialBundleUsesDistinctMachineAndUserAgentSecrets()
+    {
+        var credentials = AgentCredentialStore.ResolveCredentials(
+            AgentCredentialStore.InsecureDefaultAgentKey,
+            AgentCredentialStore.InsecureDefaultUserAgentKey,
+            _path,
+            UserPath);
+
+        Assert.NotEqual(credentials.AgentKey, credentials.UserAgentKey);
+        Assert.Null(credentials.PreviousAgentKey);
+        Assert.True(File.Exists(_path));
+        Assert.True(File.Exists(UserPath));
+    }
+
+    [Fact]
+    public void LegacySharedCredentialIsRotatedAndRetainedOnlyUntilRegistrationCompletes()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        File.WriteAllText(_path, "{\"AgentKey\":\"legacy-shared-key-that-is-long-enough\"}");
+
+        var migrated = AgentCredentialStore.ResolveCredentials(
+            AgentCredentialStore.InsecureDefaultAgentKey,
+            AgentCredentialStore.InsecureDefaultUserAgentKey,
+            _path,
+            UserPath);
+
+        Assert.Equal("legacy-shared-key-that-is-long-enough", migrated.PreviousAgentKey);
+        Assert.NotEqual(migrated.PreviousAgentKey, migrated.AgentKey);
+
+        AgentCredentialStore.CompleteRotation(_path);
+        var afterRegistration = AgentCredentialStore.ResolveCredentials(
+            AgentCredentialStore.InsecureDefaultAgentKey,
+            AgentCredentialStore.InsecureDefaultUserAgentKey,
+            _path,
+            UserPath);
+
+        Assert.Null(afterRegistration.PreviousAgentKey);
+        Assert.Equal(migrated.AgentKey, afterRegistration.AgentKey);
     }
 
     public void Dispose()

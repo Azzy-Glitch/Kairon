@@ -92,6 +92,41 @@ public sealed class AgentRegistrationTests : IDisposable
     }
 
     [Fact]
+    public async Task AuthenticatedLegacyRotationSeparatesKeysAndRejectsTheOldSharedCredential()
+    {
+        var machineId = Guid.NewGuid();
+        const string oldSharedKey = "legacy-shared-key-that-is-long-enough";
+        const string newAgentKey = "new-machine-agent-key-that-is-long-enough";
+        const string newUserKey = "new-user-agent-key-that-is-long-enough";
+
+        _h.Db.Machines.Add(new Kairon.Backend.Models.Platform.Machine
+        {
+            Id = machineId,
+            HostName = "legacy-host",
+            RegisteredAt = DateTime.UtcNow,
+            LastSeenAt = DateTime.UtcNow,
+            AgentCredentialHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(oldSharedKey)))
+        });
+        await _h.Db.SaveChangesAsync();
+
+        var rotated = Registration(machineId, newAgentKey);
+        rotated.UserAgentKey = newUserKey;
+        rotated.PreviousAgentKey = oldSharedKey;
+        await Service.RegisterAsync(rotated, default);
+
+        Assert.True(await Service.RecordHeartbeatAsync(machineId, newAgentKey, new AgentHeartbeatDto(), default));
+        Assert.True(await Service.RecordUserSessionHeartbeatAsync(
+            machineId, newUserKey, new UserSessionHeartbeatDto(), default));
+        Assert.False(await Service.RecordHeartbeatAsync(machineId, oldSharedKey, new AgentHeartbeatDto(), default));
+        Assert.False(await Service.RecordUserSessionHeartbeatAsync(
+            machineId, oldSharedKey, new UserSessionHeartbeatDto(), default));
+        Assert.False(await Service.RecordHeartbeatAsync(machineId, newUserKey, new AgentHeartbeatDto(), default));
+        Assert.False(await Service.RecordUserSessionHeartbeatAsync(
+            machineId, newAgentKey, new UserSessionHeartbeatDto(), default));
+    }
+
+    [Fact]
     public async Task ProcessNoLongerReportedIsMarkedNotRunningNotDeleted()
     {
         var machineId = Guid.NewGuid();
@@ -123,7 +158,8 @@ public sealed class AgentRegistrationTests : IDisposable
             OperatingSystem = "Windows",
             Architecture = "X64",
             AgentVersion = "2.0",
-            AgentKey = key
+            AgentKey = key,
+            UserAgentKey = UserKey(key)
         }, default);
 
         var machine = Assert.Single(_h.Db.Machines);
@@ -137,8 +173,11 @@ public sealed class AgentRegistrationTests : IDisposable
         OperatingSystem = "Windows",
         Architecture = "X64",
         AgentVersion = "1.0",
-        AgentKey = key
+        AgentKey = key,
+        UserAgentKey = UserKey(key)
     };
+
+    private static string UserKey(string machineKey) => $"user-{machineKey}";
 
     public void Dispose() => _h.Dispose();
 

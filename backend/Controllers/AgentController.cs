@@ -55,8 +55,8 @@ public sealed class AgentController : ControllerBase
     }
 
     /// <summary>Heartbeat from KAIRON.UserAgent - the per-interactive-session counterpart to
-    /// <see cref="Heartbeat"/>, authenticated the same way against the same Machine identity the
-    /// Windows Service already registered (docs/DESKTOP_SHELL.md). Deliberately does not affect the
+    /// <see cref="Heartbeat"/>, authenticated with its distinct scoped key against the same Machine
+    /// identity the Windows Service already registered (docs/DESKTOP_SHELL.md). It does not affect the
     /// machine's own online/offline status - see AgentRegistrationService.</summary>
     [HttpPost("machines/{machineId:guid}/user-session/heartbeat")]
     public async Task<IActionResult> UserSessionHeartbeat(Guid machineId, UserSessionHeartbeatDto dto,
@@ -71,6 +71,7 @@ public sealed class AgentController : ControllerBase
     }
 
     [HttpGet("machines")]
+    [RequiresOperator]
     public async Task<IReadOnlyList<MachineStatusDto>> Machines(CancellationToken cancellationToken)
     {
         var onlineAfter = _time.GetUtcNow().UtcDateTime.AddSeconds(-45);
@@ -86,6 +87,7 @@ public sealed class AgentController : ControllerBase
     }
 
     [HttpGet("applications")]
+    [RequiresOperator]
     public async Task<IReadOnlyList<ApplicationInventoryDto>> Applications(CancellationToken cancellationToken) =>
         await (
             from application in _db.DiscoveredApplications.AsNoTracking()

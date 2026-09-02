@@ -122,17 +122,17 @@ public class EvidenceCollector : IEvidenceCollector
             Incident = new IncidentContextDto
             {
                 IncidentId = incident.Id.ToString(),
-                IncidentKey = incident.IncidentKey,
-                Title = incident.Title,
-                Application = incident.Application,
-                Service = incident.Service,
-                Environment = incident.Environment,
+                IncidentKey = Safe(incident.IncidentKey, 100) ?? string.Empty,
+                Title = Safe(incident.Title, 300) ?? string.Empty,
+                Application = Safe(incident.Application, 200) ?? string.Empty,
+                Service = Safe(incident.Service, 200) ?? string.Empty,
+                Environment = Safe(incident.Environment, 100) ?? string.Empty,
                 Severity = incident.Severity.ToString(),
                 Status = incident.Status.ToString(),
-                AffectedComponent = incident.AffectedComponent,
-                AffectedEndpoint = incident.AffectedEndpoint,
+                AffectedComponent = Safe(incident.AffectedComponent, 200) ?? string.Empty,
+                AffectedEndpoint = Safe(incident.AffectedEndpoint, 500) ?? string.Empty,
                 DetectedAt = incident.Timestamp,
-                Symptoms = symptoms
+                Symptoms = symptoms.Take(20).Select(s => Safe(s, 300) ?? string.Empty).ToList()
             },
             RecentMetrics = metrics
                 .OrderBy(m => m.Timestamp)
@@ -153,25 +153,25 @@ public class EvidenceCollector : IEvidenceCollector
                 .Select(e => new RelatedErrorDto
                 {
                     Timestamp = e.Timestamp,
-                    Endpoint = e.Endpoint,
-                    Method = e.Method,
+                    Endpoint = Safe(e.Endpoint, 500) ?? string.Empty,
+                    Method = Safe(e.Method, 20) ?? string.Empty,
                     StatusCode = e.StatusCode,
                     DurationMs = e.DurationMs,
-                    ErrorType = e.ErrorType,
+                    ErrorType = Safe(e.ErrorType, 200),
                     // Error text can carry whatever the application put in an exception message,
                     // so it is scrubbed before it leaves the process.
-                    ErrorMessage = Audit.Redaction.Scrub(Bound(e.ErrorMessage, 500))
+                    ErrorMessage = Safe(e.ErrorMessage, 500)
                 })
                 .ToList(),
-            CorrelatedSignals = snapshots.Select(s => new CorrelatedSignalDto
+            CorrelatedSignals = snapshots.Take(30).Select(s => new CorrelatedSignalDto
             {
-                Rule = s.Rule,
-                Metric = s.MetricName,
-                Symptom = s.Symptom,
+                Rule = Safe(s.Rule, 100) ?? string.Empty,
+                Metric = Safe(s.MetricName, 100) ?? string.Empty,
+                Symptom = Safe(s.Symptom, 300) ?? string.Empty,
                 Observed = s.Observed,
                 Threshold = s.Threshold,
-                Unit = s.Unit,
-                Severity = s.Severity,
+                Unit = Safe(s.Unit, 30) ?? string.Empty,
+                Severity = Safe(s.Severity, 30) ?? string.Empty,
                 DetectedAt = s.DetectedAt
             }).ToList(),
             LogEvents = agentEvents
@@ -179,24 +179,24 @@ public class EvidenceCollector : IEvidenceCollector
                 .Select(e => new AgentEventEvidenceDto
                 {
                     Timestamp = e.Timestamp,
-                    EventType = e.EventType,
-                    Severity = e.Severity,
+                    EventType = Safe(e.EventType, 100) ?? string.Empty,
+                    Severity = Safe(e.Severity, 30) ?? string.Empty,
                     // Already redacted at ingestion (TelemetryController.CreateEvent) - bounded
                     // again here anyway, the same defence-in-depth every other text field in this
                     // package gets, since evidence bounds are enforced at the point evidence is
                     // built, not assumed from an upstream caller.
-                    Message = Bound(e.Message, 500) ?? string.Empty,
-                    Source = e.Source,
+                    Message = Safe(e.Message, 500) ?? string.Empty,
+                    Source = Safe(e.Source, 500) ?? string.Empty,
                     OccurrenceCount = e.OccurrenceCount
                 })
                 .ToList(),
             HistoricalIncidents = history.Select(h => new HistoricalIncidentDto
             {
-                IncidentKey = h.IncidentKey,
-                Title = h.Title,
-                RootCause = Bound(h.RootCause, 400),
+                IncidentKey = Safe(h.IncidentKey, 100) ?? string.Empty,
+                Title = Safe(h.Title, 300) ?? string.Empty,
+                RootCause = Safe(h.RootCause, 400),
                 Resolution = h.Status == IncidentStatus.Resolved
-                    ? h.Actions.Select(a => a.ActionType).FirstOrDefault()
+                    ? Safe(h.Actions.Select(a => a.ActionType).FirstOrDefault(), 100)
                     : null,
                 DetectedAt = h.Timestamp,
                 Status = h.Status.ToString()
@@ -212,6 +212,8 @@ public class EvidenceCollector : IEvidenceCollector
                 })
                 .ToList()
         };
+
+        EnforcePayloadBudget(package);
 
         _logger.LogInformation(
             "Collected evidence for {Key}: {Metrics} metric sample(s), {Errors} error(s), {Signals} signal(s), {AgentEvents} agent event(s), {History} historical",
@@ -267,4 +269,27 @@ public class EvidenceCollector : IEvidenceCollector
 
     private static string? Bound(string? value, int max) =>
         value is null || value.Length <= max ? value : value[..max] + "...";
+
+    private static string? Safe(string? value, int max) =>
+        Bound(Audit.Redaction.Scrub(value), max);
+
+    private void EnforcePayloadBudget(EvidencePackageDto package)
+    {
+        var limit = Math.Max(1024, _options.MaxEvidencePayloadChars);
+
+        // Remove least-specific context first while preserving valid structured JSON. This is an
+        // aggregate wire bound, unlike truncating each persisted evidence row independently.
+        while (SreJson.Serialize(package).Length > limit)
+        {
+            if (package.HistoricalIncidents.Count > 0) package.HistoricalIncidents.RemoveAt(0);
+            else if (package.LogEvents.Count > 0) package.LogEvents.RemoveAt(0);
+            else if (package.RelatedErrors.Count > 0) package.RelatedErrors.RemoveAt(0);
+            else if (package.RecentMetrics.Count > 3) package.RecentMetrics.RemoveAt(0);
+            else if (package.CorrelatedSignals.Count > 1) package.CorrelatedSignals.RemoveAt(0);
+            else if (package.Incident.Symptoms.Count > 1) package.Incident.Symptoms.RemoveAt(0);
+            else
+                throw new InvalidOperationException(
+                    $"The minimum AI evidence package exceeds the configured {limit}-character limit.");
+        }
+    }
 }

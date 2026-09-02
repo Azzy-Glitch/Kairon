@@ -133,7 +133,7 @@ public class InvestigationDelayTests : IDisposable
         await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
 
         _h.AiOptions.InvestigationDelaySeconds = 300;
-        await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
+        await _h.CreateOrchestrator().ReinvestigateAsync(incident.Id);
 
         Assert.Equal(2, _h.Ai.InvestigateCalls);
     }

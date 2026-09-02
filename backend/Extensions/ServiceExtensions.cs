@@ -21,6 +21,15 @@ public static class ServiceExtensions
         {
             client.BaseAddress = new Uri(configuration["AiService:BaseUrl"] ?? "http://localhost:8000");
             client.Timeout = TimeSpan.FromSeconds(configuration.GetValue<int>("AiService:TimeoutSeconds", 30));
+            // The Python service bounds provider output, but the transport boundary must not
+            // assume its peer is healthy or authentic merely because it is on loopback. Keep the
+            // complete JSON envelope bounded before ReadAsStringAsync buffers it in memory.
+            client.MaxResponseContentBufferSize = configuration.GetValue<long>(
+                "AiService:MaxResponseBytes", 128 * 1024);
+
+            var apiKey = configuration["AiService:ApiKey"];
+            if (!string.IsNullOrWhiteSpace(apiKey))
+                client.DefaultRequestHeaders.Add("X-Kairon-AI-Key", apiKey);
         });
 
         return services;
@@ -57,6 +66,7 @@ public static class ServiceExtensions
     {
         services.AddSingleton<PersistenceMaintenanceState>();
         services.AddScoped<ISqliteBackupService, SqliteBackupService>();
+        services.AddScoped<ILocalSchemaMigrator, SqliteSchemaMigrator>();
         services.AddHostedService<PersistenceMaintenanceService>();
 
         return services;

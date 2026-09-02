@@ -1,4 +1,5 @@
 using Kairon.Backend.DTOs;
+using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Services;
 using Microsoft.AspNetCore.Mvc;
 
@@ -6,6 +7,7 @@ namespace Kairon.Backend.Controllers;
 
 [ApiController]
 [Route("api")]
+[RequiresOperator]
 public class DevOpsController : ControllerBase
 {
     private readonly IDevOpsService _devOpsService;

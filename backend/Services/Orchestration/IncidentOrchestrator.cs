@@ -33,6 +33,12 @@ public interface IIncidentOrchestrator
     /// </summary>
     Task InvestigateAsync(Guid incidentId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Explicit operator-requested re-investigation of a pre-approval incident. Automatic queue
+    /// processing never calls this method.
+    /// </summary>
+    Task ReinvestigateAsync(Guid incidentId, CancellationToken cancellationToken = default);
+
     Task<RemediationAction?> ApproveAsync(
         Guid incidentId, Guid actionId, string approvedBy, string? note, CancellationToken cancellationToken = default);
 
@@ -128,7 +134,16 @@ public class IncidentOrchestrator : IIncidentOrchestrator
         return incidents.Select(i => i.Id).ToList();
     }
 
-    public async Task InvestigateAsync(Guid incidentId, CancellationToken cancellationToken = default)
+    public Task InvestigateAsync(Guid incidentId, CancellationToken cancellationToken = default) =>
+        InvestigateCoreAsync(incidentId, allowReinvestigation: false, cancellationToken);
+
+    public Task ReinvestigateAsync(Guid incidentId, CancellationToken cancellationToken = default) =>
+        InvestigateCoreAsync(incidentId, allowReinvestigation: true, cancellationToken);
+
+    private async Task InvestigateCoreAsync(
+        Guid incidentId,
+        bool allowReinvestigation,
+        CancellationToken cancellationToken)
     {
         var incident = await LoadAsync(incidentId, cancellationToken);
         if (incident is null)
@@ -169,6 +184,14 @@ public class IncidentOrchestrator : IIncidentOrchestrator
                 return;
             }
 
+            var budgetFailure = await GetAiBudgetFailureAsync(incident.Id, cancellationToken);
+            if (budgetFailure is not null)
+            {
+                var budgetPrevious = IncidentLifecycle.Transition(incident, IncidentStatus.Investigating);
+                await RecordBudgetFailureAsync(incident, budgetPrevious, budgetFailure, cancellationToken);
+                return;
+            }
+
             var previous = IncidentLifecycle.Transition(incident, IncidentStatus.Investigating);
             _audit.Record(incident, IncidentEventTypes.Investigating, "ai-orchestrator",
                 previousState: previous.ToString(),
@@ -176,8 +199,15 @@ public class IncidentOrchestrator : IIncidentOrchestrator
                 message: "Collecting evidence and requesting AI investigation");
             await _db.SaveChangesAsync(cancellationToken);
         }
-        else if (IncidentLifecycle.CanReInvestigate(incident.Status))
+        else if (allowReinvestigation && IncidentLifecycle.CanReInvestigate(incident.Status))
         {
+            var budgetFailure = await GetAiBudgetFailureAsync(incident.Id, cancellationToken);
+            if (budgetFailure is not null)
+            {
+                await RecordBudgetFailureAsync(incident, incident.Status, budgetFailure, cancellationToken);
+                return;
+            }
+
             if (!await TryBeginReInvestigationAsync(incident, cancellationToken))
                 return;
         }
@@ -189,8 +219,25 @@ public class IncidentOrchestrator : IIncidentOrchestrator
             return;
         }
 
+
+        // An incident left in Investigating after a failed request may be retried explicitly. It
+        // still consumes the same durable budget as every other model request.
+        var inProgressBudgetFailure = await GetAiBudgetFailureAsync(incident.Id, cancellationToken);
+        if (inProgressBudgetFailure is not null)
+        {
+            await RecordBudgetFailureAsync(incident, incident.Status, inProgressBudgetFailure, cancellationToken);
+            return;
+        }
+
         var package = await _evidence.CollectAsync(incident, cancellationToken);
         _evidence.Persist(incident, package);
+        _audit.Record(incident, IncidentEventTypes.AiRequestStarted, "ai-orchestrator",
+            message: "Reserved one bounded AI investigation request",
+            data: new
+            {
+                MaxPerIncident = Math.Max(1, _aiOptions.MaxInvestigationsPerIncident),
+                MaxPerHour = Math.Max(1, _aiOptions.MaxInvestigationsPerHour)
+            });
         await _db.SaveChangesAsync(cancellationToken);
 
         InvestigationResultDto result;
@@ -235,6 +282,44 @@ public class IncidentOrchestrator : IIncidentOrchestrator
         ApplyDiagnosis(incident, result);
         ApplyPrediction(incident, result);
         await CreateRecommendationsAsync(incident, result, cancellationToken);
+    }
+
+    private async Task<string?> GetAiBudgetFailureAsync(Guid incidentId, CancellationToken cancellationToken)
+    {
+        var perIncidentLimit = Math.Max(1, _aiOptions.MaxInvestigationsPerIncident);
+        var incidentAttempts = await _db.IncidentEvents.CountAsync(e =>
+            e.IncidentId == incidentId && e.EventType == IncidentEventTypes.AiRequestStarted,
+            cancellationToken);
+
+        if (incidentAttempts >= perIncidentLimit)
+            return $"AI investigation budget exhausted for this incident ({perIncidentLimit} request limit).";
+
+        var hourlyLimit = Math.Max(1, _aiOptions.MaxInvestigationsPerHour);
+        var since = DateTime.UtcNow.AddHours(-1);
+        var hourlyAttempts = await _db.IncidentEvents.CountAsync(e =>
+            e.EventType == IncidentEventTypes.AiRequestStarted && e.Timestamp >= since,
+            cancellationToken);
+
+        return hourlyAttempts >= hourlyLimit
+            ? $"AI investigation budget exhausted for the current hour ({hourlyLimit} request limit)."
+            : null;
+    }
+
+    private async Task RecordBudgetFailureAsync(
+        SreIncident incident,
+        IncidentStatus previous,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        incident.FailureReason = reason;
+        incident.UpdatedAt = DateTime.UtcNow;
+        _audit.Record(incident, IncidentEventTypes.AiBudgetExceeded, "ai-orchestrator",
+            previousState: previous.ToString(),
+            newState: incident.Status.ToString(),
+            result: "request-blocked",
+            message: reason);
+        await _db.SaveChangesAsync(cancellationToken);
+        _logger.LogWarning("Blocked AI investigation for {Key}: {Reason}", incident.IncidentKey, reason);
     }
 
     /// <summary>

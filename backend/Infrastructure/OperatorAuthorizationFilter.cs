@@ -10,8 +10,8 @@ namespace Kairon.Backend.Infrastructure;
 /// Marks an endpoint that changes remediation state - approve, reject, cancel, execute. When
 /// SreSecurity:RequireOperatorKey is on, these require a server-side key (PRD section 19).
 ///
-/// Off by default so the hackathon demo runs with no setup, but the enforcement path is real
-/// rather than a stub, so turning it on is a configuration change and not a code change.
+/// Enabled by default. The desktop host supplies a fresh per-launch key without exposing it to
+/// JavaScript; non-desktop deployments must explicitly configure their own key.
 /// </summary>
 [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class)]
 public class RequiresOperatorAttribute : Attribute

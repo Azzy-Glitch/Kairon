@@ -130,7 +130,13 @@ public class AiOrchestrationOptions
     public bool Enabled { get; set; } = true;
 
     public int TimeoutSeconds { get; set; } = 30;
-    public int MaxRetries { get; set; } = 2;
+    // Provider clients already own bounded retry/backoff. Retrying again at this layer multiplies
+    // one incident into (backend attempts x provider attempts) external calls.
+    public int MaxRetries { get; set; } = 0;
+
+    /// <summary>Durable cost/abuse ceilings, counted from incident audit events.</summary>
+    public int MaxInvestigationsPerIncident { get; set; } = 3;
+    public int MaxInvestigationsPerHour { get; set; } = 60;
 
     /// <summary>
     /// How long a newly detected incident is allowed to accumulate correlated signals before the
@@ -151,7 +157,7 @@ public class AiOrchestrationOptions
     public int MaxAgentEvents { get; set; } = 20;
     public int MaxEvidencePayloadChars { get; set; } = 16000;
 
-    /// <summary>Capacity of the incident processing queue. Full queue drops work rather than blocking ingestion.</summary>
+    /// <summary>Capacity of the incident processing queue. Enqueue is non-blocking and reports rejection when full.</summary>
     public int QueueCapacity { get; set; } = 512;
 }
 
@@ -161,7 +167,7 @@ public class SreSecurityOptions
     public const string SectionName = "SreSecurity";
 
     /// <summary>When true, approve/reject/execute endpoints require a valid operator key.</summary>
-    public bool RequireOperatorKey { get; set; } = false;
+    public bool RequireOperatorKey { get; set; } = true;
 
     public string HeaderName { get; set; } = "X-Kairon-Operator-Key";
 

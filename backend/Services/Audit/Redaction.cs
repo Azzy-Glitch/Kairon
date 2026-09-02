@@ -29,6 +29,20 @@ public static partial class Redaction
     [GeneratedRegex(@"(?i)(Password|Pwd|User\s*ID|Uid)\s*=\s*[^;]+", RegexOptions.CultureInvariant)]
     private static partial Regex ConnectionStringPattern();
 
+    [GeneratedRegex(@"(?i)\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex AdditionalTokenPattern();
+
+    [GeneratedRegex(@"(?i)\b[A-Z]:\\Users\\[^\\\s]+", RegexOptions.CultureInvariant)]
+    private static partial Regex UserProfilePathPattern();
+
+    [GeneratedRegex(@"\b(?:\d{1,3}\.){3}\d{1,3}\b", RegexOptions.CultureInvariant)]
+    private static partial Regex IpAddressPattern();
+
+    [GeneratedRegex(@"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex EmailPattern();
+
     public static string? Scrub(string? value)
     {
         if (string.IsNullOrEmpty(value))
@@ -41,6 +55,10 @@ public static partial class Redaction
         scrubbed = OpenAiStylePattern().Replace(scrubbed, Mask);
         scrubbed = GoogleStylePattern().Replace(scrubbed, Mask);
         scrubbed = ConnectionStringPattern().Replace(scrubbed, m => $"{m.Groups[1].Value}={Mask}");
+        scrubbed = AdditionalTokenPattern().Replace(scrubbed, Mask);
+        scrubbed = UserProfilePathPattern().Replace(scrubbed, @"C:\Users\[redacted-user]");
+        scrubbed = IpAddressPattern().Replace(scrubbed, "[redacted-ip]");
+        scrubbed = EmailPattern().Replace(scrubbed, Mask);
         return scrubbed;
     }
 

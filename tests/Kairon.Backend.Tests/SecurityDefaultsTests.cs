@@ -14,13 +14,19 @@ namespace Kairon.Backend.Tests;
 
 /// <summary>
 /// Coverage for the security-default paths this codebase previously shipped with none for:
-/// SreSecurity:RequireOperatorKey / PlatformSecurity:RequireTelemetryKey when actually turned on
-/// (both default off, but the enforcement code is real, not a stub - it just had no tests proving
-/// so). Also covers the known-insecure Agent/UserAgent default credential being explicitly refused
-/// at registration.
+/// SreSecurity:RequireOperatorKey / PlatformSecurity:RequireTelemetryKey enforcement. Operator
+/// actions now fail closed by default; telemetry compatibility remains independently configurable.
+/// Also covers the known-insecure Agent/UserAgent default credential being explicitly refused at
+/// registration.
 /// </summary>
 public sealed class OperatorAuthorizationFilterTests
 {
+    [Fact]
+    public void OperatorAuthorizationIsRequiredByDefault()
+    {
+        Assert.True(new SreSecurityOptions().RequireOperatorKey);
+    }
+
     private static ActionExecutingContext Context(bool requiresOperator, string? providedHeader, string headerName)
     {
         var httpContext = new DefaultHttpContext();
@@ -40,7 +46,7 @@ public sealed class OperatorAuthorizationFilterTests
             NullLogger<OperatorAuthorizationFilter>.Instance);
 
     [Fact]
-    public async Task DisabledByDefaultAllowsThroughRegardlessOfHeader()
+    public async Task ExplicitlyDisabledAllowsThroughRegardlessOfHeader()
     {
         var context = Context(requiresOperator: true, providedHeader: null, "X-Kairon-Operator-Key");
         var nextCalled = false;
