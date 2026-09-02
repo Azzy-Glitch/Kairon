@@ -30,7 +30,13 @@ jobs:
       # on this Linux runner via reference assemblies - it has no test project of its own, so this
       # only needs to compile here, never actually run.
       - run: dotnet test Kairon.slnx --configuration Release -p:EnableWindowsTargeting=true
+      # `dotnet list package` has no -p:/--property passthrough (unlike test/build/pack), so the
+      # same effect is achieved via the environment variable MSBuild reads properties from -
+      # confirmed locally: `-p:EnableWindowsTargeting=true` here is rejected outright as an
+      # unrecognized argument.
       - run: dotnet list Kairon.slnx package --vulnerable --include-transitive
+        env:
+          EnableWindowsTargeting: true
       - working-directory: frontend
         run: npm ci && npm audit --omit=dev --audit-level=high && npm test -- --run && npm run build
       - working-directory: ai-service
