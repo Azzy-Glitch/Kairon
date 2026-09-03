@@ -6,6 +6,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- A WinForms testhost needs the Microsoft.WindowsDesktop.App shared runtime just to launch,
+         and that runtime only exists on Windows - EnableWindowsTargeting lets this project restore
+         and BUILD on the Linux CI runner (catching compile regressions), but `dotnet test` would
+         still try to spawn the testhost there and fail before any [Fact]'s own
+         OperatingSystem.IsWindows() guard ever runs. IsTestProject=false on non-Windows tells
+         `dotnet test` to build this project without attempting to execute it; it stays a normal
+         test project (and genuinely runs) on a real Windows machine or Windows CI runner. -->
+    <IsTestProject Condition="'$(OS)' != 'Windows_NT'">false</IsTestProject>
   </PropertyGroup>
 
   <ItemGroup>
