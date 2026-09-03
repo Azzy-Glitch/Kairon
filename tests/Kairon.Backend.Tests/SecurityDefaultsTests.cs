@@ -1,3 +1,4 @@
+using System.Net;
 using Kairon.Backend.Configuration;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models.Platform;
@@ -27,10 +28,12 @@ public sealed class OperatorAuthorizationFilterTests
         Assert.True(new SreSecurityOptions().RequireOperatorKey);
     }
 
-    private static ActionExecutingContext Context(bool requiresOperator, string? providedHeader, string headerName)
+    private static ActionExecutingContext Context(
+        bool requiresOperator, string? providedHeader, string headerName, IPAddress? remoteIp = null)
     {
         var httpContext = new DefaultHttpContext();
         if (providedHeader is not null) httpContext.Request.Headers[headerName] = providedHeader;
+        if (remoteIp is not null) httpContext.Connection.RemoteIpAddress = remoteIp;
 
         var descriptor = new ActionDescriptor
         {
@@ -79,6 +82,8 @@ public sealed class OperatorAuthorizationFilterTests
     [Fact]
     public async Task EnabledWithNoConfiguredKeyFailsClosed()
     {
+        // No remote IP set up (mirrors a request whose origin this test doesn't assert on) -
+        // still must not be waved through just because no key is configured.
         var context = Context(requiresOperator: true, providedHeader: "anything", "X-Kairon-Operator-Key");
         var nextCalled = false;
 
@@ -91,6 +96,72 @@ public sealed class OperatorAuthorizationFilterTests
         Assert.False(nextCalled);
         var result = Assert.IsType<ObjectResult>(context.Result);
         Assert.Equal(StatusCodes.Status401Unauthorized, result.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1")]
+    [InlineData("::1")]
+    public async Task EnabledWithNoConfiguredKeyAllowsALocalLoopbackRequest(string loopbackIp)
+    {
+        // Fresh local/desktop install: SreSecurity:OperatorKey ships blank until the desktop host
+        // sets one per-launch. A request that genuinely originates from this same machine must
+        // still get through, so the AI Configuration panel (and anything else operator-gated) is
+        // usable out of the box without a manual config edit.
+        var context = Context(requiresOperator: true, providedHeader: null, "X-Kairon-Operator-Key",
+            remoteIp: IPAddress.Parse(loopbackIp));
+        var nextCalled = false;
+
+        await Filter(require: true, operatorKey: null).OnActionExecutionAsync(context, () =>
+        {
+            nextCalled = true;
+            return Task.FromResult<ActionExecutedContext>(null!);
+        });
+
+        Assert.True(nextCalled);
+        Assert.Null(context.Result);
+    }
+
+    [Fact]
+    public async Task EnabledWithNoConfiguredKeyStillFailsClosedForANonLoopbackRequest()
+    {
+        // Real remote/server deployments always configure a key (docker-compose.cloud.yml refuses
+        // to start without one); this proves that if one somehow runs without a key configured
+        // anyway, a genuinely remote request is still refused - the loopback exemption above never
+        // extends to arbitrary remote callers.
+        var context = Context(requiresOperator: true, providedHeader: null, "X-Kairon-Operator-Key",
+            remoteIp: IPAddress.Parse("203.0.113.5"));
+        var nextCalled = false;
+
+        await Filter(require: true, operatorKey: null).OnActionExecutionAsync(context, () =>
+        {
+            nextCalled = true;
+            return Task.FromResult<ActionExecutedContext>(null!);
+        });
+
+        Assert.False(nextCalled);
+        var result = Assert.IsType<ObjectResult>(context.Result);
+        Assert.Equal(StatusCodes.Status401Unauthorized, result.StatusCode);
+    }
+
+    [Fact]
+    public async Task ConfiguredKeyStillRejectsAWrongHeaderEvenFromLoopback()
+    {
+        // The loopback exemption only applies when no key is configured at all. Once a real key
+        // IS configured (the actual desktop product's steady state, via its per-launch ephemeral
+        // key), a wrong or missing header must still be rejected regardless of the caller's
+        // address - loopback is not a blanket bypass once operator auth is actually configured.
+        var context = Context(requiresOperator: true, providedHeader: "wrong-key", "X-Kairon-Operator-Key",
+            remoteIp: IPAddress.Parse("127.0.0.1"));
+        var nextCalled = false;
+
+        await Filter(require: true, operatorKey: "secret").OnActionExecutionAsync(context, () =>
+        {
+            nextCalled = true;
+            return Task.FromResult<ActionExecutedContext>(null!);
+        });
+
+        Assert.False(nextCalled);
+        Assert.Equal(StatusCodes.Status401Unauthorized, Assert.IsType<ObjectResult>(context.Result).StatusCode);
     }
 
     [Fact]

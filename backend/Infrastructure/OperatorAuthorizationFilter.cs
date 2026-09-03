@@ -1,3 +1,4 @@
+using System.Net;
 using Kairon.Backend.Configuration;
 using Kairon.Backend.DTOs;
 using Microsoft.AspNetCore.Mvc;
@@ -11,7 +12,9 @@ namespace Kairon.Backend.Infrastructure;
 /// SreSecurity:RequireOperatorKey is on, these require a server-side key (PRD section 19).
 ///
 /// Enabled by default. The desktop host supplies a fresh per-launch key without exposing it to
-/// JavaScript; non-desktop deployments must explicitly configure their own key.
+/// JavaScript; non-desktop deployments must explicitly configure their own key. If no key is
+/// configured at all, only requests from this same machine are let through - see
+/// <see cref="OperatorAuthorizationFilter"/>.
 /// </summary>
 [AttributeUsage(AttributeTargets.Method | AttributeTargets.Class)]
 public class RequiresOperatorAttribute : Attribute
@@ -44,8 +47,22 @@ public class OperatorAuthorizationFilter : IAsyncActionFilter
 
         if (string.IsNullOrWhiteSpace(_options.OperatorKey))
         {
-            // Fail closed. A protected endpoint with no key configured must refuse, not wave
-            // everyone through.
+            // Fail closed for anyone but the local machine. Real remote/server deployments always
+            // configure a key (docker-compose.cloud.yml refuses to start without one), so an
+            // unconfigured key only happens on a fresh local machine - a bare `dotnet run`, or the
+            // packaged desktop product before its first launch has set one. Trust same-machine
+            // requests only in that case, so first-run local use isn't blocked on a manual config
+            // edit; any request that didn't originate from this machine still gets refused below.
+            var remoteIp = context.HttpContext.Connection.RemoteIpAddress;
+            if (remoteIp is not null && IPAddress.IsLoopback(remoteIp))
+            {
+                _logger.LogWarning(
+                    "SreSecurity:OperatorKey is not configured; allowing {Path} because the request originated from this machine.",
+                    context.HttpContext.Request.Path);
+                await next();
+                return;
+            }
+
             _logger.LogError("SreSecurity:RequireOperatorKey is enabled but no OperatorKey is configured");
             context.Result = Deny("Operator authorization is misconfigured on the server.", "AUTH_MISCONFIGURED");
             return;
