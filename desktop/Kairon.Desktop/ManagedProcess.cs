@@ -17,10 +17,20 @@ public sealed record StartupFailure(string Stage, string Reason);
 public sealed class ManagedProcess : IDisposable
 {
     private readonly string _name;
+    private readonly ChildProcessJob? _job;
     private Process? _process;
     private bool _stopped;
 
-    public ManagedProcess(string name) => _name = name;
+    /// <param name="job">Optional OS-level safety net (ChildProcessJob) - when supplied, the
+    /// spawned process is bound to it so Windows kills it automatically if Kairon.exe's own
+    /// process handle table is torn down without OnFormClosing ever running (a crash, a forced
+    /// kill, a system shutdown). Null is accepted so this class stays usable without one, e.g. in
+    /// a unit test that only cares about the graceful Stop() path.</param>
+    public ManagedProcess(string name, ChildProcessJob? job = null)
+    {
+        _name = name;
+        _job = job;
+    }
 
     public async Task<StartupFailure?> StartAndWaitHealthyAsync(
         ProcessStartInfo startInfo, Uri healthUrl, TimeSpan timeout, CancellationToken cancellationToken)
@@ -45,6 +55,8 @@ public sealed class ManagedProcess : IDisposable
 
         if (_process is null)
             return new StartupFailure(_name, "Process.Start returned no process.");
+
+        _job?.AssignProcess(_process);
 
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
         var deadline = DateTime.UtcNow + timeout;

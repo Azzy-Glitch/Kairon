@@ -17,6 +17,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Kairon.Backend.Tests/Kairon.Backend.Tests.csproj" />
+    <Project Path="tests/Kairon.Desktop.Tests/Kairon.Desktop.Tests.csproj" />
     <Project Path="tests/Kairon.SDK.Tests/Kairon.SDK.Tests.csproj" />
     <Project Path="tests/Kairon.Agent.Tests/Kairon.Agent.Tests.csproj" />
     <Project Path="tests/Kairon.UserAgent.Tests/Kairon.UserAgent.Tests.csproj" />

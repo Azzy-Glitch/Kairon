@@ -98,8 +98,16 @@ public class IncidentQueryService : IIncidentQueryService
 
     public async Task<SreIncidentDetailDto?> GetAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        // Three collection navigations in one query - EF Core's default single-query strategy
+        // would JOIN all three, producing a row for every (action x event x verification)
+        // combination for this one incident before EF de-duplicates it back into the object graph.
+        // AsSplitQuery issues one simple query per collection instead - same result, no cartesian
+        // multiplication. Safe here: this is a single AsNoTracking() read of one incident by id,
+        // not a paged list, so there is no risk of the well-known split-query paging/ordering
+        // pitfall (that only applies when Skip/Take is combined with a split query on the root).
         var incident = await _db.SreIncidents
             .AsNoTracking()
+            .AsSplitQuery()
             .Include(i => i.Actions)
             .Include(i => i.Events)
             .Include(i => i.Verifications)

@@ -764,8 +764,14 @@ public class IncidentOrchestrator : IIncidentOrchestrator
         await _db.SaveChangesAsync(cancellationToken);
     }
 
+    // Same reasoning as IncidentQueryService.GetAsync: three collection navigations on one row is
+    // exactly the shape EF Core's MultipleCollectionIncludeWarning exists for. AsSplitQuery avoids
+    // the cartesian JOIN; safe here too - a single incident loaded by id, tracked so the pipeline's
+    // subsequent SaveChangesAsync still works exactly as before (split-query only changes how the
+    // initial read is executed, never how the change tracker treats the result).
     private Task<SreIncident?> LoadAsync(Guid incidentId, CancellationToken cancellationToken) =>
         _db.SreIncidents
+            .AsSplitQuery()
             .Include(i => i.Actions)
             .Include(i => i.Events)
             .Include(i => i.Verifications)

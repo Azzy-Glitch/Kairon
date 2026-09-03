@@ -150,3 +150,48 @@ if (-not $InnoCompiler -or -not (Test-Path -LiteralPath $InnoCompiler)) {
 }
 & $InnoCompiler "/DPackageRoot=$package" $installerScriptPath
 if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed." }
+
+# --- Optional Authenticode signing -----------------------------------------------------------
+# Off by default and never required to build: a local/CI build with no signing material
+# configured produces a legitimate, working, *unsigned* installer, and this script says so
+# explicitly rather than letting a NotSigned installer look no different from a deliberate one.
+#
+# Two supported sources for a *real* certificate, matching how production code-signing
+# certificates actually get delivered - never a certificate committed to this repository:
+#   - $env:KAIRON_SIGN_THUMBPRINT: a certificate already installed in the current user's or
+#     machine's certificate store (the normal shape for an EV certificate on a hardware token or
+#     cloud HSM - EV certificates cannot be exported as a portable .pfx at all per CA/Browser
+#     Forum rules, so this is the path that matters most for actually clearing SmartScreen).
+#   - $env:KAIRON_SIGN_PFX_PATH (+ $env:KAIRON_SIGN_PFX_PASSWORD): a traditional OV certificate
+#     exported to a .pfx file kept outside the repository, e.g. mounted from a secrets manager.
+$installerExe = Get-ChildItem -Path (Join-Path $artifacts "installer") -Filter *.exe | Select-Object -First 1
+if (-not $installerExe) {
+    throw "Installer compilation reported success but no .exe was found in $(Join-Path $artifacts 'installer')."
+}
+
+$signThumbprint = $env:KAIRON_SIGN_THUMBPRINT
+$signPfxPath = $env:KAIRON_SIGN_PFX_PATH
+$signPfxPassword = $env:KAIRON_SIGN_PFX_PASSWORD
+
+if ([string]::IsNullOrWhiteSpace($signThumbprint) -and [string]::IsNullOrWhiteSpace($signPfxPath)) {
+    Write-Host "No code-signing certificate configured (KAIRON_SIGN_THUMBPRINT / KAIRON_SIGN_PFX_PATH not set) - $($installerExe.Name) is unsigned."
+} else {
+    $signtool = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -like "*x64*" } | Select-Object -First 1
+    if (-not $signtool) { throw "A signing certificate was configured but signtool.exe was not found. Install the Windows SDK." }
+
+    if (-not [string]::IsNullOrWhiteSpace($signThumbprint)) {
+        & $signtool.FullName sign /sha1 $signThumbprint /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $installerExe.FullName
+    } else {
+        if ([string]::IsNullOrWhiteSpace($signPfxPassword)) {
+            throw "KAIRON_SIGN_PFX_PATH is set but KAIRON_SIGN_PFX_PASSWORD is not."
+        }
+        & $signtool.FullName sign /f $signPfxPath /p $signPfxPassword /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $installerExe.FullName
+    }
+    if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE." }
+
+    & $signtool.FullName verify /pa $installerExe.FullName
+    if ($LASTEXITCODE -ne 0) { throw "Signed $($installerExe.Name) but Authenticode verification failed - the resulting installer would not be trusted." }
+
+    Write-Host "Signed and verified $($installerExe.Name)."
+}

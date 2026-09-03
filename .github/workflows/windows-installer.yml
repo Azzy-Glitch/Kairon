@@ -57,7 +57,13 @@ jobs:
               /tr http://timestamp.digicert.com /td SHA256 $installer.FullName
             if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE." }
 
-            Write-Host "Signed $($installer.Name)."
+            # Signtool exiting 0 only means it produced *a* signature - verify the chain is one
+            # Windows will actually trust, so a misconfigured or non-trusted certificate never
+            # ships silently as if it were a legitimate one.
+            & $signtool.FullName verify /pa $installer.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Signed $($installer.Name) but Authenticode verification failed - the resulting installer would not be trusted." }
+
+            Write-Host "Signed and verified $($installer.Name)."
           } finally {
             Remove-Item $certPath -Force -ErrorAction SilentlyContinue
           }

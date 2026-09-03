@@ -24,8 +24,12 @@ public sealed class MainForm : Form
         Text = "Starting Kairon..."
     };
 
-    private readonly ManagedProcess _backend = new("Backend");
-    private readonly ManagedProcess _ai = new("AI service");
+    // Created before either child process starts, so both are bound to it from the moment they
+    // exist (see ChildProcessJob's own doc comment for why this matters beyond the graceful path
+    // below).
+    private readonly ChildProcessJob _childProcessJob = new();
+    private readonly ManagedProcess _backend;
+    private readonly ManagedProcess _ai;
     private readonly string _operatorKey = CreateEphemeralKey();
     private readonly string _aiApiKey = CreateEphemeralKey();
     private WebView2? _webView;
@@ -33,6 +37,9 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
+        _backend = new ManagedProcess("Backend", _childProcessJob);
+        _ai = new ManagedProcess("AI service", _childProcessJob);
+
         Text = "Kairon";
         Width = 1400;
         Height = 900;
@@ -216,8 +223,40 @@ public sealed class MainForm : Form
         if (_shuttingDown) return;
         _shuttingDown = true;
 
-        _webView?.Dispose();
-        _backend.Stop();
-        _ai.Stop();
+        // Root cause of the "Backend/AI stay alive after close" defect: this used to dispose the
+        // WebView2 control BEFORE stopping the child processes. WebView2 disposal from inside
+        // FormClosing is a known source of exceptions/hangs in its own SDK (it is tearing down an
+        // active CoreWebView2 environment with in-flight requests, including the very
+        // WebResourceRequested handler wired up in ShowWebViewAsync) - when that throws, everything
+        // after it in this handler, including _backend.Stop()/_ai.Stop(), never ran, leaving both
+        // child processes (and the ports they hold) orphaned.
+        //
+        // Fixed two ways, deliberately redundant:
+        //  1. The two calls that actually matter run first, wrapped so nothing after them can stop
+        //     them from completing.
+        //  2. ChildProcessJob is the OS-level backstop for every OTHER way this process can end
+        //     (a crash, a forced kill, a system shutdown) - closing it here also covers the
+        //     graceful path in case Stop() itself ever fails for some other reason.
+        try
+        {
+            _backend.Stop();
+            _ai.Stop();
+        }
+        finally
+        {
+            _childProcessJob.Dispose();
+        }
+
+        // Best-effort and last: a WebView2 disposal failure is now cosmetic (a possible dangling
+        // browser process/dialog), never a reason the backend/AI stay up.
+        try
+        {
+            _webView?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            try { AppPaths.AppendStartupLog($"{DateTime.Now:HH:mm:ss.fff} WebView2 disposal on close failed - {ex.GetType().Name}: {ex.Message}"); }
+            catch { /* logging the failure must never block shutdown */ }
+        }
     }
 }

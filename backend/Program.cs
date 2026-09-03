@@ -125,7 +125,12 @@ if (app.Environment.IsDevelopment())
 else
 {
     app.UseCors("Production");
-    app.UseHttpsRedirection();
+    // No app.UseHttpsRedirection() here, deliberately: Kairon only ever binds Kestrel to a plain
+    // http://127.0.0.1 loopback endpoint (MainForm launches it with --urls http://127.0.0.1:8000)
+    // - there is no HTTPS endpoint configured anywhere in this product for it to redirect to. With
+    // the middleware registered anyway, ASP.NET Core logged "Failed to determine the https port
+    // for redirect" on every request; since there genuinely is no https port and never will be for
+    // a local-loopback desktop backend, the fix is removing the middleware, not silencing the log.
 }
 
 app.UseSerilogRequestLogging();

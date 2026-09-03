@@ -79,12 +79,55 @@ begin
   Result := ExpandConstant('{app}\agent\Kairon.Agent.exe');
 end;
 
+// Kairon.Desktop hosts the UI in a WebView2 control (Microsoft.Web.WebView2 package). Windows 11
+// and current Windows 10 ship the Evergreen WebView2 Runtime pre-installed, so this has never
+// failed on a development machine - but this installer never actually verifies it, so a
+// locked-down or older Windows image without it would pass installation cleanly and then fail
+// opaquely the first time Kairon.exe tries to create the WebView2 environment. Checked for real,
+// not assumed: the registry key/value below is Microsoft's own documented detection method
+// (https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution#detect-if-a-suitable-webview2-runtime-is-already-installed),
+// covering both machine-wide and per-user Evergreen installs across both registry views.
+function IsWebView2RuntimeInstalled: Boolean;
+var
+  Version: String;
+  WebView2ClientKey: String;
+begin
+  WebView2ClientKey := '\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  Result :=
+    RegQueryStringValue(HKLM64, 'SOFTWARE' + WebView2ClientKey, 'pv', Version) or
+    RegQueryStringValue(HKLM32, 'SOFTWARE\WOW6432Node' + WebView2ClientKey, 'pv', Version) or
+    RegQueryStringValue(HKCU, 'SOFTWARE' + WebView2ClientKey, 'pv', Version);
+end;
+
 function NormalizeImagePath(Value: String): String;
 begin
   Result := Trim(Value);
   if (Length(Result) >= 2) and (Result[1] = '"') and
      (Result[Length(Result)] = '"') then
     Result := Copy(Result, 2, Length(Result) - 2);
+end;
+
+// Runs before the wizard shows its first page - the earliest point to tell the operator about a
+// missing prerequisite, rather than after they have already clicked through the whole install.
+// Deliberately a warning, not a hard block: this is a registry-based heuristic (Microsoft's own
+// documented one, but still a heuristic), and refusing to install outright on a false negative
+// would be worse than letting a genuinely-missing-runtime install finish with a clear warning the
+// operator can act on before first launch.
+function InitializeSetup: Boolean;
+begin
+  Result := True;
+  if not IsWebView2RuntimeInstalled then
+  begin
+    MsgBox(
+      'Kairon uses the Microsoft Edge WebView2 Runtime to display its interface, and it was not ' +
+      'detected on this machine.'#13#10#13#10 +
+      'Windows 11 and most current Windows 10 installations already include it, so this may be a ' +
+      'false alarm - but if Kairon fails to open its window after installing, install the ' +
+      '"Evergreen Bootstrapper" from Microsoft''s WebView2 download page first, then launch Kairon ' +
+      'again.'#13#10#13#10 +
+      'Setup will continue now.',
+      mbInformation, MB_OK);
+  end;
 end;
 
 function RunServiceControl(const Arguments, Action: String; var ResultCode: Integer): Boolean;
