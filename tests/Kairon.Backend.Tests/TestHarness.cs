@@ -285,7 +285,7 @@ public class FakeAiService : IAiMicroservice
     public TimeSpan Delay { get; set; } = TimeSpan.Zero;
 
     public bool IsAvailable { get; set; } = true;
-    public string Mode => "fake";
+    public Task<string> GetModeAsync(CancellationToken cancellationToken = default) => Task.FromResult("fake");
 
     public Task<InvestigationResultDto> InvestigateAsync(
         EvidencePackageDto evidence, CancellationToken cancellationToken = default)
@@ -346,6 +346,26 @@ public class FakeAiService : IAiMicroservice
     public Task<List<Kairon.Backend.DTOs.FixSuggestionDto>> SuggestFixesAsync(
         List<Kairon.Backend.DTOs.MismatchDto> mismatches, CancellationToken ct = default)
         => Task.FromResult(new List<Kairon.Backend.DTOs.FixSuggestionDto>());
+
+    // AI Configuration panel surface - unused by the SRE investigation tests but required by the
+    // interface. Real behaviour is covered by AiConfigControllerTests / AiProviderConfigServiceTests.
+    public Task<Kairon.Backend.DTOs.Sre.AiConfigureResponseDto> ConfigureProviderAsync(
+        Kairon.Backend.DTOs.Sre.AiConfigureRequestDto request, CancellationToken cancellationToken = default)
+        => Task.FromResult(new Kairon.Backend.DTOs.Sre.AiConfigureResponseDto
+        {
+            Applied = true, Provider = request.Provider, EffectiveProvider = request.Provider, Model = request.Model ?? ""
+        });
+
+    public Task<Kairon.Backend.DTOs.Sre.AiTestConnectionResponseDto> TestProviderConnectionAsync(
+        Kairon.Backend.DTOs.Sre.AiConfigureRequestDto request, CancellationToken cancellationToken = default)
+        => Task.FromResult(new Kairon.Backend.DTOs.Sre.AiTestConnectionResponseDto
+        {
+            Success = true, Provider = request.Provider, EffectiveProvider = request.Provider, Model = request.Model ?? ""
+        });
+
+    public Task<Kairon.Backend.DTOs.Sre.AiModelsResponseDto> ListProviderModelsAsync(
+        Kairon.Backend.DTOs.Sre.AiConfigureRequestDto request, CancellationToken cancellationToken = default)
+        => Task.FromResult(new Kairon.Backend.DTOs.Sre.AiModelsResponseDto { Provider = request.Provider, Supported = false });
 }
 
 /// <summary>Records the commands remediation tools issue, so tests can assert on the effect.</summary>

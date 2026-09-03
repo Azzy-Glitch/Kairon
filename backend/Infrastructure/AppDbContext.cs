@@ -32,6 +32,10 @@ public class AppDbContext : DbContext
     public DbSet<SdkPairingSession> SdkPairingSessions { get; set; }
     public DbSet<PlatformAuditEvent> PlatformAuditEvents { get; set; }
 
+    // User-configured AI provider/model/key (frontend AI Configuration panel) - additive, replaces
+    // no existing entity; env/appsettings-based AI configuration is untouched and still works.
+    public DbSet<AiProviderConfig> AiProviderConfigs { get; set; }
+
     // Machine/process discovery - "Basic Monitoring" (docs/DESKTOP_SHELL.md).
     public DbSet<Machine> Machines { get; set; }
     public DbSet<DiscoveredApplication> DiscoveredApplications { get; set; }
@@ -217,6 +221,14 @@ public class AppDbContext : DbContext
                   .WithOne()
                   .HasForeignKey(e => e.ProjectId)
                   .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<AiProviderConfig>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Provider).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.Model).HasMaxLength(200);
+            entity.Property(e => e.EncryptedApiKey).HasMaxLength(4000);
         });
 
         modelBuilder.Entity<MonitoredApplication>(entity =>

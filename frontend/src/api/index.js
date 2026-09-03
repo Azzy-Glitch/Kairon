@@ -7,3 +7,4 @@ export * as demoApi from './demo';
 export * as healthApi from './health';
 export * as sdkApi from './sdk';
 export * as agentApi from './agent';
+export * as aiConfigApi from './aiConfig';

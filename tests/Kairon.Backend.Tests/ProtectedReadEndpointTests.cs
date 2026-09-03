@@ -13,6 +13,10 @@ public sealed class ProtectedReadEndpointTests
     [InlineData(typeof(TelemetryController), nameof(TelemetryController.GetIncidents))]
     [InlineData(typeof(TelemetryController), nameof(TelemetryController.GetMetrics))]
     [InlineData(typeof(HealthStatusController), nameof(HealthStatusController.Status))]
+    [InlineData(typeof(AiConfigController), nameof(AiConfigController.Get))]
+    [InlineData(typeof(AiConfigController), nameof(AiConfigController.Save))]
+    [InlineData(typeof(AiConfigController), nameof(AiConfigController.Test))]
+    [InlineData(typeof(AiConfigController), nameof(AiConfigController.Models))]
     public void SensitiveReadEndpointsRequireOperatorAuthorization(Type controller, string methodName)
     {
         var method = controller.GetMethod(methodName);

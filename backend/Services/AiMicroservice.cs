@@ -16,7 +16,8 @@ public class AiMicroservice : IAiMicroservice
     private readonly IConfiguration _configuration;
     private readonly AiOrchestrationOptions _aiOptions;
     private readonly ILogger<AiMicroservice> _logger;
-    private readonly bool _mockMode;
+    private readonly IAiProviderConfigService _providerConfig;
+    private readonly bool _staticMockModeDefault;
 
     private bool _isAvailable = true;
     private DateTime _lastFailure = DateTime.MinValue;
@@ -24,24 +25,42 @@ public class AiMicroservice : IAiMicroservice
 
     public bool IsAvailable => _isAvailable || (DateTime.UtcNow - _lastFailure) > RecoveryCooldown;
 
-    public string Mode => _mockMode ? "mock" : "live";
-
     public AiMicroservice(
         HttpClient httpClient,
         IConfiguration configuration,
         IOptions<AiOrchestrationOptions> aiOptions,
+        IAiProviderConfigService providerConfig,
         ILogger<AiMicroservice> logger)
     {
         _httpClient = httpClient;
         _configuration = configuration;
         _aiOptions = aiOptions.Value;
+        _providerConfig = providerConfig;
         _logger = logger;
-        _mockMode = configuration.GetValue<bool>("AiService:MockMode", false);
+        _staticMockModeDefault = configuration.GetValue<bool>("AiService:MockMode", false);
+    }
+
+    /// <summary>A saved AI Configuration always overrides appsettings.json's static MockMode
+    /// default (frontend PRD section 13: user configuration saved through the KAIRON UI takes
+    /// precedence). A deployment that has never touched the new UI has no saved row, so this
+    /// falls straight through to the existing appsettings.json behaviour - unchanged.</summary>
+    private async Task<bool> EffectiveMockModeAsync(CancellationToken cancellationToken)
+    {
+        if (await _providerConfig.HasValidConfigurationAsync(cancellationToken)) return false;
+        return _staticMockModeDefault;
+    }
+
+    public async Task<string> GetModeAsync(CancellationToken cancellationToken = default)
+    {
+        var selection = await _providerConfig.GetSelectionAsync(cancellationToken);
+        if (selection is { } config && await _providerConfig.HasValidConfigurationAsync(cancellationToken))
+            return config.Provider;
+        return _staticMockModeDefault ? "mock" : "live";
     }
 
     public async Task<ErrorAnalysisResponse> AnalyzeErrorAsync(string log, CancellationToken cancellationToken = default)
     {
-        if (_mockMode)
+        if (await EffectiveMockModeAsync(cancellationToken))
             return GetMockErrorAnalysis();
 
         if (!IsAvailable)
@@ -65,7 +84,7 @@ public class AiMicroservice : IAiMicroservice
 
     public async Task<PredictionResponse> PredictAsync(List<string> recentLogs, string currentLog, CancellationToken cancellationToken = default)
     {
-        if (_mockMode)
+        if (await EffectiveMockModeAsync(cancellationToken))
             return GetMockPrediction();
 
         if (!IsAvailable)
@@ -89,7 +108,7 @@ public class AiMicroservice : IAiMicroservice
 
     public async Task<RecommendationResponse> RecommendAsync(string context, CancellationToken cancellationToken = default)
     {
-        if (_mockMode)
+        if (await EffectiveMockModeAsync(cancellationToken))
             return GetMockRecommendation();
 
         if (!IsAvailable)
@@ -113,7 +132,7 @@ public class AiMicroservice : IAiMicroservice
 
     public async Task<List<FixSuggestionDto>> SuggestFixesAsync(List<MismatchDto> mismatches, CancellationToken cancellationToken = default)
     {
-        if (_mockMode)
+        if (await EffectiveMockModeAsync(cancellationToken))
             return GetMockFixSuggestions();
 
         if (!IsAvailable)
@@ -143,7 +162,7 @@ public class AiMicroservice : IAiMicroservice
     {
         ArgumentNullException.ThrowIfNull(evidence);
 
-        if (_mockMode)
+        if (await EffectiveMockModeAsync(cancellationToken))
             return GetMockInvestigation(evidence);
 
         if (!IsAvailable)
@@ -207,6 +226,57 @@ public class AiMicroservice : IAiMicroservice
 
         throw new AiUnavailableException(
             $"AI investigation failed after {attempts} attempt(s): {Redaction.Describe(last!)}", last!);
+    }
+
+    // --- AI Configuration panel (frontend) ---
+
+    public async Task<AiConfigureResponseDto> ConfigureProviderAsync(
+        AiConfigureRequestDto request, CancellationToken cancellationToken = default)
+    {
+        var response = await PostAsync<AiConfigureResponseDto>("/configure", request, cancellationToken);
+        return response ?? throw new InvalidOperationException("Empty response from AI service");
+    }
+
+    public async Task<AiTestConnectionResponseDto> TestProviderConnectionAsync(
+        AiConfigureRequestDto request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var response = await PostAsync<AiTestConnectionResponseDto>("/configure/test", request, cancellationToken);
+            return response ?? new AiTestConnectionResponseDto { Success = false, Error = "Empty response from AI service." };
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            // The AI service being unreachable IS the test result here, not an error to bubble up -
+            // "Test Connection" exists precisely to surface this to the user (never the raw key).
+            _logger.LogWarning(ex, "AI service unreachable while testing a provider connection");
+            return new AiTestConnectionResponseDto
+            {
+                Provider = request.Provider,
+                Success = false,
+                Error = "Could not reach the AI service. Is KAIRON fully started?",
+            };
+        }
+    }
+
+    public async Task<AiModelsResponseDto> ListProviderModelsAsync(
+        AiConfigureRequestDto request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var response = await PostAsync<AiModelsResponseDto>("/models", request, cancellationToken);
+            return response ?? new AiModelsResponseDto { Provider = request.Provider, Supported = false };
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            _logger.LogWarning(ex, "AI service unreachable while listing provider models");
+            return new AiModelsResponseDto
+            {
+                Provider = request.Provider,
+                Supported = false,
+                Error = "Could not reach the AI service.",
+            };
+        }
     }
 
     /// <summary>

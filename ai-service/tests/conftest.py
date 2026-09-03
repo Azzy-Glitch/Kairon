@@ -21,6 +21,13 @@ if str(ROOT) not in sys.path:
 # never rely on a developer credential or a checked-in production secret.
 os.environ.setdefault("KAIRON_AI_API_KEY", "kairon-ai-test-key-not-for-production")
 
+# The whole test session shares one FastAPI app instance (module import is cached), so every
+# HTTP-level test across every test file counts against the same production rate limiter. The
+# default (12/min) is sized for one real desktop process, not a test suite making dozens of calls
+# in under a second - raise the ceiling for tests only; production's own default is untouched.
+os.environ.setdefault("KAIRON_AI_REQUESTS_PER_MINUTE", "1000")
+os.environ.setdefault("KAIRON_AI_REQUESTS_PER_HOUR", "10000")
+
 from kairon.config import AiConfig  # noqa: E402
 from kairon.schemas import (  # noqa: E402
     AgentEvent,

@@ -29,8 +29,27 @@ public interface IAiMicroservice
         EvidencePackageDto evidence,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Reports whether the client is serving mock responses, for the health endpoint.</summary>
-    string Mode { get; }
+    /// <summary>"mock", or the active provider name (e.g. "groq") once a real AI Configuration has
+    /// been saved - async because it may need to check the saved configuration.</summary>
+    Task<string> GetModeAsync(CancellationToken cancellationToken = default);
+
+    // --- AI Configuration panel (frontend) ---
+
+    /// <summary>Applies a provider/model/key change on the AI service immediately - no restart.
+    /// Does not persist anything itself; the caller (AiConfigController) owns persistence via
+    /// IAiProviderConfigService and calls this only after a successful save.</summary>
+    Task<AiConfigureResponseDto> ConfigureProviderAsync(
+        AiConfigureRequestDto request, CancellationToken cancellationToken = default);
+
+    /// <summary>Validates a provider/key/model combination with one real call, without touching
+    /// whatever is currently configured and live.</summary>
+    Task<AiTestConnectionResponseDto> TestProviderConnectionAsync(
+        AiConfigureRequestDto request, CancellationToken cancellationToken = default);
+
+    /// <summary>Live model discovery where the provider supports it (Groq only today); other
+    /// providers report `Supported = false` so the frontend falls back to manual model entry.</summary>
+    Task<AiModelsResponseDto> ListProviderModelsAsync(
+        AiConfigureRequestDto request, CancellationToken cancellationToken = default);
 }
 
 /// <summary>

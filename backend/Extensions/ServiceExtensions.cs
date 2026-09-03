@@ -32,6 +32,14 @@ public static class ServiceExtensions
                 client.DefaultRequestHeaders.Add("X-Kairon-AI-Key", apiKey);
         });
 
+        // AI Configuration panel (frontend): user-supplied provider/model/key, persisted and
+        // encrypted server-side, applied live via AiMicroservice - no .env/appsettings.json edit,
+        // no manual restart. AiConfigSyncHostedService re-applies a saved configuration to the AI
+        // service on every startup, since that process rebuilds its own config from scratch each
+        // launch and has no other way to learn what was saved.
+        services.AddScoped<IAiProviderConfigService, AiProviderConfigService>();
+        services.AddHostedService<AiConfigSyncHostedService>();
+
         return services;
     }
 

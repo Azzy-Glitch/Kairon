@@ -38,6 +38,28 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
     }
 
     [Fact]
+    public async Task ExistingVersion1DatabaseGainsAiProviderConfigsWithoutLosingData()
+    {
+        // Simulates a genuine upgrade: a database already adopted as schema version 1, from
+        // before AiProviderConfigs existed - not just "EnsureCreatedAsync happened to include it
+        // already", which every other test here would otherwise mask.
+        await using var db = CreateContext();
+        await db.Database.EnsureCreatedAsync();
+        var project = new Project { Name = "preserve-me-too" };
+        db.Projects.Add(project);
+        await db.SaveChangesAsync();
+
+        await db.Database.ExecuteSqlRawAsync("DROP TABLE \"AiProviderConfigs\";");
+        await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 1;");
+
+        await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
+
+        Assert.Equal(SqliteSchemaMigrator.CurrentVersion, await UserVersionAsync(db));
+        Assert.Equal("preserve-me-too", (await db.Projects.SingleAsync()).Name);
+        Assert.True(await db.AiProviderConfigs.AnyAsync() == false);
+    }
+
+    [Fact]
     public async Task NewerUnknownSchemaFailsClosed()
     {
         await using var db = CreateContext();

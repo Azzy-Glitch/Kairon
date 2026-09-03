@@ -2,6 +2,7 @@ using Kairon.Backend.Extensions;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Services;
 using Kairon.Backend.Configuration;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
 using Serilog;
@@ -33,6 +34,14 @@ Log.Logger = new LoggerConfiguration()
     .CreateLogger();
 
 builder.Host.UseSerilog();
+
+// Data Protection - encrypts the AI Configuration panel's stored API key at rest (Windows DPAPI
+// backs the key ring by default). Keyed to the same product data directory as everything else, so
+// an uninstall/reinstall or a fresh machine profile doesn't leave keys orphaned in a generic
+// per-user ASP.NET location.
+builder.Services.AddDataProtection()
+    .SetApplicationName("Kairon")
+    .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataPaths.Config, "dataprotection-keys")));
 
 // Add services
 builder.Services.AddControllers(options =>

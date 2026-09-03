@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using Kairon.Backend.Models.Platform;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 
@@ -18,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -61,22 +62,33 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
             await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
 
             // Version 0 is the released 1.0.1 EnsureCreated schema. It has no version marker, so
-            // adopt it only after proving every table/column expected by the current EF model is
-            // present. An incomplete or genuinely older schema fails safely and keeps its backup.
+            // adopt it only after proving every table/column that schema actually shipped with is
+            // present - not the full current model, which may since have grown new tables of its
+            // own (see version 1 below). An incomplete or genuinely older schema fails safely and
+            // keeps its backup.
             if (version == 0)
             {
-                await ValidateCurrentModelAsync(connection, transaction, cancellationToken);
-                await ExecuteAsync(connection, transaction, $"PRAGMA user_version = {CurrentVersion};", cancellationToken);
-                version = CurrentVersion;
+                await ValidateModelAsync(connection, transaction, EntitiesAsOf(version: 1), cancellationToken);
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 1;", cancellationToken);
+                version = 1;
                 _logger.LogInformation("Adopted verified SQLite 1.0.1 schema as local schema version {Version}", version);
             }
 
-            // Future explicit migrations are applied one version at a time inside this transaction.
-            // There are no post-1.0.1 schema changes in the current candidate.
+            // Version 2: adds AiProviderConfigs (frontend AI Configuration panel) - the first
+            // post-1.0.1 schema change. Each future change appends one more step exactly like this
+            // one, applied transactionally and one version at a time.
+            if (version == 1)
+            {
+                await ExecuteAsync(connection, transaction, CreateAiProviderConfigsTableSql, cancellationToken);
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 2;", cancellationToken);
+                version = 2;
+                _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: AiProviderConfigs", version);
+            }
+
             if (version != CurrentVersion)
                 throw new InvalidOperationException($"No SQLite migration path exists from version {version}.");
 
-            await ValidateCurrentModelAsync(connection, transaction, cancellationToken);
+            await ValidateModelAsync(connection, transaction, _db.Model.GetEntityTypes(), cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         }
         finally
@@ -86,12 +98,33 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
         }
     }
 
-    private async Task ValidateCurrentModelAsync(
+    /// <summary>Entity types a given schema version is expected to have. Every version after the
+    /// 1.0.1 baseline just adds to the full current model, so this only ever needs to name what to
+    /// *exclude* for an older version - version 1 predates AiProviderConfig.</summary>
+    private IEnumerable<IEntityType> EntitiesAsOf(int version) => version switch
+    {
+        1 => _db.Model.GetEntityTypes().Where(e => e.ClrType != typeof(AiProviderConfig)),
+        _ => _db.Model.GetEntityTypes(),
+    };
+
+    private const string CreateAiProviderConfigsTableSql = """
+        CREATE TABLE IF NOT EXISTS "AiProviderConfigs" (
+            "Id" TEXT NOT NULL CONSTRAINT "PK_AiProviderConfigs" PRIMARY KEY,
+            "Provider" TEXT NOT NULL,
+            "Model" TEXT NOT NULL,
+            "EncryptedApiKey" TEXT NOT NULL,
+            "CreatedAt" TEXT NOT NULL,
+            "UpdatedAt" TEXT NOT NULL
+        );
+        """;
+
+    private async Task ValidateModelAsync(
         DbConnection connection,
         DbTransaction transaction,
+        IEnumerable<IEntityType> entities,
         CancellationToken cancellationToken)
     {
-        foreach (var entity in _db.Model.GetEntityTypes())
+        foreach (var entity in entities)
         {
             var table = entity.GetTableName();
             if (string.IsNullOrWhiteSpace(table)) continue;

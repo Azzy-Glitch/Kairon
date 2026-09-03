@@ -61,7 +61,7 @@ public class HealthStatusController : ControllerBase
             AiService = _ai.IsAvailable,
             DetectionEnabled = _detection.Enabled,
             RemediationEnabled = _remediation.Enabled,
-            AiMode = _ai.Mode,
+            AiMode = await _ai.GetModeAsync(cancellationToken),
             DatabaseProvider = _persistence.Provider,
             DatabaseSizeBytes = DatabaseSizeBytes(),
             MaintenanceStatus = _maintenance.Status,

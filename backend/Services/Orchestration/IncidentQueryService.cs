@@ -350,7 +350,7 @@ public class IncidentQueryService : IIncidentQueryService
                 AiService = _ai.IsAvailable,
                 DetectionEnabled = _detection.Enabled,
                 RemediationEnabled = _remediation.Enabled,
-                AiMode = _ai.Mode
+                AiMode = await _ai.GetModeAsync(cancellationToken)
             }
         };
     }

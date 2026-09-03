@@ -31,6 +31,19 @@ class MismatchReq(BaseModel):
     mismatches: List[Any] = Field(default_factory=list)
 
 
+# --- Runtime provider configuration (frontend AI Configuration panel). ---
+
+
+class ConfigureRequest(BaseModel):
+    """Applies a provider selection at runtime. `api_key` is optional so a caller can change just
+    the model without resending an already-known key; omitted/blank fields keep their current
+    value rather than clearing it."""
+
+    provider: str
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+
+
 # --- Evidence package (AI PRD section 6). ---
 
 

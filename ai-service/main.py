@@ -9,17 +9,20 @@ Autonomous SRE backend consumes.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
 import re
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from kairon.config import AiConfig
+from kairon.config import DEFAULT_MODELS, AiConfig, is_placeholder
 from kairon.schemas import (
+    ConfigureRequest,
     ContextReq,
     EvidencePackage,
     InvestigationResult,
@@ -27,7 +30,7 @@ from kairon.schemas import (
     MismatchReq,
     PredictReq,
 )
-from kairon.providers import available_providers
+from kairon.providers import PROVIDERS, ProviderError, available_providers, create_provider
 from kairon.service import AiService, AiServiceError
 from kairon.security import AiApiSecurityMiddleware
 
@@ -88,6 +91,133 @@ async def providers() -> dict:
         "available": available_providers(),
         "configured": CONFIG.public_dict(),
     }
+
+
+# --- Runtime provider configuration (KAIRON frontend AI Configuration panel) ---
+#
+# CONFIG/SERVICE are process-wide singletons built once at import time (see below `__main__`
+# guard-free module scope). Every other endpoint reads them by closing over these same names, so
+# reassigning them here - rather than constructing a new AiService - is what makes a saved change
+# take effect for every subsequent request without restarting this process. `global` is required
+# because these names are rebound, not just mutated.
+
+
+def _merge_configured(request: ConfigureRequest) -> AiConfig:
+    """Applies a ConfigureRequest onto the current CONFIG, keeping any field the caller omitted
+    (notably the API key, so changing just the model never requires resending a known-good key)."""
+    provider = request.provider.strip().lower()
+    if provider not in PROVIDERS:
+        raise AiServiceError(
+            f"Unknown provider '{provider}'. Available: {', '.join(available_providers())}",
+            status_code=400,
+            code="unknown_provider",
+        )
+
+    model = (request.model or "").strip() or DEFAULT_MODELS.get(provider, "")
+    # A custom AI__Endpoint override only makes sense for the provider it was set for - switching
+    # provider without clearing it would point the new provider's calls at the old one's URL.
+    # Staying on the same provider (e.g. just changing model or key) leaves any override intact.
+    endpoint = "" if provider != CONFIG.provider else CONFIG.endpoint
+
+    updated = dataclasses.replace(CONFIG, provider=provider, model=model, endpoint=endpoint)
+    new_key = (request.api_key or "").strip()
+    if new_key:
+        key_field = {"qwen": "qwen_api_key", "gemini": "gemini_api_key", "groq": "groq_api_key"}.get(provider)
+        if key_field:
+            updated = dataclasses.replace(updated, **{key_field: new_key})
+    return updated
+
+
+@app.post("/configure")
+async def configure(request: ConfigureRequest) -> dict:
+    """Applies a provider/model/key change immediately - no restart, no file edit. The previous
+    key for the provider is kept when `api_key` is omitted or blank."""
+    global CONFIG, SERVICE
+
+    updated = _merge_configured(request)
+    CONFIG = updated
+    SERVICE.config = CONFIG
+    SERVICE.provider = create_provider(CONFIG)
+
+    logger.info(
+        "AI provider reconfigured: provider=%s effective=%s model=%s",
+        CONFIG.provider, CONFIG.effective_provider, CONFIG.model,
+    )
+    return {"applied": True, **CONFIG.public_dict()}
+
+
+@app.post("/configure/test")
+async def configure_test(request: ConfigureRequest) -> dict:
+    """Validates a provider/key/model combination with one real call, without touching the live
+    configuration - a failed test must never disturb whatever is currently serving requests."""
+    candidate = _merge_configured(request)
+    # A snappy, bounded check: no point retrying a bad key three times before reporting failure.
+    candidate = dataclasses.replace(candidate, max_retries=0, timeout_seconds=min(candidate.timeout_seconds, 15.0))
+
+    result = {
+        "provider": candidate.provider,
+        "effective_provider": candidate.effective_provider,
+        "model": candidate.model,
+    }
+
+    if candidate.effective_provider == "mock":
+        # Same fallback logic every other call path uses (AI PRD section 13): no usable key means
+        # this "succeeds" against the deterministic mock, and the response says so honestly rather
+        # than implying a real provider was reached.
+        result.update(success=True, error=None)
+        return result
+
+    try:
+        provider = create_provider(candidate)
+        await provider.complete_json(
+            "Respond with only this exact JSON object, nothing else: {\"ok\": true}",
+            "Connectivity check.",
+        )
+        result.update(success=True, error=None)
+    except ProviderError as exc:
+        result.update(success=False, error=str(exc))
+    except Exception as exc:  # noqa: BLE001 - a bad test result must never crash the request
+        result.update(success=False, error=f"{type(exc).__name__}: {exc}")
+
+    return result
+
+
+@app.post("/models")
+async def list_models(request: ConfigureRequest) -> dict:
+    """Live model discovery, Groq only (its /v1/models is simple and OpenAI-compatible; Qwen and
+    Gemini don't have an equivalently trivial equivalent wired up here - the frontend falls back
+    to manual model entry for those, per the brief's own guidance not to force this everywhere)."""
+    provider = request.provider.strip().lower()
+    if provider != "groq":
+        return {"provider": provider, "supported": False, "models": []}
+
+    api_key = (request.api_key or "").strip() or CONFIG.groq_api_key
+    if is_placeholder(api_key):
+        return {"provider": provider, "supported": True, "models": [], "error": "No Groq API key configured."}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+    except httpx.HTTPError as exc:
+        return {"provider": provider, "supported": True, "models": [], "error": f"{type(exc).__name__}: {exc}"}
+
+    if response.status_code >= 400:
+        return {
+            "provider": provider,
+            "supported": True,
+            "models": [],
+            "error": f"Groq returned HTTP {response.status_code}",
+        }
+
+    models = [
+        m["id"]
+        for m in response.json().get("data", [])
+        if m.get("active") and "text" in (m.get("output_modalities") or [])
+    ]
+    return {"provider": provider, "supported": True, "models": sorted(models)}
 
 
 # --- Autonomous SRE investigation (AI PRD section 15) ---
