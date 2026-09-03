@@ -41,7 +41,7 @@ def is_placeholder(key: str | None) -> bool:
 DEFAULT_MODELS = {
     "qwen": "qwen-plus",
     "gemini": "gemini-2.5-flash-lite",
-    "groq": "llama-3.3-70b-versatile",
+    "groq": "openai/gpt-oss-120b",
     "mock": "deterministic-mock",
 }
 
