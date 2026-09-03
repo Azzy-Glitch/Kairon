@@ -1,6 +1,11 @@
 import React, { useMemo } from 'react';
 import { AiBadge, SeverityBadge } from './Badges';
 import { AsyncView } from './StateViews';
+import SourceFilterBar from '../ui/SourceFilterBar';
+import { useFilteredBySource } from '../../lib/SourceFilterContext';
+import { resolveSource } from '../../lib/source';
+import { getActionLabel } from '../../lib/labels';
+import HorizontalBarChart from '../ui/charts/HorizontalBarChart';
 import { useIncidents, useIncidentDetails } from '../../hooks/useIncidents';
 import { useHealth } from '../../hooks/useDemo';
 import { confidenceBand, formatConfidence, formatDateTime } from '../../services/incidentService';
@@ -19,9 +24,11 @@ export default function AiInsightsPage() {
   const details = useIncidentDetails(feed.incidents, { limit: 20 });
   const { health } = useHealth();
 
+  const filteredDetails = useFilteredBySource(details.data || [], resolveSource);
+
   const diagnosed = useMemo(
-    () => (details.data || []).filter((i) => i.diagnosis).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)),
-    [details.data]
+    () => filteredDetails.filter((i) => i.diagnosis).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)),
+    [filteredDetails]
   );
 
   const confidenceCounts = useMemo(() => {
@@ -39,25 +46,33 @@ export default function AiInsightsPage() {
       if (!cause) continue;
       map.set(cause, (map.get(cause) || 0) + 1);
     }
-    return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+    return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
   }, [diagnosed]);
 
-  const recommendations = useMemo(
-    () =>
-      diagnosed
-        .flatMap((incident) =>
-          (incident.recommendations || []).map((rec) => ({ ...rec, incidentKey: incident.incidentKey }))
-        )
-        .slice(0, 15),
-    [diagnosed]
-  );
+  const recommendationGroups = useMemo(() => {
+    const map = new Map();
+    // diagnosed is sorted most-recent-first (see the sort above), so the first time an action
+    // type is encountered while iterating is already its most recent occurrence.
+    for (const incident of diagnosed) {
+      for (const rec of incident.recommendations || []) {
+        if (!rec.action) continue;
+        const existing = map.get(rec.action);
+        if (existing) {
+          existing.count += 1;
+        } else {
+          map.set(rec.action, { action: rec.action, count: 1, lastSeenAt: incident.updatedAt });
+        }
+      }
+    }
+    return [...map.values()].sort((a, b) => b.count - a.count);
+  }, [diagnosed]);
 
   return (
     <div className="section-card">
       <div className="section-header">
         <div className="section-title-group">
           <div className="section-icon-badge">
-            <IconSparkles className="w-6 h-6 text-amber-500" />
+            <IconSparkles className="w-6 h-6 tone-medium" />
           </div>
           <div>
             <h3>AI Insights</h3>
@@ -74,6 +89,8 @@ export default function AiInsightsPage() {
           <span>{health.aiMode && health.aiMode !== 'unknown' ? health.aiMode : health.aiService ? 'operational' : 'unavailable'}</span>
         </div>
       </div>
+
+      <SourceFilterBar records={details.data || []} className="source-filter-bar" />
 
       <AsyncView
         query={feed}
@@ -95,13 +112,10 @@ export default function AiInsightsPage() {
             {rootCauseCounts.length > 0 && (
               <div className="ai-insights-block">
                 <h4 className="subheading">Recurring root causes</h4>
-                <ul className="ai-list">
-                  {rootCauseCounts.map(([cause, count]) => (
-                    <li key={cause}>
-                      {cause} <span className="ai-insights-count">&times;{count}</span>
-                    </li>
-                  ))}
-                </ul>
+                <HorizontalBarChart
+                  data={rootCauseCounts.map(([cause, count]) => ({ label: cause, value: count }))}
+                  color="var(--series-2)"
+                />
               </div>
             )}
 
@@ -137,17 +151,19 @@ export default function AiInsightsPage() {
               )}
             </div>
 
-            {recommendations.length > 0 && (
+            {recommendationGroups.length > 0 && (
               <div className="ai-insights-block">
                 <h4 className="subheading">Recommendation history</h4>
                 <ul className="recommendation-list">
-                  {recommendations.map((rec, index) => (
-                    <li key={index} className="recommendation-item">
+                  {recommendationGroups.map((group) => (
+                    <li key={group.action} className="recommendation-item">
                       <div className="recommendation-head">
-                        <code className="recommendation-action">{rec.action}</code>
-                        <span className="ai-insights-count">{rec.incidentKey}</span>
+                        <code className="recommendation-action" title={group.action}>{getActionLabel(group.action)}</code>
+                        <span className="ai-insights-count">{group.count} {group.count === 1 ? 'time' : 'times'}</span>
                       </div>
-                      {rec.reason && <p className="recommendation-line">{rec.reason}</p>}
+                      {group.lastSeenAt && (
+                        <p className="recommendation-line">Most recent {formatDateTime(group.lastSeenAt)}</p>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -162,6 +178,11 @@ export default function AiInsightsPage() {
 
 function ConfidenceBar({ counts }) {
   const total = counts.high + counts.moderate + counts.low + counts.unknown;
+  const distribution = [
+    { label: 'High', value: counts.high },
+    { label: 'Moderate', value: counts.moderate },
+    { label: 'Low', value: counts.low }
+  ];
 
   return (
     <div className="ai-insights-tile ai-insights-tile-wide">
@@ -169,25 +190,8 @@ function ConfidenceBar({ counts }) {
       {total === 0 ? (
         <span className="panel-pending-text">No diagnoses yet</span>
       ) : (
-        <div className="confidence-distribution">
-          <ConfidenceSegment label="High" count={counts.high} total={total} tone="high" />
-          <ConfidenceSegment label="Moderate" count={counts.moderate} total={total} tone="moderate" />
-          <ConfidenceSegment label="Low" count={counts.low} total={total} tone="low" />
-        </div>
+        <HorizontalBarChart data={distribution} color="var(--series-1)" />
       )}
-    </div>
-  );
-}
-
-function ConfidenceSegment({ label, count, total, tone }) {
-  const pct = total > 0 ? Math.round((count / total) * 100) : 0;
-  return (
-    <div className="confidence-segment">
-      <span className="confidence-segment-label">{label}</span>
-      <div className="confidence-segment-track">
-        <div className={`confidence-segment-fill confidence-${tone}`} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="confidence-segment-count">{count}</span>
     </div>
   );
 }

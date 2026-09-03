@@ -18,7 +18,7 @@ vi.mock('./api/index', () => ({
     getIncident: vi.fn().mockResolvedValue(null),
     getTimeline: vi.fn().mockResolvedValue([]),
     getEvidence: vi.fn().mockResolvedValue(null),
-    getDashboard: vi.fn().mockResolvedValue({}),
+    getDashboard: vi.fn().mockResolvedValue({ severityDistribution: {} }),
     getRecentActivity: vi.fn().mockResolvedValue([]),
     getTools: vi.fn().mockResolvedValue([]),
     investigate: vi.fn().mockResolvedValue(null),
@@ -71,18 +71,21 @@ vi.mock('./api/index', () => ({
   }
 }));
 
+// Approved navigation: 12 destinations under four sentence-case groups (Monitor, Respond,
+// Analyse, Build), all always visible - no collapsed/secondary group in this structure.
 const NAV_TABS = [
   'Overview',
   'Services',
-  'Observability',
-  'AI Insights',
-  'Remediation',
-  'History',
-  'Analytics',
-  'Demo Center',
+  'Live telemetry',
   'Machines',
-  'SDK',
-  'Developer Tools',
+  'Incidents',
+  'Actions',
+  'Audit trail',
+  'Insights',
+  'Analytics',
+  'Connect an app',
+  'Diagnostics',
+  'Demo',
   'Settings'
 ];
 
@@ -93,27 +96,43 @@ describe('App navigation', () => {
     expect(screen.queryByText(/AIDIP/i)).not.toBeInTheDocument();
   });
 
-  it('renders every nav tab from the frontend PRD navigation list', () => {
+  it('renders every nav tab, grouped under Monitor/Respond/Analyse/Build', () => {
     render(<App />);
+    for (const group of ['Monitor', 'Respond', 'Analyse', 'Build']) {
+      expect(screen.getByText(group)).toBeInTheDocument();
+    }
     for (const label of NAV_TABS) {
-      expect(screen.getByRole('button', { name: new RegExp(label) })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: new RegExp(`^${label}`) })).toBeInTheDocument();
     }
   });
 
   it('lands on Overview (the SRE command center) by default', () => {
     render(<App />);
-    const overviewTab = screen.getByRole('button', { name: /Overview/ });
+    const overviewTab = screen.getByRole('button', { name: /^Overview/ });
     expect(overviewTab.className).toMatch(/active/);
+  });
+
+  it('reflects real incident severity in the header health pill, not just component health', async () => {
+    // App.jsx and SreDashboard (rendered by default on the Overview tab) each call useDashboard()
+    // independently - mockResolvedValue (not Once) so both call sites see the same data.
+    const { incidentsApi } = await import('./api/index');
+    incidentsApi.getDashboard.mockResolvedValue({ severityDistribution: { Critical: 2 } });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Health: Critical/)).toBeInTheDocument();
+    });
   });
 
   it.each(NAV_TABS)('switches to %s without throwing', async (label) => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole('button', { name: new RegExp(label) }));
+    await user.click(screen.getByRole('button', { name: new RegExp(`^${label}`) }));
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: new RegExp(label) }).className).toMatch(/active/);
+      expect(screen.getByRole('button', { name: new RegExp(`^${label}`) }).className).toMatch(/active/);
     });
   });
 });

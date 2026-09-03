@@ -51,10 +51,10 @@ export default function Recommender() {
 
   const getCategoryTheme = (cat) => {
     const c = (cat || '').toLowerCase();
-    if (c === 'security') return { bg: '#fff1f2', border: '#fecdd3', text: '#be123c', label: 'Security', badgeBg: '#be123c' };
-    if (c === 'performance') return { bg: '#eff6ff', border: '#bfdbfe', text: '#1d4ed8', label: 'Performance', badgeBg: '#1d4ed8' };
-    if (c === 'reliability') return { bg: '#ecfdf5', border: '#a7f3d0', text: '#047857', label: 'Reliability', badgeBg: '#047857' };
-    return { bg: '#faf5ff', border: '#e9d5ff', text: '#6b21a8', label: 'Maintainability', badgeBg: '#6b21a8' };
+    if (c === 'security') return { bg: 'var(--critical-soft)', border: 'var(--critical)', text: 'var(--critical)', label: 'Security', badgeBg: 'var(--critical)' };
+    if (c === 'performance') return { bg: 'var(--low-soft)', border: 'var(--low)', text: 'var(--low)', label: 'Performance', badgeBg: 'var(--low)' };
+    if (c === 'reliability') return { bg: 'var(--healthy-soft)', border: 'var(--healthy)', text: 'var(--healthy)', label: 'Reliability', badgeBg: 'var(--healthy)' };
+    return { bg: 'var(--accent-soft)', border: 'var(--accent)', text: 'var(--accent)', label: 'Maintainability', badgeBg: 'var(--accent)' };
   };
 
   return (
@@ -62,7 +62,7 @@ export default function Recommender() {
       <div className="section-header">
         <div className="section-title-group">
           <div className="section-icon-badge rec-badge">
-            <IconSparkles className="w-6 h-6 text-amber-600" />
+            <IconSparkles className="w-6 h-6 tone-medium" />
           </div>
           <div>
             <h3>AI Architecture & DevOps Reliability Advisor</h3>
@@ -88,7 +88,7 @@ export default function Recommender() {
       <div className="editor-container">
         <div className="editor-header">
           <span className="editor-title">
-            <IconTerminal className="w-4 h-4 mr-1 inline text-amber-600" />
+            <IconTerminal className="w-4 h-4 mr-1 inline tone-medium" />
             Infrastructure & Workload Topology
           </span>
           {ctx && (
@@ -145,7 +145,7 @@ export default function Recommender() {
                       className="category-pill"
                       style={{
                         backgroundColor: theme.badgeBg,
-                        color: '#ffffff'
+                        color: 'var(--text-inverse)'
                       }}
                     >
                       {theme.label}
@@ -154,10 +154,10 @@ export default function Recommender() {
                       className="copy-chip-btn"
                       onClick={() => copyRec(r.suggestion, i)}
                     >
-                      {copiedIdx === i ? <IconCheck className="w-3 h-3 text-emerald-600" /> : <IconCopy className="w-3 h-3" />}
+                      {copiedIdx === i ? <IconCheck className="w-3 h-3 tone-healthy" /> : <IconCopy className="w-3 h-3" />}
                     </button>
                   </div>
-                  <p className="rec-body" style={{ color: '#0f172a' }}>{r.suggestion}</p>
+                  <p className="rec-body" style={{ color: 'var(--text)' }}>{r.suggestion}</p>
                 </div>
               );
             })}

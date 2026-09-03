@@ -1,97 +1,87 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import IncidentFeed from './IncidentFeed';
-import IncidentDetail from './IncidentDetail';
-import Sparkline from './Sparkline';
+import React, { useMemo } from 'react';
+import MetricTile from '../ui/MetricTile';
 import { SeverityBadge, StatusBadge } from './Badges';
 import { StaleBanner } from './StateViews';
-import { useDashboard, useIncident, useIncidentActions, useIncidents, useRecentActivity } from '../../hooks/useIncidents';
-import { formatMetricValue, groupByService, relativeTime } from '../../services/incidentService';
+import SourceFilterBar from '../ui/SourceFilterBar';
+import { useFilteredBySource } from '../../lib/SourceFilterContext';
+import { resolveSource } from '../../lib/source';
+import { SEVERITY_ORDER } from '../../lib/labels';
+import { domainForMetric } from '../../lib/chartDomains';
+import { useDashboard, useIncidents, useRecentActivity } from '../../hooks/useIncidents';
+import { groupByService, relativeTime } from '../../services/incidentService';
+import { formatAbsoluteTime } from '../../lib/labels';
 import { isTerminal } from '../../types/incident';
-import { IconServer, IconShield, IconZap, IconBug, IconSparkles, IconHistory, IconDashboard } from '../Icons';
+import { IconServer, IconShield, IconZap, IconBug, IconSparkles, IconHistory } from '../Icons';
 
 /**
- * The operator command view (frontend PRD sections 4 and 21).
- *
- * Priority order is the PRD's: active incidents first, then severity, then the detail needed to
- * decide. Raw telemetry stays available on its own screen rather than crowding this one.
- *
- * "Overview" and "Incidents" are deliberately one screen rather than two - see App.jsx's tab list
- * comment. This screen leads with a system-health summary (mirroring the reference layout a
- * teammate shared) and keeps the full incident feed + detail workspace below it, rather than
- * replacing that already-working, already-tested pane.
+ * Overview (Kairon frontend redesign brief, section 8): a real dashboard - four key live numbers,
+ * a telemetry snapshot, and a short "needs attention" glance list that links to the standalone
+ * Incidents page rather than re-rendering its full feed here. The full filterable incident list and
+ * detail workspace live on their own page (IncidentsPage) so an incident never appears fully twice.
  */
-export default function SreDashboard() {
-  const [filters, setFilters] = useState({ status: 'active' });
-  const [selectedId, setSelectedId] = useState(null);
-
+export default function SreDashboard({ onOpenIncidents }) {
   const dashboard = useDashboard();
-  const feed = useIncidents({ status: filters.status });
-  const detail = useIncident(selectedId);
+  const feed = useIncidents({ status: 'active' });
   const activity = useRecentActivity({ limit: 12 });
-
-  const actions = useIncidentActions(async () => {
-    await Promise.all([
-      detail.reload({ silent: true }),
-      feed.reload({ silent: true }),
-      dashboard.reload({ silent: true }),
-      activity.reload({ silent: true })
-    ]);
-  });
 
   const summary = dashboard.data;
   const health = summary?.health;
-  const overallHealthy = Boolean(health?.backend && health?.database && health?.aiService);
   const criticalCount = summary?.severityDistribution?.Critical || 0;
+  const highCount = summary?.severityDistribution?.High || 0;
+  // Must never read "Healthy" while a critical/high incident is open, even if every subsystem is
+  // technically up - a contradicted health pill destroys operator trust (brief section 3).
+  const componentsHealthy = Boolean(health?.backend && health?.database && health?.aiService);
+  const overallHealthy = componentsHealthy && criticalCount === 0 && highCount === 0;
 
-  // The most important active incident is selected by default, so the screen is useful the moment
-  // it loads rather than after a click. Only applies while nothing is selected, so a poll never
-  // yanks the operator away from the incident they are reading.
-  useEffect(() => {
-    if (selectedId) return;
+  const filteredIncidents = useFilteredBySource(feed.incidents, resolveSource);
 
-    const candidate = summary?.topIncident?.id || feed.incidents[0]?.id;
-    if (candidate) setSelectedId(candidate);
-  }, [selectedId, summary?.topIncident?.id, feed.incidents]);
-
-  // Both derived from the active feed already being fetched for the list pane - no extra request.
+  // Derived from the active feed already being fetched for the glance list - no extra request.
   const topIncidents = useMemo(
-    () => feed.incidents.filter((i) => !isTerminal(i.status)).slice(0, 3),
-    [feed.incidents]
+    () => filteredIncidents.filter((i) => !isTerminal(i.status)).slice(0, 3),
+    [filteredIncidents]
   );
-  const services = useMemo(() => groupByService(feed.incidents), [feed.incidents]);
+  const services = useMemo(() => groupByService(filteredIncidents), [filteredIncidents]);
 
   return (
     <div className="sre-dashboard animate-fade-in">
       <StaleBanner error={dashboard.data && dashboard.isError ? dashboard.error : null} />
+      <SourceFilterBar records={feed.incidents} className="source-filter-bar" />
 
       <div className="sre-primary-grid">
         <PrimaryStatCard
           icon={<IconShield className="w-5 h-5" />}
           label="Overall health"
           value={overallHealthy ? 'Healthy' : 'Degraded'}
-          sub={overallHealthy ? 'All systems go' : 'A subsystem needs attention'}
+          sub={
+            !componentsHealthy
+              ? 'A subsystem needs attention'
+              : criticalCount > 0
+                ? `${criticalCount} critical incident(s) open`
+                : highCount > 0
+                  ? `${highCount} high-severity incident(s) open`
+                  : 'All systems go'
+          }
           tone={overallHealthy ? 'good' : 'urgent'}
-        />
-        <PrimaryStatCard
-          icon={<IconDashboard className="w-5 h-5" />}
-          label="Active services"
-          value={summary?.activeServiceCount ?? '--'}
-          sub="With an active incident"
-          tone="neutral"
         />
         <PrimaryStatCard
           icon={<IconBug className="w-5 h-5" />}
           label="Active incidents"
           value={summary?.activeIncidents ?? '--'}
-          sub={summary?.activeIncidents > 0 ? 'See feed below' : 'None open'}
+          sub={`${summary?.activeServiceCount ?? 0} service(s) affected`}
           tone={summary?.activeIncidents > 0 ? 'attention' : 'good'}
         />
         <PrimaryStatCard
           icon={<IconZap className="w-5 h-5" />}
-          label="Critical"
-          value={criticalCount}
-          sub={criticalCount > 0 ? 'Needs attention' : 'No critical incidents'}
-          tone={criticalCount > 0 ? 'urgent' : 'good'}
+          label="Needs your attention"
+          value={summary?.awaitingApproval ?? '--'}
+          sub={
+            criticalCount > 0
+              ? `${criticalCount} critical open`
+              : summary?.awaitingApproval > 0
+                ? 'Awaiting approval'
+                : 'Nothing pending'
+          }
+          tone={summary?.awaitingApproval > 0 || criticalCount > 0 ? 'urgent' : 'good'}
         />
         <PrimaryStatCard
           icon={<IconSparkles className="w-5 h-5" />}
@@ -100,35 +90,6 @@ export default function SreDashboard() {
           sub={health?.aiMode ? `Provider: ${health.aiMode}` : ' '}
           tone={health?.aiService ? 'good' : 'urgent'}
         />
-        <PrimaryStatCard
-          icon={<IconServer className="w-5 h-5" />}
-          label="Detection"
-          value={health?.detectionEnabled ? 'Active' : 'Paused'}
-          sub={health?.detectionEnabled ? 'Live telemetry' : 'Not evaluating'}
-          tone={health?.detectionEnabled ? 'good' : 'attention'}
-        />
-      </div>
-
-      <div className="sre-summary-grid">
-        <SummaryTile
-          icon={<IconShield className="w-5 h-5" />}
-          label="Awaiting approval"
-          value={summary?.awaitingApproval ?? '--'}
-          tone={summary?.awaitingApproval > 0 ? 'urgent' : 'neutral'}
-          sub={summary?.awaitingApproval > 0 ? 'Operator decision needed' : 'Nothing pending'}
-        />
-        <SummaryTile
-          icon={<IconZap className="w-5 h-5" />}
-          label="Remediating"
-          value={summary?.remediating ?? '--'}
-          tone="active"
-        />
-        <SummaryTile
-          icon={<IconServer className="w-5 h-5" />}
-          label="Resolved (24h)"
-          value={summary?.resolvedLast24h ?? '--'}
-          tone="good"
-        />
       </div>
 
       <TelemetrySnapshot metrics={summary?.metrics} />
@@ -136,16 +97,16 @@ export default function SreDashboard() {
       {topIncidents.length > 0 && (
         <section className="active-incidents-section">
           <div className="active-incidents-head">
-            <span className="block-label">Active incidents</span>
+            <span className="block-label">Needs attention</span>
+            {onOpenIncidents && (
+              <button type="button" className="secondary-btn" onClick={onOpenIncidents}>
+                View all incidents
+              </button>
+            )}
           </div>
           <div className="active-incidents-grid">
             {topIncidents.map((incident) => (
-              <ActiveIncidentCard
-                key={incident.id}
-                incident={incident}
-                selected={incident.id === selectedId}
-                onOpen={() => setSelectedId(incident.id)}
-              />
+              <ActiveIncidentCard key={incident.id} incident={incident} onOpen={onOpenIncidents} />
             ))}
           </div>
         </section>
@@ -153,39 +114,27 @@ export default function SreDashboard() {
 
       {services.length > 0 && <ServicesHealthTable services={services} />}
 
-      <div className="sre-workspace">
-        <IncidentFeed
-          query={feed}
-          incidents={feed.incidents}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          filters={filters}
-          onFilterChange={setFilters}
-        />
-
-        <div className="sre-detail-pane">
-          <IncidentDetail query={detail} actions={actions} />
-        </div>
-      </div>
-
       <RecentActivityPanel activity={activity} />
 
       {summary?.severityDistribution && Object.keys(summary.severityDistribution).length > 0 && (
         <div className="severity-distribution">
           <span className="block-label">Active severity distribution</span>
           <div className="severity-bars">
-            {Object.entries(summary.severityDistribution).map(([severity, count]) => (
-              <div key={severity} className="severity-bar-row">
-                <SeverityBadge severity={severity} size="sm" />
-                <div className="severity-bar-track">
-                  <div
-                    className={`severity-bar-fill sev-fill-${severity.toLowerCase()}`}
-                    style={{ width: `${Math.min(100, count * 20)}%` }}
-                  />
+            {SEVERITY_ORDER.filter((severity) => summary.severityDistribution[severity] > 0).map((severity) => {
+              const count = summary.severityDistribution[severity];
+              return (
+                <div key={severity} className="severity-bar-row">
+                  <SeverityBadge severity={severity} size="sm" />
+                  <div className="severity-bar-track">
+                    <div
+                      className={`severity-bar-fill sev-fill-${severity.toLowerCase()}`}
+                      style={{ width: `${Math.min(100, count * 20)}%` }}
+                    />
+                  </div>
+                  <span className="severity-bar-count">{count}</span>
                 </div>
-                <span className="severity-bar-count">{count}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -206,73 +155,93 @@ function PrimaryStatCard({ icon, label, value, sub, tone = 'neutral' }) {
   );
 }
 
-function SummaryTile({ icon, label, value, sub, tone = 'neutral' }) {
-  return (
-    <div className={`sre-tile tile-${tone}`}>
-      <span className="sre-tile-icon">{icon}</span>
-      <div className="sre-tile-body">
-        <span className="sre-tile-label">{label}</span>
-        <span className="sre-tile-value">{value}</span>
-        {sub && <span className="sre-tile-sub">{sub}</span>}
-      </div>
-    </div>
-  );
+function round(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return null;
+  return Math.abs(value) >= 100 ? Math.round(value) : Math.round(value * 10) / 10;
 }
 
-/** Live metrics with a real trend line behind each reading, built from the same sampled telemetry
- * the detection engine evaluates - not a fabricated or decorative series. */
+function toSeries(recent, pick) {
+  return recent.map((s) => ({ t: new Date(s.timestamp).toLocaleTimeString(), v: round(pick(s)) }));
+}
+
+/**
+ * Live metrics (redesign brief section 7): a real MetricTile per metric - area chart, dashed
+ * threshold line, breach-colored value text - fed from the same sampled telemetry the detection
+ * engine evaluates, not a fabricated or decorative series. The chart line itself always keeps its
+ * own series color even while breaching, per MetricTile's own "threshold as a line, not a colour"
+ * rule; only the headline number and tile border switch to critical.
+ */
 function TelemetrySnapshot({ metrics }) {
   const recent = metrics?.recent || [];
 
-  const series = {
-    cpu: recent.map((s) => s.cpuPercent),
-    latency: recent.map((s) => s.responseTimeMs),
-    errorRate: recent.map((s) => (s.requestCount ? (s.errorCount / s.requestCount) * 100 : null)),
-    retries: recent.map((s) => s.retryCount),
-    queue: recent.map((s) => s.queueDepth)
-  };
+  const errorRatePercent = metrics?.errorRate != null ? metrics.errorRate * 100 : null;
 
   return (
     <div className="telemetry-snapshot">
       <div className="telemetry-snapshot-head">
         <span className="block-label">Telemetry snapshot</span>
-        <span className="telemetry-snapshot-time">
+        <span
+          className="telemetry-snapshot-time"
+          title={metrics?.sampledAt ? formatAbsoluteTime(metrics.sampledAt) : undefined}
+        >
           {metrics?.sampledAt ? `sampled ${relativeTime(metrics.sampledAt)}` : 'no telemetry yet'}
         </span>
       </div>
 
       <div className="telemetry-snapshot-grid">
-        <TelemetryCard label="CPU usage" value={formatMetricValue(metrics?.cpuPercent, '%')} values={series.cpu} color="#38bdf8" breaching={metrics?.cpuPercent > 80} />
-        <TelemetryCard label="Latency (p95)" value={formatMetricValue(metrics?.latencyMs, 'ms')} values={series.latency} color="#818cf8" breaching={metrics?.latencyMs > 1000} />
-        <TelemetryCard
-          label="Error rate"
-          value={formatMetricValue(metrics?.errorRate != null ? metrics.errorRate * 100 : null, '%')}
-          values={series.errorRate}
-          color="#fb7185"
-          breaching={metrics?.errorRate > 0.1}
+        <MetricTile
+          label="CPU usage"
+          value={round(metrics?.cpuPercent)}
+          unit="%"
+          data={toSeries(recent, (s) => s.cpuPercent)}
+          seriesColor="var(--series-1)"
+          threshold={80}
+          domain={domainForMetric('percent')}
         />
-        <TelemetryCard label="Retry rate" value={formatMetricValue(metrics?.retriesPerMinute, '/min')} values={series.retries} color="#fbbf24" breaching={metrics?.retriesPerMinute > 30} />
-        <TelemetryCard label="Queue depth" value={formatMetricValue(metrics?.queueDepth, '')} values={series.queue} color="#a78bfa" breaching={metrics?.queueDepth > 50} />
+        <MetricTile
+          label="Latency (p95)"
+          value={round(metrics?.latencyMs)}
+          unit="ms"
+          data={toSeries(recent, (s) => s.responseTimeMs)}
+          seriesColor="var(--series-2)"
+          threshold={1000}
+          domain={domainForMetric('unbounded', { threshold: 1000, peak: metrics?.latencyMs })}
+        />
+        <MetricTile
+          label="Error rate"
+          value={round(errorRatePercent)}
+          unit="%"
+          data={toSeries(recent, (s) => (s.requestCount ? (s.errorCount / s.requestCount) * 100 : null))}
+          seriesColor="var(--series-3)"
+          threshold={10}
+          domain={domainForMetric('percent')}
+        />
+        <MetricTile
+          label="Retry rate"
+          value={round(metrics?.retriesPerMinute)}
+          unit="/min"
+          data={toSeries(recent, (s) => s.retryCount)}
+          seriesColor="var(--series-5)"
+          threshold={30}
+          domain={domainForMetric('unbounded', { threshold: 30, peak: metrics?.retriesPerMinute })}
+        />
+        <MetricTile
+          label="Queue depth"
+          value={round(metrics?.queueDepth)}
+          data={toSeries(recent, (s) => s.queueDepth)}
+          seriesColor="var(--series-4)"
+          threshold={50}
+          domain={domainForMetric('unbounded', { threshold: 50, peak: metrics?.queueDepth })}
+        />
       </div>
     </div>
   );
 }
 
-function TelemetryCard({ label, value, values, color, breaching }) {
+function ActiveIncidentCard({ incident, onOpen }) {
   return (
-    <div className={`telemetry-card ${breaching ? 'breaching' : ''}`}>
-      <span className="telemetry-card-label">{label}</span>
-      <span className="telemetry-card-value">{value}</span>
-      <div className="telemetry-card-chart">
-        <Sparkline values={values} width={140} height={32} color={breaching ? '#fb7185' : color} />
-      </div>
-    </div>
-  );
-}
+    <button type="button" className="active-incident-card" onClick={onOpen}>
 
-function ActiveIncidentCard({ incident, selected, onOpen }) {
-  return (
-    <button type="button" className={`active-incident-card ${selected ? 'selected' : ''}`} onClick={onOpen}>
       <span className={`incident-severity-rail sev-rail-${(incident.severity || '').toLowerCase()}`} />
       <div className="active-incident-body">
         <div className="active-incident-head">
@@ -282,8 +251,12 @@ function ActiveIncidentCard({ incident, selected, onOpen }) {
         <div className="active-incident-title">{incident.title}</div>
         <div className="active-incident-meta">
           <StatusBadge status={incident.status} />
-          <span className="active-incident-service">{incident.service}</span>
-          <span className="active-incident-time">Detected {relativeTime(incident.detectedAt)}</span>
+          {incident.service && !incident.title?.includes(incident.service) && (
+            <span className="active-incident-service">{incident.service}</span>
+          )}
+          <span className="active-incident-time" title={formatAbsoluteTime(incident.detectedAt)}>
+            Detected {relativeTime(incident.detectedAt)}
+          </span>
         </div>
       </div>
     </button>
@@ -319,7 +292,9 @@ function ServicesHealthTable({ services }) {
                 </td>
                 <td>{svc.activeCount}</td>
                 <td>{svc.incidents.length}</td>
-                <td>{svc.lastSeen ? relativeTime(svc.lastSeen.updatedAt) : '--'}</td>
+                <td title={svc.lastSeen ? formatAbsoluteTime(svc.lastSeen.updatedAt) : undefined}>
+                  {svc.lastSeen ? relativeTime(svc.lastSeen.updatedAt) : '--'}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -345,7 +320,9 @@ function RecentActivityPanel({ activity }) {
             <span className={`recent-activity-dot dot-${eventTone(event.eventType)}`} />
             <span className="recent-activity-key">{event.incidentKey}</span>
             <span className="recent-activity-text">{activityText(event)}</span>
-            <span className="recent-activity-time">{relativeTime(event.timestamp)}</span>
+            <span className="recent-activity-time" title={formatAbsoluteTime(event.timestamp)}>
+              {relativeTime(event.timestamp)}
+            </span>
           </li>
         ))}
       </ul>

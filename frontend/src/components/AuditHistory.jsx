@@ -1,9 +1,41 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { devopsApi } from '../api/index';
 import { IconHistory, IconTrash, IconRefresh, IconBug, IconLink, IconPredict, IconSparkles, IconCopy, IconCheck } from './Icons';
 import { useToast } from './Toast';
+import Tabs from './ui/Tabs';
+import EmptyState from './ui/EmptyState';
+import Button from './ui/Button';
 
-export default function AuditHistory() {
+const TYPE_LABEL = { error: 'Error Analyzer', api: 'API Validator', predict: 'Predictor', recommend: 'Recommender' };
+const typeLabel = (type) => TYPE_LABEL[type] || type;
+
+function dayLabel(isoString) {
+  const date = new Date(isoString);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) return 'Today';
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
+/** Groups already-sorted (newest first) records into same-day buckets, preserving order. */
+function groupByDay(records) {
+  const groups = [];
+  let current = null;
+  for (const record of records) {
+    const label = dayLabel(record.createdAt);
+    if (!current || current.label !== label) {
+      current = { label, records: [] };
+      groups.push(current);
+    }
+    current.records.push(record);
+  }
+  return groups;
+}
+
+export default function AuditHistory({ onOpenDiagnostics }) {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState('all');
@@ -40,10 +72,10 @@ export default function AuditHistory() {
 
   const getTypeIcon = (type) => {
     switch (type) {
-      case 'error': return <IconBug className="w-4 h-4 text-rose-600" />;
-      case 'api': return <IconLink className="w-4 h-4 text-sky-600" />;
-      case 'predict': return <IconPredict className="w-4 h-4 text-purple-600" />;
-      default: return <IconSparkles className="w-4 h-4 text-amber-600" />;
+      case 'error': return <IconBug className="w-4 h-4 tone-critical" />;
+      case 'api': return <IconLink className="w-4 h-4 tone-low" />;
+      case 'predict': return <IconPredict className="w-4 h-4 tone-accent" />;
+      default: return <IconSparkles className="w-4 h-4 tone-medium" />;
     }
   };
 
@@ -51,12 +83,21 @@ export default function AuditHistory() {
     ? history
     : history.filter(item => item.type === filter);
 
+  const dayGroups = useMemo(() => groupByDay(filteredHistory), [filteredHistory]);
+
+  const filterItems = [
+    { id: 'all', label: 'All records', count: history.length },
+    ...['error', 'api', 'predict', 'recommend']
+      .map((id) => ({ id, label: typeLabel(id), count: history.filter((h) => h.type === id).length }))
+      .filter((item) => item.count > 0)
+  ];
+
   return (
     <div className="section-card">
       <div className="section-header">
         <div className="section-title-group">
           <div className="section-icon-badge history-badge">
-            <IconHistory className="w-6 h-6 text-emerald-600" />
+            <IconHistory className="w-6 h-6 tone-healthy" />
           </div>
           <div>
             <h3>Incident Telemetry & Audit Trail</h3>
@@ -78,24 +119,21 @@ export default function AuditHistory() {
         </div>
       </div>
 
-      <div className="filter-pills">
-        {['all', 'error', 'api', 'predict', 'recommend'].map(f => (
-          <button
-            key={f}
-            className={`filter-pill ${filter === f ? 'active' : ''}`}
-            onClick={() => setFilter(f)}
-          >
-            {f === 'all' ? 'All Records' : f.toUpperCase()}
-          </button>
-        ))}
-      </div>
+      <Tabs items={filterItems} activeId={filter} onChange={setFilter} className="audit-filter-tabs" />
 
       {filteredHistory.length === 0 ? (
-        <div className="empty-state">
-          <IconHistory className="w-12 h-12 text-slate-400 mb-3" />
-          <h4>No Telemetry Records Found</h4>
-          <p>Run diagnostics on stack traces, APIs, or reliability forecasts to populate the persistent database.</p>
-        </div>
+        <EmptyState
+          icon={<IconHistory className="w-12 h-12" />}
+          title="No audit history yet"
+          description="Every diagnostic you run - error analysis, API validation, predictions - is recorded here."
+          action={
+            onOpenDiagnostics ? (
+              <Button variant="primary" onClick={onOpenDiagnostics}>
+                Open diagnostics
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
         <div className="history-grid">
           <div className="history-table-wrapper">
@@ -109,39 +147,44 @@ export default function AuditHistory() {
                   <th>Action</th>
                 </tr>
               </thead>
-              <tbody>
-                {filteredHistory.map((item) => (
-                  <tr
-                    key={item.id}
-                    className={selectedItem?.id === item.id ? 'row-selected' : ''}
-                    onClick={() => setSelectedItem(item)}
-                  >
-                    <td>
-                      <span className="type-pill">
-                        {getTypeIcon(item.type)}
-                        <span className="ml-1 uppercase">{item.type}</span>
-                      </span>
-                    </td>
-                    <td>
-                      <div className="truncate-text">{item.input || 'Empty payload'}</div>
-                    </td>
-                    <td>
-                      <span className="score-badge-sm">{item.score}/100</span>
-                    </td>
-                    <td className="timestamp-cell">
-                      {new Date(item.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                    </td>
-                    <td>
-                      <button
-                        className="small-inspect-btn"
-                        onClick={(e) => { e.stopPropagation(); setSelectedItem(item); }}
-                      >
-                        Inspect
-                      </button>
-                    </td>
+              {dayGroups.map((group) => (
+                <tbody key={group.label}>
+                  <tr className="history-day-heading-row">
+                    <td colSpan={5}>{group.label}</td>
                   </tr>
-                ))}
-              </tbody>
+                  {group.records.map((item) => (
+                    <tr
+                      key={item.id}
+                      className={selectedItem?.id === item.id ? 'row-selected' : ''}
+                      onClick={() => setSelectedItem(item)}
+                    >
+                      <td>
+                        <span className="type-pill">
+                          {getTypeIcon(item.type)}
+                          <span className="ml-1">{typeLabel(item.type)}</span>
+                        </span>
+                      </td>
+                      <td>
+                        <div className="truncate-text">{item.input || 'Empty payload'}</div>
+                      </td>
+                      <td>
+                        <span className="score-badge-sm">{item.score}/100</span>
+                      </td>
+                      <td className="timestamp-cell">
+                        {new Date(item.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </td>
+                      <td>
+                        <button
+                          className="small-inspect-btn"
+                          onClick={(e) => { e.stopPropagation(); setSelectedItem(item); }}
+                        >
+                          Inspect
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              ))}
             </table>
           </div>
 
@@ -155,7 +198,7 @@ export default function AuditHistory() {
                 <button className="close-btn" onClick={() => setSelectedItem(null)}>✕</button>
               </div>
               <div className="details-meta">
-                <span><strong>Type:</strong> {selectedItem.type.toUpperCase()}</span>
+                <span><strong>Type:</strong> {typeLabel(selectedItem.type)}</span>
                 <span><strong>Recorded:</strong> {new Date(selectedItem.createdAt).toLocaleString()}</span>
                 <span><strong>Score:</strong> {selectedItem.score}/100</span>
               </div>

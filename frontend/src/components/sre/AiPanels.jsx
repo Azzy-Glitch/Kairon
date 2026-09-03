@@ -1,6 +1,7 @@
 import React from 'react';
 import { AiBadge, RiskBadge } from './Badges';
 import { confidenceBand, formatConfidence, formatDateTime } from '../../services/incidentService';
+import { getActionLabel } from '../../lib/labels';
 import { IconPredict, IconSparkles, IconBug } from '../Icons';
 
 /**
@@ -158,7 +159,7 @@ export function RecommendationPanel({ recommendations }) {
         {recommendations.map((rec, index) => (
           <li key={index} className={`recommendation-item ${rec.isRegisteredTool ? '' : 'not-executable'}`}>
             <div className="recommendation-head">
-              <code className="recommendation-action">{rec.action}</code>
+              <code className="recommendation-action" title={rec.action}>{getActionLabel(rec.action)}</code>
               <RiskBadge risk={rec.riskLevel} />
             </div>
 

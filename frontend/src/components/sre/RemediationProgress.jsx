@@ -2,6 +2,7 @@ import React from 'react';
 import { RemediationBadge, VerificationBadge } from './Badges';
 import { formatDateTime, percentChange } from '../../services/incidentService';
 import { RemediationStatus, VerificationStatus } from '../../types/incident';
+import { getActionLabel, getSignalLabel } from '../../lib/labels';
 import { IconZap } from '../Icons';
 
 /**
@@ -24,7 +25,7 @@ export function RemediationProgress({ actions, incidentStatus }) {
         {actions.map((action) => (
           <li key={action.id} className={`remediation-item remediation-${action.status.toLowerCase()}`}>
             <div className="remediation-head">
-              <code className="recommendation-action">{action.actionType}</code>
+              <code className="recommendation-action" title={action.actionType}>{getActionLabel(action.actionType)}</code>
               <RemediationBadge status={action.status} />
               <span className="remediation-key">{action.actionKey}</span>
             </div>
@@ -152,7 +153,7 @@ export function VerificationPanel({ verification }) {
 
                 return (
                   <tr key={c.metric} className={rowClass}>
-                    <td>{c.metric}</td>
+                    <td title={c.metric}>{getSignalLabel(c.metric)}</td>
                     <td>{format(c.before, c.unit)}</td>
                     <td>
                       <strong>{format(c.after, c.unit)}</strong>

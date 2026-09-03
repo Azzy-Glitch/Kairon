@@ -1,5 +1,6 @@
 import React from 'react';
 import { IncidentStatus, RemediationStatus, VerificationStatus } from '../../types/incident';
+import { getPhaseLabel } from '../../lib/labels';
 
 /** Severity must be visually obvious in the feed (frontend PRD section 5). */
 export function SeverityBadge({ severity, size = 'md' }) {
@@ -70,8 +71,17 @@ function statusTone(status) {
   }
 }
 
-/** "RecommendationReady" reads badly on a badge; "Recommendation Ready" does not. */
+/**
+ * "RecommendationReady" reads badly on a badge. Tries the curated copy layer first (real sentence
+ * case, e.g. "Awaiting approval"); only for a value that layer doesn't know about does this fall
+ * back to a generic camelCase split, still forced to sentence case rather than Title Case.
+ */
 export function humanize(value) {
   if (!value) return 'Unknown';
-  return String(value).replace(/([a-z])([A-Z])/g, '$1 $2');
+
+  const known = getPhaseLabel(value);
+  if (known !== value) return known;
+
+  const spaced = String(value).replace(/([a-z])([A-Z])/g, '$1 $2');
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
 }

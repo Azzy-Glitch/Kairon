@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from 'react';
-import IncidentDetail from './IncidentDetail';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { SeverityBadge, StatusBadge } from './Badges';
 import { ErrorState } from './StateViews';
+import PhaseAnnotatedLineChart from '../ui/charts/PhaseAnnotatedLineChart';
+import { useRollingBuffer } from '../../hooks/useRollingBuffer';
 import { useDemo } from '../../hooks/useDemo';
-import { useIncident, useIncidentActions, useIncidents } from '../../hooks/useIncidents';
+import { useIncident, useIncidents } from '../../hooks/useIncidents';
 import { formatMetricValue, relativeTime } from '../../services/incidentService';
 import { IncidentStatus } from '../../types/incident';
 import { IconZap, IconServer } from '../Icons';
@@ -19,20 +20,27 @@ import { IconZap, IconServer } from '../Icons';
 
 /** The pipeline stages, in the order the PRD asks a judge to observe them. */
 const DEMO_STAGES = [
-  { key: 'normal', label: 'NORMAL' },
-  { key: 'failure', label: 'FAILURE' },
-  { key: 'detected', label: 'DETECTED' },
-  { key: 'investigating', label: 'INVESTIGATING' },
-  { key: 'rootcause', label: 'ROOT CAUSE' },
-  { key: 'prediction', label: 'PREDICTION' },
-  { key: 'recommendation', label: 'RECOMMENDATION' },
-  { key: 'approval', label: 'APPROVAL' },
-  { key: 'remediation', label: 'REMEDIATION' },
-  { key: 'verification', label: 'VERIFICATION' },
-  { key: 'resolved', label: 'RESOLVED' }
+  { key: 'normal', label: 'Normal' },
+  { key: 'failure', label: 'Failure' },
+  { key: 'detected', label: 'Detected' },
+  { key: 'investigating', label: 'Investigating' },
+  { key: 'rootcause', label: 'Root cause' },
+  { key: 'prediction', label: 'Prediction' },
+  { key: 'recommendation', label: 'Recommendation' },
+  { key: 'approval', label: 'Approval' },
+  { key: 'remediation', label: 'Remediation' },
+  { key: 'verification', label: 'Verification' },
+  { key: 'resolved', label: 'Resolved' }
 ];
 
-export default function DemoRunner() {
+const DEMO_SERIES_KEYS = [
+  { dataKey: 'cpu', name: 'CPU %' },
+  { dataKey: 'latency', name: 'Latency ms' },
+  { dataKey: 'errorRate', name: 'Error rate %' },
+  { dataKey: 'retries', name: 'Retries/min' }
+];
+
+export default function DemoRunner({ onOpenIncident }) {
   const demo = useDemo();
   const feed = useIncidents({ status: 'active', pollMs: 3000 });
   const [pinnedId, setPinnedId] = useState(null);
@@ -46,12 +54,51 @@ export default function DemoRunner() {
   const trackedId = pinnedId || demoIncident?.id || null;
   const detail = useIncident(trackedId, { pollMs: 2500 });
 
-  const actions = useIncidentActions(async () => {
-    await Promise.all([detail.reload({ silent: true }), feed.reload({ silent: true })]);
-  });
-
   const state = demo.data;
   const reachedStage = currentStage(state, detail.data);
+
+  // The demo's money shot: all four simulation metrics on one shared time axis, with a vertical
+  // marker at the moment each phase started. Fed from the same poll useDemo() already runs (no
+  // second interval) - one sample appended per real tick, reset when a fresh run starts.
+  const [chartSamples, pushSample, resetSamples] = useRollingBuffer(120);
+  const [phaseMarkers, setPhaseMarkers] = useState([]);
+  const lastTickRef = useRef(null);
+  const lastPhaseRef = useRef(null);
+
+  useEffect(() => {
+    if (!state?.running) {
+      if (lastPhaseRef.current !== null) {
+        resetSamples();
+        setPhaseMarkers([]);
+        lastPhaseRef.current = null;
+        lastTickRef.current = null;
+      }
+      return;
+    }
+
+    const tickKey = state.lastTickAt || null;
+    if (tickKey === lastTickRef.current) return;
+    lastTickRef.current = tickKey;
+
+    const label = state.lastTickAt ? new Date(state.lastTickAt).toLocaleTimeString() : '';
+    const phase = state.phase || 'Normal';
+
+    pushSample({
+      t: label,
+      cpu: state.cpuPercent ?? null,
+      latency: state.latencyMs ?? null,
+      errorRate: state.errorRate != null ? state.errorRate * 100 : null,
+      retries: state.retriesPerMinute ?? null
+    });
+
+    if (phase !== lastPhaseRef.current) {
+      lastPhaseRef.current = phase;
+      setPhaseMarkers((prev) => [...prev, { t: label, label: phase }]);
+    }
+    // pushSample/resetSamples are stable (useCallback with a fixed capacity) - omitting them
+    // from deps avoids re-running this effect on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state?.running, state?.lastTickAt, state?.phase, state?.cpuPercent, state?.latencyMs, state?.errorRate, state?.retriesPerMinute]);
 
   return (
     <div className="demo-runner animate-fade-in">
@@ -65,9 +112,14 @@ export default function DemoRunner() {
               <h3>Incident Simulation</h3>
               <p className="section-desc">
                 Runs the controlled order-processing retry-loop scenario. Detection, AI
-                investigation, approval and remediation are all real - only the failing service is
-                simulated, and only inside the demo environment.
+                investigation, approval and remediation are all real.
               </p>
+              <div className="demo-info-note">
+                <span className="demo-info-note-icon" aria-hidden="true">
+                  <InfoIcon />
+                </span>
+                <span>Only the failing service is simulated, and only inside the demo environment.</span>
+              </div>
             </div>
           </div>
 
@@ -75,10 +127,22 @@ export default function DemoRunner() {
             <button
               type="button"
               className="primary-btn"
-              onClick={demo.start}
-              disabled={demo.busy === 'start' || state?.running}
+              onClick={state?.running ? demo.stop : demo.start}
+              disabled={demo.busy === 'start' || demo.busy === 'stop'}
+              title={state?.running ? 'Stop the running simulation' : undefined}
             >
-              {demo.busy === 'start' ? 'Starting...' : state?.running ? 'Running' : 'Run Incident Simulation'}
+              {demo.busy === 'start' ? (
+                'Starting...'
+              ) : demo.busy === 'stop' ? (
+                'Stopping...'
+              ) : state?.running ? (
+                <>
+                  <span className="btn-spinner" aria-hidden="true" />
+                  Running… stop
+                </>
+              ) : (
+                'Run Incident Simulation'
+              )}
             </button>
 
             <button
@@ -128,17 +192,12 @@ export default function DemoRunner() {
           )}
         </div>
 
+        {/* CPU, latency, error rate and retries now live in the trend chart below - a static tile
+            repeating the same number the chart's own last point already shows would be the exact
+            "static metric card" the redesign brief asks to replace with a live chart (section 7).
+            Memory and queue depth aren't part of that chart, so they keep an at-a-glance tile. */}
         <div className="demo-metrics">
-          <DemoMetric label="CPU" value={state?.cpuPercent} unit="%" threshold={80} />
           <DemoMetric label="Memory" value={state?.memoryPercent} unit="%" threshold={85} />
-          <DemoMetric label="Latency" value={state?.latencyMs} unit="ms" threshold={1000} />
-          <DemoMetric
-            label="Error rate"
-            value={state?.errorRate != null ? state.errorRate * 100 : null}
-            unit="%"
-            threshold={10}
-          />
-          <DemoMetric label="Retries" value={state?.retriesPerMinute} unit="/min" threshold={30} />
           <DemoMetric label="Queue" value={state?.queueDepth} unit="" threshold={50} />
         </div>
 
@@ -147,13 +206,26 @@ export default function DemoRunner() {
             Phase: <strong>{state?.phase || 'Normal'}</strong>
           </span>
           <span>
-            Retry loop: <strong>{state?.retryLoopEnabled ? 'ENABLED' : 'disabled'}</strong>
+            Retry loop: <strong>{state?.retryLoopEnabled ? 'Enabled' : 'Disabled'}</strong>
           </span>
           <span>
             Workers: <strong>{state?.workerConcurrency ?? '--'}</strong>
           </span>
           {state?.lastTickAt && <span>updated {relativeTime(state.lastTickAt)}</span>}
         </div>
+
+        {chartSamples.length >= 2 ? (
+          <div className="demo-trend-chart">
+            <span className="block-label">Simulation metrics over time</span>
+            <PhaseAnnotatedLineChart data={chartSamples} seriesKeys={DEMO_SERIES_KEYS} phaseMarkers={phaseMarkers} height={260} />
+          </div>
+        ) : (
+          state?.running && (
+            <p className="panel-pending-text demo-trend-pending">
+              Collecting samples - the trend chart appears once a couple of readings have come in.
+            </p>
+          )
+        )}
       </section>
 
       {demoIncident && (
@@ -169,7 +241,24 @@ export default function DemoRunner() {
             )}
           </div>
 
-          <IncidentDetail query={detail} actions={actions} />
+          <div className="demo-incident-summary">
+            <div className="demo-incident-summary-title">{demoIncident.title}</div>
+            <div className="demo-incident-summary-meta">
+              {demoIncident.service ? `${demoIncident.service} • ` : ''}
+              Detected {relativeTime(demoIncident.detectedAt)}
+            </div>
+            {onOpenIncident ? (
+              <button
+                type="button"
+                className="primary-btn"
+                onClick={() => onOpenIncident(demoIncident.id)}
+              >
+                Open full incident
+              </button>
+            ) : (
+              <p className="panel-pending-text">Full incident detail lives on the Incidents page.</p>
+            )}
+          </div>
         </section>
       )}
 
@@ -213,14 +302,26 @@ function currentStage(demoState, incident) {
       case IncidentStatus.Detected:
         return 2;
       default:
-        // Failed, Rejected and Cancelled all stop the pipeline where they happened; the incident
-        // detail below explains why.
+        // Failed, Rejected and Cancelled all stop the pipeline where they happened; the full
+        // incident (opened via the summary card below) explains why.
         return 2;
     }
   }
 
   if (demoState?.running) return 1;
   return 0;
+}
+
+/** Small "i in a circle" glyph for the honesty-note callout - deliberately not one of the shared
+ * status icons, since this note is informational rather than a warning or an alert. */
+function InfoIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.4" />
+      <line x1="8" y1="7" x2="8" y2="11.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <circle cx="8" cy="4.8" r="0.9" fill="currentColor" />
+    </svg>
+  );
 }
 
 function DemoMetric({ label, value, unit, threshold }) {

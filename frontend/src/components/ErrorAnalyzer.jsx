@@ -63,10 +63,10 @@ export default function ErrorAnalyzer() {
 
   const getSeverityStyle = (s) => {
     const sev = (s || '').toLowerCase();
-    if (sev === 'critical') return { bg: '#fff1f2', border: '#fecdd3', text: '#be123c', badge: '#be123c' };
-    if (sev === 'high') return { bg: '#fff7ed', border: '#fed7aa', text: '#c2410c', badge: '#c2410c' };
-    if (sev === 'medium') return { bg: '#fffbeb', border: '#fde68a', text: '#b45309', badge: '#b45309' };
-    return { bg: '#f0fdf4', border: '#bbf7d0', text: '#15803d', badge: '#15803d' };
+    if (sev === 'critical') return { bg: 'var(--critical-soft)', border: 'var(--critical)', text: 'var(--critical)', badge: 'var(--critical)' };
+    if (sev === 'high') return { bg: 'var(--high-soft)', border: 'var(--high)', text: 'var(--high)', badge: 'var(--high)' };
+    if (sev === 'medium') return { bg: 'var(--medium-soft)', border: 'var(--medium)', text: 'var(--medium)', badge: 'var(--medium)' };
+    return { bg: 'var(--healthy-soft)', border: 'var(--healthy)', text: 'var(--healthy)', badge: 'var(--healthy)' };
   };
 
   return (
@@ -74,7 +74,7 @@ export default function ErrorAnalyzer() {
       <div className="section-header">
         <div className="section-title-group">
           <div className="section-icon-badge error-badge">
-            <IconBug className="w-6 h-6 text-rose-600" />
+            <IconBug className="w-6 h-6 tone-critical" />
           </div>
           <div>
             <h3>AI Root Cause & Stack Trace Diagnostics</h3>
@@ -146,9 +146,9 @@ export default function ErrorAnalyzer() {
             <div className="severity-info">
               <span className="status-pill" style={{
                 backgroundColor: getSeverityStyle(res.severity).badge,
-                color: '#ffffff'
+                color: 'var(--text-inverse)'
               }}>
-                {res.severity ? res.severity.toUpperCase() : 'ANALYSIS'}
+                {res.severity ? res.severity.charAt(0).toUpperCase() + res.severity.slice(1).toLowerCase() : 'Analysis'}
               </span>
               <div className="severity-score-wrap">
                 <span className="score-label">Impact Severity Score</span>
@@ -156,13 +156,13 @@ export default function ErrorAnalyzer() {
                   <div
                     className="score-meter-fill"
                     style={{
-                      width: `${res.severity_score || 70}%`,
+                      width: `${res.severity_score ?? 0}%`,
                       backgroundColor: getSeverityStyle(res.severity).badge
                     }}
                   />
                 </div>
                 <span className="score-value" style={{ color: getSeverityStyle(res.severity).text }}>
-                  {res.severity_score ?? 75}/100
+                  {res.severity_score != null ? `${res.severity_score}/100` : 'Not scored'}
                 </span>
               </div>
             </div>
@@ -171,7 +171,7 @@ export default function ErrorAnalyzer() {
           <div className="diagnostic-grid">
             <div className="diag-card primary-diag">
               <h4>
-                <IconAlertTriangle className="w-4 h-4 text-amber-600 mr-2 inline" />
+                <IconAlertTriangle className="w-4 h-4 tone-medium mr-2 inline" />
                 Root Cause Analysis
               </h4>
               <p className="diag-text">{res.root_cause || 'No specific root cause identified.'}</p>
@@ -180,7 +180,7 @@ export default function ErrorAnalyzer() {
             <div className="diag-card">
               <div className="card-header-flex">
                 <h4>
-                  <IconCheck className="w-4 h-4 text-emerald-600 mr-2 inline" />
+                  <IconCheck className="w-4 h-4 tone-healthy mr-2 inline" />
                   Recommended Actionable Fixes
                 </h4>
                 {res.fixes && res.fixes.length > 0 && (
@@ -203,7 +203,7 @@ export default function ErrorAnalyzer() {
                         title="Copy fix"
                         onClick={() => copyToClipboard(f, i)}
                       >
-                        {copiedIndex === i ? <IconCheck className="w-3 h-3 text-emerald-600" /> : <IconCopy className="w-3 h-3" />}
+                        {copiedIndex === i ? <IconCheck className="w-3 h-3 tone-healthy" /> : <IconCopy className="w-3 h-3" />}
                       </button>
                     </li>
                   ))
@@ -215,7 +215,7 @@ export default function ErrorAnalyzer() {
 
             <div className="diag-card span-full">
               <h4>
-                <IconSparkles className="w-4 h-4 text-indigo-600 mr-2 inline" />
+                <IconSparkles className="w-4 h-4 tone-accent mr-2 inline" />
                 Architectural Prevention & Best Practice
               </h4>
               <p className="prevention-text">{res.prevention || 'Maintain proactive boundary checks and unit tests.'}</p>

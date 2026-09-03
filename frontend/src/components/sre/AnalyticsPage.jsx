@@ -1,8 +1,14 @@
 import React, { useMemo } from 'react';
 import { AsyncView } from './StateViews';
+import EmptyState from '../ui/EmptyState';
+import GroupedBarChart from '../ui/charts/GroupedBarChart';
+import HorizontalBarChart from '../ui/charts/HorizontalBarChart';
+import PhaseAnnotatedLineChart from '../ui/charts/PhaseAnnotatedLineChart';
 import { useIncidents } from '../../hooks/useIncidents';
-import { IncidentStatus, SEVERITY_ORDER } from '../../types/incident';
-import { IconPredict, IconShield } from '../Icons';
+import { IncidentStatus } from '../../types/incident';
+import { IconPredict, IconShield, IconHistory } from '../Icons';
+
+const MTTR_SERIES_KEYS = [{ dataKey: 'mttr', name: 'Mean time to resolve (min)' }];
 
 /**
  * Operational analytics (frontend PRD section 28).
@@ -22,7 +28,7 @@ export default function AnalyticsPage() {
       <div className="section-header">
         <div className="section-title-group">
           <div className="section-icon-badge">
-            <IconPredict className="w-6 h-6 text-purple-500" />
+            <IconPredict className="w-6 h-6 tone-accent" />
           </div>
           <div>
             <h3>Analytics</h3>
@@ -51,22 +57,32 @@ export default function AnalyticsPage() {
               />
             </div>
 
-            <div className="analytics-columns">
-              <div className="analytics-block">
-                <h4 className="subheading">By severity</h4>
-                <BarList entries={stats.bySeverity} />
-              </div>
+            <div className="analytics-block">
+              <h4 className="subheading">Incidents by severity and service</h4>
+              {stats.bySeverityAndService.length > 0 ? (
+                <GroupedBarChart data={stats.bySeverityAndService} />
+              ) : (
+                <p className="panel-pending-text">No data yet.</p>
+              )}
+            </div>
 
-              <div className="analytics-block">
-                <h4 className="subheading">By service</h4>
-                <BarList entries={stats.byService} />
-              </div>
+            <div className="analytics-block">
+              <h4 className="subheading">Mean time to resolve, by day</h4>
+              {stats.mttrTrend.length >= 2 ? (
+                <PhaseAnnotatedLineChart data={stats.mttrTrend} seriesKeys={MTTR_SERIES_KEYS} height={220} />
+              ) : (
+                <EmptyState
+                  icon={<IconHistory className="w-10 h-10" />}
+                  title="Not enough data for a trend yet"
+                  description="This chart needs resolved incidents from at least two different days to plot a trend. Run the incident simulation on more than one day to populate it."
+                />
+              )}
             </div>
 
             {stats.byTitle.length > 0 && (
               <div className="analytics-block">
                 <h4 className="subheading">Top recurring patterns</h4>
-                <BarList entries={stats.byTitle} />
+                <HorizontalBarChart data={stats.byTitle.map((e) => ({ label: e.label, value: e.count }))} color="var(--series-2)" />
               </div>
             )}
           </>
@@ -95,10 +111,51 @@ function computeStats(incidents = []) {
     resolved: resolved.length,
     failed,
     mttrMinutes,
-    bySeverity: countBy(incidents, (i) => i.severity, SEVERITY_ORDER),
-    byService: countBy(incidents, (i) => i.service || 'Unknown'),
-    byTitle: countBy(incidents, (i) => i.title).slice(0, 8)
+    bySeverityAndService: countBySeverityAndService(incidents),
+    byTitle: countBy(incidents, (i) => i.title).slice(0, 8),
+    mttrTrend: mttrTrendByDay(resolved)
   };
+}
+
+/** "Incidents by severity + by service", one grouped chart rather than two separate lists
+ * (redesign brief section 7's Analytics chart table). */
+function countBySeverityAndService(incidents) {
+  const byService = new Map();
+  for (const incident of incidents) {
+    const service = incident.service || 'Unknown';
+    if (!byService.has(service)) byService.set(service, { label: service, Critical: 0, High: 0, Medium: 0, Low: 0 });
+    const row = byService.get(service);
+    const severity = incident.severity;
+    if (severity && severity in row) row[severity] += 1;
+  }
+  return [...byService.values()].sort(
+    (a, b) => b.Critical + b.High + b.Medium + b.Low - (a.Critical + a.High + a.Medium + a.Low)
+  );
+}
+
+/** Mean time to resolve, trended by the day each incident was detected - not a single aggregate
+ * number. Days with no resolution that day are simply absent, not zero-filled (a day nothing
+ * resolved is not the same as a day everything resolved instantly). */
+function mttrTrendByDay(resolvedIncidents) {
+  const byDay = new Map();
+  for (const incident of resolvedIncidents) {
+    const minutes = (new Date(incident.updatedAt) - new Date(incident.detectedAt)) / 60000;
+    if (!Number.isFinite(minutes) || minutes < 0) continue;
+
+    const detected = new Date(incident.detectedAt);
+    const isoDay = detected.toISOString().slice(0, 10);
+    if (!byDay.has(isoDay)) {
+      byDay.set(isoDay, { label: detected.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), minutesList: [] });
+    }
+    byDay.get(isoDay).minutesList.push(minutes);
+  }
+
+  return [...byDay.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([, { label, minutesList }]) => ({
+      t: label,
+      mttr: Math.round((minutesList.reduce((a, b) => a + b, 0) / minutesList.length) * 10) / 10
+    }));
 }
 
 function countBy(items, keyFn, order) {
@@ -124,25 +181,6 @@ function AnalyticsTile({ label, value, tone = 'neutral' }) {
         <span className="sre-tile-label">{label}</span>
         <span className="sre-tile-value">{value}</span>
       </div>
-    </div>
-  );
-}
-
-function BarList({ entries }) {
-  if (!entries.length) return <p className="panel-pending-text">No data yet.</p>;
-  const max = Math.max(...entries.map((e) => e.count), 1);
-
-  return (
-    <div className="analytics-bar-list">
-      {entries.map((entry) => (
-        <div key={entry.label} className="analytics-bar-row">
-          <span className="analytics-bar-label">{entry.label}</span>
-          <div className="analytics-bar-track">
-            <div className="analytics-bar-fill" style={{ width: `${(entry.count / max) * 100}%` }} />
-          </div>
-          <span className="analytics-bar-count">{entry.count}</span>
-        </div>
-      ))}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { RiskBadge } from './Badges';
+import { getActionLabel } from '../../lib/labels';
 import { IconShield } from '../Icons';
 
 /**
@@ -60,7 +61,7 @@ export default function ApprovalPanel({ action, onApprove, onReject, busy, error
 
       <div className="approval-action-card">
         <div className="approval-action-head">
-          <code className="recommendation-action">{action.actionType}</code>
+          <code className="recommendation-action" title={action.actionType}>{getActionLabel(action.actionType)}</code>
           <RiskBadge risk={action.riskLevel} />
         </div>
 
@@ -117,14 +118,15 @@ export default function ApprovalPanel({ action, onApprove, onReject, busy, error
             disabled={identityMissing || Boolean(busy)}
             title={identityMissing ? 'Enter your operator identity first' : undefined}
           >
-            Approve and execute
+            Approve and run
           </button>
 
           <button
             type="button"
-            className="reject-btn"
+            className="reject-btn ghost"
             onClick={beginReject}
             disabled={identityMissing || Boolean(busy)}
+            title={identityMissing ? 'Enter your operator identity first' : undefined}
           >
             Reject
           </button>
@@ -135,8 +137,8 @@ export default function ApprovalPanel({ action, onApprove, onReject, busy, error
         <div className="approval-confirm">
           <p>
             {mode === 'approve'
-              ? `Execute ${action.actionType} against the ${action.riskLevel?.toLowerCase() || ''} risk demo environment?`
-              : `Reject ${action.actionType}?`}
+              ? `Execute "${getActionLabel(action.actionType)}" against the ${action.riskLevel?.toLowerCase() || ''} risk demo environment?`
+              : `Reject "${getActionLabel(action.actionType)}"?`}
           </p>
           <div className="approval-buttons">
             <button
@@ -152,10 +154,6 @@ export default function ApprovalPanel({ action, onApprove, onReject, busy, error
             </button>
           </div>
         </div>
-      )}
-
-      {identityMissing && !confirming && (
-        <p className="approval-hint">Enter an operator identity to enable these controls.</p>
       )}
     </section>
   );

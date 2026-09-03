@@ -54,9 +54,9 @@ export default function Predictor() {
   };
 
   const getRiskColor = (score) => {
-    if (score >= 70) return '#dc2626';
-    if (score >= 40) return '#d97706';
-    return '#16a34a';
+    if (score >= 70) return 'var(--critical)';
+    if (score >= 40) return 'var(--medium)';
+    return 'var(--healthy)';
   };
 
   return (
@@ -64,7 +64,7 @@ export default function Predictor() {
       <div className="section-header">
         <div className="section-title-group">
           <div className="section-icon-badge predict-badge">
-            <IconPredict className="w-6 h-6 text-purple-600" />
+            <IconPredict className="w-6 h-6 tone-accent" />
           </div>
           <div>
             <h3>Predictive Anomaly & Failure Risk Radar</h3>
@@ -95,7 +95,7 @@ export default function Predictor() {
         <div className="editor-container">
           <div className="editor-header">
             <span className="editor-title">
-              <IconTerminal className="w-4 h-4 mr-1 inline text-purple-600" />
+              <IconTerminal className="w-4 h-4 mr-1 inline tone-accent" />
               Preceding Log Sequence (One per line)
             </span>
           </div>
@@ -111,7 +111,7 @@ export default function Predictor() {
         <div className="editor-container">
           <div className="editor-header">
             <span className="editor-title">
-              <IconAlertTriangle className="w-4 h-4 mr-1 inline text-rose-600" />
+              <IconAlertTriangle className="w-4 h-4 mr-1 inline tone-critical" />
               Current Incident Trigger
             </span>
           </div>
@@ -152,7 +152,7 @@ export default function Predictor() {
               className="risk-gauge-card"
               style={{
                 borderColor: getRiskColor(res.failure_risk_score),
-                backgroundColor: '#ffffff'
+                backgroundColor: 'var(--surface)'
               }}
             >
               <div className="gauge-dial">
@@ -162,22 +162,22 @@ export default function Predictor() {
                 >
                   {res.failure_risk_score}%
                 </span>
-                <span className="gauge-sub">RISK FACTOR</span>
+                <span className="gauge-sub">Risk factor</span>
               </div>
               <div
                 className="risk-status-pill"
                 style={{
                   backgroundColor: getRiskColor(res.failure_risk_score),
-                  color: '#ffffff'
+                  color: 'var(--text-inverse)'
                 }}
               >
-                {(res.risk_level || 'EVALUATING').toUpperCase()} RISK
+                {res.risk_level ? `${res.risk_level.charAt(0).toUpperCase()}${res.risk_level.slice(1).toLowerCase()} risk` : 'Evaluating risk'}
               </div>
             </div>
 
             <div className="risk-explanation-card">
               <h4>
-                <IconAlertTriangle className="w-5 h-5 text-amber-600 mr-2 inline" />
+                <IconAlertTriangle className="w-5 h-5 tone-medium mr-2 inline" />
                 Cascade Assessment & AI Reasoning
               </h4>
               <p className="reasoning-text">{res.reasoning || 'Cascading failure analysis completed.'}</p>

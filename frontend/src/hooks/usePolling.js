@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { usePollingPreference } from '../lib/PollingPreferenceContext';
 
 /**
  * Repeats a callback on an interval.
@@ -14,13 +15,18 @@ import { useEffect, useRef } from 'react';
 export function usePolling(callback, intervalMs, { enabled = true, pauseWhenHidden = true } = {}) {
   const savedCallback = useRef(callback);
   const running = useRef(false);
+  // Settings page "polling rate" preference (redesign brief section 8) - a single multiplier
+  // applied here so every existing call site's interval respects it without individually reading
+  // the setting. Defaults to 1x (no provider, or the "Normal" preset).
+  const { multiplier } = usePollingPreference();
+  const effectiveIntervalMs = intervalMs ? Math.round(intervalMs * multiplier) : intervalMs;
 
   useEffect(() => {
     savedCallback.current = callback;
   }, [callback]);
 
   useEffect(() => {
-    if (!enabled || !intervalMs) return undefined;
+    if (!enabled || !effectiveIntervalMs) return undefined;
 
     let cancelled = false;
 
@@ -39,7 +45,7 @@ export function usePolling(callback, intervalMs, { enabled = true, pauseWhenHidd
       }
     };
 
-    const id = setInterval(tick, intervalMs);
+    const id = setInterval(tick, effectiveIntervalMs);
 
     // Refresh immediately when the operator comes back to the tab, rather than making them wait
     // out the remainder of an interval.
@@ -58,7 +64,7 @@ export function usePolling(callback, intervalMs, { enabled = true, pauseWhenHidd
         document.removeEventListener('visibilitychange', onVisible);
       }
     };
-  }, [enabled, intervalMs, pauseWhenHidden]);
+  }, [enabled, effectiveIntervalMs, pauseWhenHidden]);
 }
 
 export default usePolling;

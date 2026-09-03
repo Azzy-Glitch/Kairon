@@ -15,6 +15,8 @@ import {
   verificationFailed
 } from '../../services/incidentService';
 import { IncidentStatus } from '../../types/incident';
+import { getRuleLabel, getSignalLabel } from '../../lib/labels';
+import { resolveSource, sourceMeta } from '../../lib/source';
 
 /**
  * Incident detail (frontend PRD section 6).
@@ -44,6 +46,33 @@ function DetailBody({ incident, actions }) {
   const resolved = isResolvedByBackend(incident);
   const failedVerification = verificationFailed(incident);
 
+  // SDK-source chip (redesign brief section 6): which SDK/agent this incident's telemetry
+  // actually came from, shown next to severity/status the same way the source filter elsewhere
+  // in this redesign uses resolveSource + sourceMeta's tint/icon.
+  const source = resolveSource(incident);
+  const { label: sourceLabel, tint: sourceTint, icon: SourceIcon } = sourceMeta[source];
+
+  // Duplicate-field dedup for the meta strip below: Service, Component ("affectedComponent") and
+  // Application frequently carry the identical string (a known real-world case, not just the
+  // component-is-the-endpoint case the old comment called out), so showing all of them plus
+  // Endpoint would repeat the same value up to four times. Endpoint always renders regardless
+  // (it has its own fallback-to-Component display below and is the most precise field), so its
+  // displayed value is seeded first here; whichever of Service, Component or Application (in that
+  // priority order) first introduces a value not already shown gets to render, and anything after
+  // it that repeats a value already shown is dropped. This subsumes the previous
+  // Component-vs-Endpoint-only check as the special case where Service/Application don't collide.
+  const endpointDisplayValue = incident.affectedEndpoint || incident.affectedComponent || null;
+  const shownMetaValues = endpointDisplayValue ? [endpointDisplayValue] : [];
+  const isDuplicateMetaValue = (value) => {
+    if (!value) return false;
+    if (shownMetaValues.includes(value)) return true;
+    shownMetaValues.push(value);
+    return false;
+  };
+  const showService = !isDuplicateMetaValue(incident.service);
+  const showComponent = Boolean(incident.affectedComponent) && !isDuplicateMetaValue(incident.affectedComponent);
+  const showApplication = !isDuplicateMetaValue(incident.application);
+
   return (
     <div className="incident-detail">
       <header className="incident-detail-header">
@@ -54,6 +83,19 @@ function DetailBody({ incident, actions }) {
           <div className="incident-detail-badges">
             <SeverityBadge severity={incident.severity} />
             <StatusBadge status={incident.status} />
+            <span
+              className="status-badge"
+              style={{
+                gap: 4,
+                color: sourceTint,
+                borderColor: sourceTint,
+                background: `color-mix(in srgb, ${sourceTint} 14%, transparent)`
+              }}
+              title={sourceLabel}
+            >
+              <SourceIcon className="w-4 h-4" />
+              {sourceLabel}
+            </span>
             {incident.signalCount > 0 && (
               <span className="signal-count">{incident.signalCount} correlated signals</span>
             )}
@@ -61,26 +103,35 @@ function DetailBody({ incident, actions }) {
         </div>
 
         <dl className="incident-detail-meta">
-          <div>
-            <dt>Service</dt>
-            <dd>{incident.service}</dd>
-          </div>
-          <div>
-            <dt>Application</dt>
-            <dd>{incident.application}</dd>
-          </div>
+          {showService && (
+            <div>
+              <dt>Service</dt>
+              <dd>{incident.service}</dd>
+            </div>
+          )}
+          {showApplication && (
+            <div>
+              <dt>Application</dt>
+              <dd>{incident.application}</dd>
+            </div>
+          )}
           <div>
             <dt>Environment</dt>
             <dd>{incident.environment}</dd>
           </div>
-          <div>
-            <dt>Component</dt>
-            <dd>{incident.affectedComponent || '--'}</dd>
-          </div>
+          {/* When the component IS the endpoint (true for most of this demo's simpler incidents),
+              or matches Service/Application, showing it again would just print the same string
+              under another label - see the dedup computed above the return statement. */}
+          {showComponent && (
+            <div>
+              <dt>Component</dt>
+              <dd>{incident.affectedComponent}</dd>
+            </div>
+          )}
           <div>
             <dt>Endpoint</dt>
             <dd>
-              <code className="path-code" title={incident.affectedEndpoint || undefined}>{incident.affectedEndpoint || '--'}</code>
+              <code className="path-code" title={incident.affectedEndpoint || undefined}>{incident.affectedEndpoint || incident.affectedComponent || '--'}</code>
             </dd>
           </div>
           <div>
@@ -238,7 +289,7 @@ function SymptomsPanel({ incident }) {
             <tbody>
               {signals.map((signal, index) => (
                 <tr key={index}>
-                  <td>{signal.metric}</td>
+                  <td title={signal.metric}>{getSignalLabel(signal.metric)}</td>
                   <td>
                     <strong>
                       {signal.observed}
@@ -253,7 +304,7 @@ function SymptomsPanel({ incident }) {
                     <SeverityBadge severity={signal.severity} size="sm" />
                   </td>
                   <td>
-                    <code className="path-code" title={signal.rule}>{signal.rule}</code>
+                    <code className="path-code" title={signal.rule}>{getRuleLabel(signal.rule)}</code>
                     {AGENT_SOURCED_METRICS.has(signal.metric) && (
                       <span className="agent-source-tag" title="Reported by the KAIRON Agent (log/process monitoring, not the SDK)">
                         Agent

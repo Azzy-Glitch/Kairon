@@ -76,7 +76,7 @@ describe('IncidentFeed', () => {
 
     expect(screen.getByText('INC-0001')).toBeInTheDocument();
     expect(screen.getByText('High')).toBeInTheDocument();
-    expect(screen.getByText('Awaiting Approval')).toBeInTheDocument();
+    expect(screen.getByText('Awaiting approval')).toBeInTheDocument();
   });
 
   it('flags incidents needing approval', () => {
@@ -265,7 +265,7 @@ describe('ApprovalPanel', () => {
   it('shows the action, reason, outcome and risk', () => {
     render(<ApprovalPanel action={action} onApprove={vi.fn()} onReject={vi.fn()} />);
 
-    expect(screen.getByText('DisableDemoRetryLoop')).toBeInTheDocument();
+    expect(screen.getByText('Turn off the retry loop')).toBeInTheDocument();
     expect(screen.getByText(action.reason)).toBeInTheDocument();
     expect(screen.getByText(action.expectedOutcome)).toBeInTheDocument();
     expect(screen.getByText('Low risk')).toBeInTheDocument();
@@ -274,7 +274,7 @@ describe('ApprovalPanel', () => {
   it('refuses to enable approval without an operator identity', () => {
     render(<ApprovalPanel action={action} onApprove={vi.fn()} onReject={vi.fn()} />);
 
-    expect(screen.getByText('Approve and execute')).toBeDisabled();
+    expect(screen.getByText('Approve and run')).toBeDisabled();
     expect(screen.getByText('Reject')).toBeDisabled();
   });
 
@@ -284,10 +284,10 @@ describe('ApprovalPanel', () => {
     render(<ApprovalPanel action={action} onApprove={onApprove} onReject={vi.fn()} />);
 
     await userEvent.type(screen.getByLabelText(/Operator identity/i), 'alice');
-    await userEvent.click(screen.getByText('Approve and execute'));
+    await userEvent.click(screen.getByText('Approve and run'));
 
     expect(onApprove).not.toHaveBeenCalled();
-    expect(screen.getByText(/Execute DisableDemoRetryLoop/i)).toBeInTheDocument();
+    expect(screen.getByText(/Execute "Turn off the retry loop"/i)).toBeInTheDocument();
   });
 
   it('approves with the operator identity after confirmation', async () => {
@@ -295,7 +295,7 @@ describe('ApprovalPanel', () => {
     render(<ApprovalPanel action={action} onApprove={onApprove} onReject={vi.fn()} />);
 
     await userEvent.type(screen.getByLabelText(/Operator identity/i), 'alice');
-    await userEvent.click(screen.getByText('Approve and execute'));
+    await userEvent.click(screen.getByText('Approve and run'));
     await userEvent.click(screen.getByText('Yes, execute it'));
 
     await waitFor(() => expect(onApprove).toHaveBeenCalledWith('a1', 'alice', null));
@@ -318,11 +318,11 @@ describe('ApprovalPanel', () => {
     render(<ApprovalPanel action={action} onApprove={onApprove} onReject={vi.fn()} />);
 
     await userEvent.type(screen.getByLabelText(/Operator identity/i), 'alice');
-    await userEvent.click(screen.getByText('Approve and execute'));
+    await userEvent.click(screen.getByText('Approve and run'));
     await userEvent.click(screen.getByText('Cancel'));
 
     expect(onApprove).not.toHaveBeenCalled();
-    expect(screen.getByText('Approve and execute')).toBeInTheDocument();
+    expect(screen.getByText('Approve and run')).toBeInTheDocument();
   });
 
   it('surfaces a failed approval to the operator', () => {

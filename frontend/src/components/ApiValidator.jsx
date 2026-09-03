@@ -82,9 +82,9 @@ export default function ApiValidator() {
   };
 
   const getScoreColor = (score) => {
-    if (score >= 85) return '#22c55e';
-    if (score >= 60) return '#eab308';
-    return '#ef4444';
+    if (score >= 85) return 'var(--healthy)';
+    if (score >= 60) return 'var(--medium)';
+    return 'var(--critical)';
   };
 
   return (
@@ -92,7 +92,7 @@ export default function ApiValidator() {
       <div className="section-header">
         <div className="section-title-group">
           <div className="section-icon-badge api-badge">
-            <IconLink className="w-6 h-6 text-cyan-400" />
+            <IconLink className="w-6 h-6 tone-low" />
           </div>
           <div>
             <h3>API Contract & Schema Drift Validator</h3>
@@ -123,7 +123,7 @@ export default function ApiValidator() {
         <div className="editor-container">
           <div className="editor-header">
             <span className="editor-title">
-              <IconTerminal className="w-4 h-4 mr-1 inline text-cyan-400" />
+              <IconTerminal className="w-4 h-4 mr-1 inline tone-low" />
               Target / Expected Schema
             </span>
             <button className="editor-action-btn" onClick={() => formatJson(setExp, exp)}>Format</button>
@@ -140,7 +140,7 @@ export default function ApiValidator() {
         <div className="editor-container">
           <div className="editor-header">
             <span className="editor-title">
-              <IconTerminal className="w-4 h-4 mr-1 inline text-indigo-400" />
+              <IconTerminal className="w-4 h-4 mr-1 inline tone-accent" />
               Actual Runtime Payload
             </span>
             <button className="editor-action-btn" onClick={() => formatJson(setAct, act)}>Format</button>
@@ -182,8 +182,7 @@ export default function ApiValidator() {
               <div
                 className="radial-score-ring"
                 style={{
-                  borderColor: getScoreColor(res.reliability_score),
-                  boxShadow: `0 0 20px ${getScoreColor(res.reliability_score)}33`
+                  borderColor: getScoreColor(res.reliability_score)
                 }}
               >
                 <span className="radial-score-number" style={{ color: getScoreColor(res.reliability_score) }}>
@@ -212,7 +211,7 @@ export default function ApiValidator() {
           {res.mismatches && res.mismatches.length > 0 ? (
             <div className="mismatches-container">
               <h4 className="subheading">
-                <IconAlertTriangle className="w-4 h-4 text-amber-400 mr-2 inline" />
+                <IconAlertTriangle className="w-4 h-4 tone-medium mr-2 inline" />
                 Detected Drift Inconsistencies
               </h4>
               <div className="table-responsive">
@@ -241,7 +240,7 @@ export default function ApiValidator() {
               {res.suggestions && res.suggestions.length > 0 && (
                 <div className="suggestions-box">
                   <h4>
-                    <IconSparkles className="w-4 h-4 text-cyan-400 mr-2 inline" />
+                    <IconSparkles className="w-4 h-4 tone-low mr-2 inline" />
                     AI Remediation Recommendations
                   </h4>
                   <div className="suggestions-grid">
@@ -259,7 +258,7 @@ export default function ApiValidator() {
             </div>
           ) : (
             <div className="all-clear-box">
-              <IconCheck className="w-12 h-12 text-emerald-400 mb-2" />
+              <IconCheck className="w-12 h-12 tone-healthy mb-2" />
               <h3>Contract Fully Synchronized</h3>
               <p>No breaking schema changes detected. Payload is safe for production deployments.</p>
             </div>

@@ -1,7 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { sdkApi } from '../../api';
 import { useToast } from '../Toast';
+import Tabs from '../ui/Tabs';
+import Badge from '../ui/Badge';
 import { IconLink, IconCopy, IconCheck, IconTrash } from '../Icons';
+import { useIncidents } from '../../hooks/useIncidents';
+import { countBySource } from '../../lib/source';
+
+const VIEWS = [
+  { id: 'start', label: 'Get Started' },
+  { id: 'pairing', label: 'Pairing' }
+];
 
 /**
  * SDK integration and pairing (docs/DESKTOP_SHELL.md, frontend PRD-style section 21-22 from the
@@ -21,24 +30,7 @@ export default function SdkPage() {
 
   return (
     <div className="animate-fade-in">
-      <div className="dev-tools-subnav">
-        <button
-          type="button"
-          className={`tab-btn dev-tools-tab ${view === 'start' ? 'active' : ''}`}
-          onClick={() => setView('start')}
-        >
-          <IconLink className="w-4 h-4" />
-          <span className="tab-label">Get Started</span>
-        </button>
-        <button
-          type="button"
-          className={`tab-btn dev-tools-tab ${view === 'pairing' ? 'active' : ''}`}
-          onClick={() => setView('pairing')}
-        >
-          <IconLink className="w-4 h-4" />
-          <span className="tab-label">Pairing</span>
-        </button>
-      </div>
+      <Tabs items={VIEWS} activeId={view} onChange={setView} className="dev-tools-subnav" />
 
       {view === 'start' && <GetStarted />}
       {view === 'pairing' && <Pairing />}
@@ -99,18 +91,33 @@ const PYTHON_FASTAPI = `from kairon.middleware import KaironMiddleware
 
 app.add_middleware(KaironMiddleware)`;
 
+function ConnectionPill({ count }) {
+  return (
+    <Badge tone={count > 0 ? 'healthy' : 'neutral'}>
+      {count > 0 ? `Connected · ${count} service${count === 1 ? '' : 's'}` : 'Not connected'}
+    </Badge>
+  );
+}
+
 function GetStarted() {
+  // Same client-side source-resolution heuristic used everywhere else in this redesign (brief
+  // section 6) - no new backend field, just resolveSource/countBySource over the incidents the
+  // dashboard is already fetching.
+  const { incidents } = useIncidents({ status: '' });
+  const counts = countBySource(incidents || []);
+
   return (
     <div className="sdk-get-started">
       <section className="section-card">
         <div className="section-header">
           <div className="section-title-group">
-            <div className="section-icon-badge"><IconLink className="w-6 h-6 text-slate-500" /></div>
+            <div className="section-icon-badge"><IconLink className="w-6 h-6 tone-neutral" /></div>
             <div>
               <h3>.NET SDK</h3>
               <p className="section-desc">Two lines of integration in an ASP.NET Core application.</p>
             </div>
           </div>
+          <ConnectionPill count={counts.dotnet} />
         </div>
         <p className="sdk-step-label">Install</p>
         <CodeBlock code={DOTNET_INSTALL} copyKey="dotnet-install" />
@@ -125,12 +132,13 @@ function GetStarted() {
       <section className="section-card">
         <div className="section-header">
           <div className="section-title-group">
-            <div className="section-icon-badge"><IconLink className="w-6 h-6 text-slate-500" /></div>
+            <div className="section-icon-badge"><IconLink className="w-6 h-6 tone-neutral" /></div>
             <div>
               <h3>Python SDK</h3>
               <p className="section-desc">Stdlib-only core client; FastAPI middleware is a separate import.</p>
             </div>
           </div>
+          <ConnectionPill count={counts.python} />
         </div>
         <p className="sdk-step-label">Install</p>
         <CodeBlock code={PYTHON_INSTALL} copyKey="python-install" />
@@ -222,7 +230,7 @@ function Pairing() {
       <section className="section-card">
         <div className="section-header">
           <div className="section-title-group">
-            <div className="section-icon-badge"><IconLink className="w-6 h-6 text-slate-500" /></div>
+            <div className="section-icon-badge"><IconLink className="w-6 h-6 tone-neutral" /></div>
             <div>
               <h3>Project</h3>
               <p className="section-desc">Pairing codes and credentials belong to a project - the ProjectId your SDK reports telemetry under.</p>
@@ -244,7 +252,11 @@ function Pairing() {
                 onClick={() => setSelectedId(p.id)}
               >
                 {p.name}
-                <span className="sdk-project-chip-count">{p.activeCredentials} active key{p.activeCredentials === 1 ? '' : 's'}</span>
+                <span className={`status-badge sdk-project-chip-status ${p.activeCredentials > 0 ? 'status-good' : 'status-neutral'}`}>
+                  {p.activeCredentials > 0
+                    ? `Connected · ${p.activeCredentials} active key${p.activeCredentials === 1 ? '' : 's'}`
+                    : 'Not connected yet'}
+                </span>
               </button>
             ))}
           </div>
@@ -268,7 +280,7 @@ function Pairing() {
         <section className="section-card">
           <div className="section-header">
             <div className="section-title-group">
-              <div className="section-icon-badge"><IconLink className="w-6 h-6 text-slate-500" /></div>
+              <div className="section-icon-badge"><IconLink className="w-6 h-6 tone-neutral" /></div>
               <div>
                 <h3>Generate a pairing code</h3>
                 <p className="section-desc">Single-use, expires in 10 minutes. The SDK redeems it once for a persistent API key.</p>
