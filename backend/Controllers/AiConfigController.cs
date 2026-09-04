@@ -59,8 +59,15 @@ public sealed class AiConfigController : ControllerBase
         var r = ToResponse(summary);
         try
         {
+            // Push the value that was actually stored, not the raw request. Sending summary.Endpoint
+            // - always a string, "" when the operator cleared it - is what keeps the running AI
+            // service and this row from diverging; forwarding a null here would read as "leave the
+            // endpoint alone" and quietly strand the old URL in the live process until a restart.
             await _ai.ConfigureProviderAsync(
-                new AiConfigureRequestDto { Provider = provider, ApiKey = apiKey, Model = request.Model, Endpoint = request.Endpoint },
+                new AiConfigureRequestDto
+                {
+                    Provider = provider, ApiKey = apiKey, Model = request.Model, Endpoint = summary.Endpoint
+                },
                 cancellationToken);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
@@ -87,10 +94,16 @@ public sealed class AiConfigController : ControllerBase
             return BadRequest(new { error = $"Unsupported provider. Choose one of: {string.Join(", ", SupportedProviders)}." });
 
         var apiKey = await ResolveApiKeyForTestAsync(provider, request.ApiKey, cancellationToken);
-        var endpoint = await ResolveEndpointForTestAsync(provider, request.Endpoint, cancellationToken);
 
+        // The endpoint is passed straight through, unlike the key. It is not a secret, so the UI
+        // pre-fills it from the stored configuration and the field is authoritative: testing must
+        // exercise exactly what the operator is looking at, including a deliberately cleared box
+        // (which tests the provider's default endpoint rather than the previously saved one).
         var result = await _ai.TestProviderConnectionAsync(
-            new AiConfigureRequestDto { Provider = provider, ApiKey = apiKey, Model = request.Model, Endpoint = endpoint },
+            new AiConfigureRequestDto
+            {
+                Provider = provider, ApiKey = apiKey, Model = request.Model, Endpoint = request.Endpoint
+            },
             cancellationToken);
 
         return Ok(new
@@ -130,19 +143,6 @@ public sealed class AiConfigController : ControllerBase
         var selection = await _config.GetSelectionAsync(cancellationToken);
         if (selection is { } current && string.Equals(current.Provider, provider, StringComparison.OrdinalIgnoreCase))
             return await _config.GetDecryptedApiKeyAsync(cancellationToken);
-
-        return null;
-    }
-
-    /// <summary>Mirrors <see cref="ResolveApiKeyForTestAsync"/>: a blank endpoint in the request
-    /// means "use whatever is already saved for this provider", not "clear the override".</summary>
-    private async Task<string?> ResolveEndpointForTestAsync(string provider, string? suppliedEndpoint, CancellationToken cancellationToken)
-    {
-        if (!string.IsNullOrWhiteSpace(suppliedEndpoint)) return suppliedEndpoint;
-
-        var selection = await _config.GetSelectionAsync(cancellationToken);
-        if (selection is { } current && string.Equals(current.Provider, provider, StringComparison.OrdinalIgnoreCase))
-            return current.Endpoint;
 
         return null;
     }

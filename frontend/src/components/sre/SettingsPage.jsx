@@ -115,6 +115,14 @@ const AUTO_MODEL = '__auto__';
 const CUSTOM_MODEL = '__custom__';
 
 /**
+ * A test that fell back to the built-in mock is NOT a working provider connection. The AI service
+ * reports this honestly as effective_provider="mock" (it answers successfully, just not from the
+ * provider), so surfacing it as a plain green success is what would mislead - a user would believe
+ * their real key works when no provider was ever reached.
+ */
+const isMockResult = (result) => (result?.effectiveProvider || '').toLowerCase() === 'mock';
+
+/**
  * "Install KAIRON -> open KAIRON -> choose a provider -> paste a key -> optionally choose a
  * model -> Test Connection -> done" (frontend PRD section 15) - no .env, no appsettings.json, no
  * manual restart. Talks only to the existing backend API (api/v1/ai-config); the browser never
@@ -207,12 +215,16 @@ function AiConfigurationSection() {
         provider,
         apiKey: apiKey.trim() || undefined,
         model: resolvedModel(),
-        endpoint: endpoint.trim() || undefined
+        endpoint: endpoint.trim()
       });
       setTestResult(result);
       toast.addToast(
-        result.success ? 'Connection successful' : `Connection failed: ${result.error || 'unknown error'}`,
-        result.success ? 'success' : 'error'
+        !result.success
+          ? `Connection failed: ${result.error || 'unknown error'}`
+          : isMockResult(result)
+            ? 'Not connected - Kairon used its built-in mock, not your provider. Check the API key.'
+            : 'Connection successful',
+        !result.success ? 'error' : isMockResult(result) ? 'info' : 'success'
       );
     } catch (err) {
       setTestResult({ success: false, error: err?.message || 'Could not reach the backend.' });
@@ -229,7 +241,7 @@ function AiConfigurationSection() {
         provider,
         apiKey: apiKey.trim() || undefined,
         model: resolvedModel(),
-        endpoint: endpoint.trim() || undefined
+        endpoint: endpoint.trim()
       });
       setSaved(result);
       setApiKey('');
@@ -366,13 +378,18 @@ function AiConfigurationSection() {
 
       {testResult && (
         <div className="settings-ai-config-result">
-          <Badge tone={testResult.success ? 'healthy' : 'critical'}>
-            {testResult.success ? 'Connection successful' : 'Connection failed'}
+          <Badge tone={testResult.success ? (isMockResult(testResult) ? 'medium' : 'healthy') : 'critical'}>
+            {!testResult.success
+              ? 'Connection failed'
+              : isMockResult(testResult)
+                ? 'Not connected - using mock responses'
+                : 'Connection successful'}
           </Badge>
           {testResult.success ? (
             <span className="panel-pending-text">
-              Provider: {testResult.effectiveProvider || testResult.provider}
-              {testResult.model ? ` · Model: ${testResult.model}` : ''}
+              {isMockResult(testResult)
+                ? 'No usable API key for this provider, so Kairon answered from its built-in mock instead of reaching the provider. Add a valid key and test again.'
+                : `Provider: ${testResult.effectiveProvider || testResult.provider}${testResult.model ? ` · Model: ${testResult.model}` : ''}`}
             </span>
           ) : (
             <span className="panel-pending-text">{testResult.error || 'Unknown error.'}</span>

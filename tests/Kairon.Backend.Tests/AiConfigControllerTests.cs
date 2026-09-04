@@ -152,18 +152,42 @@ public sealed class AiConfigControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task TestConnectionWithoutRetypingAnEndpointUsesTheStoredOne()
+    public async Task TestConnectionSendsTheRequestedEndpointVerbatimSoAClearedBoxTestsTheDefault()
     {
+        // The endpoint field is authoritative for a test, unlike the API key: it is not a secret,
+        // so the UI pre-fills it and the operator sees exactly what will be exercised. Falling back
+        // to the stored endpoint here would silently test a URL the operator had just cleared.
         const string dedicatedEndpoint =
             "https://ws-8s7id56fv8yt5bmm.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions";
         await _controller.Save(
             new SaveAiConfigRequest { Provider = "qwen", ApiKey = "sk-ws-x", Endpoint = dedicatedEndpoint },
             CancellationToken.None);
 
-        var result = await _controller.Test(new SaveAiConfigRequest { Provider = "qwen" }, CancellationToken.None);
+        var result = await _controller.Test(
+            new SaveAiConfigRequest { Provider = "qwen", Endpoint = "" }, CancellationToken.None);
 
         Assert.IsType<OkObjectResult>(result);
-        Assert.Equal(dedicatedEndpoint, _ai.LastTestRequest?.Endpoint);
+        Assert.Equal(string.Empty, _ai.LastTestRequest?.Endpoint);
+    }
+
+    [Fact]
+    public async Task ClearingTheEndpointPushesTheClearedValueLiveNotTheStaleOne()
+    {
+        // The defect this covers: the row recorded "no override" while the running AI service kept
+        // calling the old URL until the next restart, because a null/omitted endpoint reads as
+        // "leave it alone". Save must forward what was actually stored.
+        const string dedicatedEndpoint =
+            "https://ws-8s7id56fv8yt5bmm.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions";
+        await _controller.Save(
+            new SaveAiConfigRequest { Provider = "qwen", ApiKey = "sk-ws-x", Endpoint = dedicatedEndpoint },
+            CancellationToken.None);
+
+        await _controller.Save(
+            new SaveAiConfigRequest { Provider = "qwen", Endpoint = "" }, CancellationToken.None);
+
+        Assert.Equal(string.Empty, _ai.LastConfigureRequest?.Endpoint);
+        var stored = await _configService.GetAsync();
+        Assert.Equal(string.Empty, stored.Endpoint);
     }
 
     [Fact]

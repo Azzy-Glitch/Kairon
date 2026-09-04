@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
-from kairon.config import AiConfig
+from kairon.config import DEFAULT_ENDPOINTS, AiConfig
 
 
 HEADERS = {"X-Kairon-AI-Key": "kairon-ai-test-key-not-for-production"}
@@ -195,6 +195,29 @@ class TestConfigureApplies:
         response = client.post("/configure", json={"provider": "groq", "api_key": "gsk_x"})
 
         assert response.json()["endpoint"] == "https://api.groq.com/openai/v1/chat/completions"
+
+    def test_a_blank_endpoint_clears_an_override_immediately(self, client):
+        # The defect this covers: clearing the endpoint updated the stored row but left this
+        # process still calling the old URL until it restarted, because blank was treated the same
+        # as "not supplied". An explicit "" is the caller saying "remove the override", now.
+        dedicated = "https://ws-8s7id56fv8yt5bmm.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
+        client.post("/configure", json={"provider": "qwen", "api_key": "sk-ws-x", "endpoint": dedicated})
+        assert main.CONFIG.endpoint == dedicated
+
+        response = client.post("/configure", json={"provider": "qwen", "endpoint": ""})
+
+        assert main.CONFIG.endpoint == ""
+        assert response.json()["endpoint"] == DEFAULT_ENDPOINTS["qwen"]
+
+    def test_an_omitted_endpoint_still_keeps_an_existing_override(self, client):
+        # The other half of the same distinction: omitting the field entirely (e.g. a caller
+        # changing only the model) must not drop a working override.
+        dedicated = "https://ws-8s7id56fv8yt5bmm.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
+        client.post("/configure", json={"provider": "qwen", "api_key": "sk-ws-x", "endpoint": dedicated})
+
+        client.post("/configure", json={"provider": "qwen", "model": "qwen-plus"})
+
+        assert main.CONFIG.endpoint == dedicated
 
 
 class TestConfigureTestNeverMutatesLiveConfig:

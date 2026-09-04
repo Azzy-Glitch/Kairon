@@ -114,13 +114,18 @@ def _merge_configured(request: ConfigureRequest) -> AiConfig:
         )
 
     model = (request.model or "").strip() or DEFAULT_MODELS.get(provider, "")
-    # An explicit endpoint always wins - the caller is deliberately pointing this provider at a
-    # dedicated/regional URL (e.g. an Alibaba Model Studio workspace domain). Otherwise, a custom
-    # AI__Endpoint override only makes sense for the provider it was set for - switching provider
-    # without clearing it would point the new provider's calls at the old one's URL. Staying on the
-    # same provider (e.g. just changing model or key) leaves any override intact.
-    explicit_endpoint = (request.endpoint or "").strip()
-    endpoint = explicit_endpoint or ("" if provider != CONFIG.provider else CONFIG.endpoint)
+    # None and "" mean different things here, and conflating them is what let a cleared endpoint
+    # keep applying at runtime: the row said "no override" while this process carried on calling the
+    # old URL until the next restart.
+    if request.endpoint is None:
+        # Omitted entirely - keep whatever this provider already had, so a caller changing only the
+        # model never silently drops a working override. A custom endpoint only makes sense for the
+        # provider it was set for, so switching provider still clears it.
+        endpoint = "" if provider != CONFIG.provider else CONFIG.endpoint
+    else:
+        # Explicitly supplied - the caller is authoritative, including when it is blank, which
+        # clears the override so the provider's own default endpoint applies again.
+        endpoint = request.endpoint.strip()
 
     updated = dataclasses.replace(CONFIG, provider=provider, model=model, endpoint=endpoint)
     new_key = (request.api_key or "").strip()

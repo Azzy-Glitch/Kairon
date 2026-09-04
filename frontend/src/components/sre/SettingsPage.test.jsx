@@ -189,7 +189,9 @@ describe('SettingsPage > AI configuration', () => {
     expect(await screen.findByText(new RegExp(dedicatedEndpoint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))).toBeInTheDocument();
   });
 
-  it('leaving the endpoint field blank sends undefined, never an empty string', async () => {
+  it('a blank endpoint field is sent explicitly, so a cleared override is actually cleared', async () => {
+    // Sending undefined would read as "leave the endpoint alone" and strand a previously saved
+    // URL - both in what gets tested and, on save, in the running AI service.
     const user = userEvent.setup();
     aiConfigApi.testConnection.mockResolvedValue({ success: true, provider: 'groq', effectiveProvider: 'groq', model: 'm' });
 
@@ -198,8 +200,22 @@ describe('SettingsPage > AI configuration', () => {
     await user.click(screen.getByRole('button', { name: /test connection/i }));
 
     await waitFor(() => expect(aiConfigApi.testConnection).toHaveBeenCalledWith(
-      expect.objectContaining({ endpoint: undefined })
+      expect.objectContaining({ endpoint: '' })
     ));
+  });
+
+  it('a mock fallback is never reported as a successful provider connection', async () => {
+    const user = userEvent.setup();
+    aiConfigApi.testConnection.mockResolvedValue({
+      success: true, provider: 'qwen', effectiveProvider: 'mock', model: 'qwen-plus'
+    });
+
+    render(<SettingsPage />);
+    await waitFor(() => expect(aiConfigApi.getConfig).toHaveBeenCalled());
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    expect(await screen.findByText(/not connected - using mock responses/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^connection successful$/i)).not.toBeInTheDocument();
   });
 
   it('a previously saved endpoint pre-fills the field on load', async () => {
