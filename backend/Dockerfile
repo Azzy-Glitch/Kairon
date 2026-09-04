@@ -3,6 +3,7 @@ WORKDIR /source/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
+COPY assets/ /source/assets/
 RUN npm run build
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
