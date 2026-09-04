@@ -28,9 +28,7 @@ vi.mock('./api/index', () => ({
   },
   telemetryApi: {
     getTelemetryIncidents: vi.fn().mockResolvedValue([]),
-    getMetrics: vi.fn().mockResolvedValue([]),
-    postTelemetryIncident: vi.fn().mockResolvedValue(null),
-    postMetric: vi.fn().mockResolvedValue(null)
+    getMetrics: vi.fn().mockResolvedValue([])
   },
   devopsApi: {
     analyzeError: vi.fn().mockResolvedValue({}),

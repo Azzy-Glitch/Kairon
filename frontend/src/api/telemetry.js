@@ -1,9 +1,9 @@
 import client, { request } from './client';
 
 /**
- * Raw telemetry API. These are the pre-existing endpoints the Telemetry Monitor screen has always
- * used; they are wrapped here so that screen stops calling axios directly, without any change to
- * the routes it depends on.
+ * Read-only telemetry API for the operator UI. Telemetry ingestion belongs to instrumented
+ * applications and SDKs; exposing write helpers here previously allowed synthetic samples to be
+ * mixed into a real project's live readings.
  */
 
 export function getTelemetryIncidents(projectId) {
@@ -15,12 +15,4 @@ export function getMetrics(projectId, service) {
   if (projectId) params.projectId = projectId;
   if (service) params.service = service;
   return request(client.get('/telemetry/metrics', { params }));
-}
-
-export function postTelemetryIncident(payload) {
-  return request(client.post('/telemetry/incidents', payload));
-}
-
-export function postMetric(payload) {
-  return request(client.post('/telemetry/metrics', payload));
 }

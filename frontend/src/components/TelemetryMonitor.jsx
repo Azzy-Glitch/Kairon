@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { telemetryApi, sdkApi } from '../api/index';
-import { IconServer, IconRefresh, IconCopy, IconCheck, IconZap, IconLink } from './Icons';
+import { IconServer, IconRefresh, IconCopy, IconCheck, IconLink } from './Icons';
 import { useToast } from './Toast';
 import Badge from './ui/Badge';
 import Button from './ui/Button';
@@ -71,26 +71,6 @@ function TelemetrySection({ label, projects }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  const seed = async () => {
-    if (!projectId) return;
-    try {
-      await telemetryApi.postTelemetryIncident({
-        projectId,
-        endpoint: '/payment',
-        method: 'POST',
-        statusCode: 500,
-        duration: 3200,
-        error: 'Timeout',
-        timestamp: new Date().toISOString()
-      });
-      await telemetryApi.postMetric({ projectId, cpuPercent: 92.5, memoryPercent: 78.0, responseTimeMs: 1200 });
-      addToast('Test telemetry seeded', 'success');
-      load();
-    } catch (e) {
-      addToast('Seed failed: ' + e.message, 'error');
-    }
-  };
-
   const copyProjectId = () => {
     if (!projectId) return;
     navigator.clipboard.writeText(projectId);
@@ -149,10 +129,6 @@ function TelemetrySection({ label, projects }) {
           </>
         )}
 
-        <Button variant="secondary" size="compact" onClick={seed} disabled={!projectId}>
-          <IconZap className="w-4 h-4 mr-1" />
-          Seed test data
-        </Button>
         <Button
           variant="ghost"
           size="compact"
