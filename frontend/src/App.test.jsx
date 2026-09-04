@@ -96,7 +96,9 @@ const NAV_TABS = [
 describe('App navigation', () => {
   it('shows Kairon branding, not the old AIDIP name', () => {
     render(<App />);
+    expect(screen.getByRole('img', { name: /kairon logo/i })).toBeInTheDocument();
     expect(screen.getByText('Kairon')).toBeInTheDocument();
+    expect(screen.getByText('AI-powered incident response')).toBeInTheDocument();
     expect(screen.queryByText(/AIDIP/i)).not.toBeInTheDocument();
   });
 

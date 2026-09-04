@@ -1,4 +1,5 @@
 import React from 'react';
+import kaironLogo from '../../assets/kairon-logo.png';
 import TelemetryMonitor from './components/TelemetryMonitor';
 import SreDashboard from './components/sre/SreDashboard';
 import IncidentsPage from './components/sre/IncidentsPage';
@@ -125,7 +126,7 @@ function AppShell() {
       <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
         <button type="button" className="sidebar-brand" onClick={() => setTab('overview')}>
           <span className="sidebar-brand-icon">
-            <IconShield className="w-5 h-5" />
+            <img src={kaironLogo} alt="Kairon logo" />
           </span>
           {!collapsed && (
             <span className="sidebar-brand-text">
@@ -172,7 +173,10 @@ function AppShell() {
               <div className="sidebar-status-row">
                 <span className="sidebar-status-row-label">AI service</span>
                 <span className={`sidebar-status-row-value ${health.aiService ? 'good' : 'bad'}`}>
-                  {health.aiService ? `Operational${health.aiMode ? ` (${health.aiMode})` : ''}` : 'Offline'}
+                  {health.aiService ? 'Operational' : 'Offline'}
+                  {health.aiService && health.aiMode && (
+                    <span className="sidebar-status-mode">{health.aiMode} mode</span>
+                  )}
                 </span>
               </div>
 
