@@ -101,6 +101,13 @@ public sealed class ManagedProcess : IDisposable
         }
     }
 
+    // Deliberately short. Both processes this class actually starts (the backend and the AI
+    // service) are console-subsystem hosts launched with CreateNoWindow, so they have no main
+    // window and CloseMainWindow returns false immediately without signalling anything - nothing is
+    // ever waiting to shut down gracefully during this window, and the Kill below is what genuinely
+    // ends them either way. A long wait here bought nothing and was pure dead time on every close.
+    private const int GraceMilliseconds = 300;
+
     /// <summary>Graceful first (CloseMainWindow, for a console/service host this is a no-op but
     /// harmless), then a bounded kill of the whole process tree. Idempotent - safe to call more
     /// than once, including from a shutdown path racing a crash.</summary>
@@ -114,7 +121,7 @@ public sealed class ManagedProcess : IDisposable
             if (!_process.HasExited)
             {
                 _process.CloseMainWindow();
-                if (!_process.WaitForExit(2000))
+                if (!_process.WaitForExit(GraceMilliseconds))
                     _process.Kill(entireProcessTree: true);
             }
         }

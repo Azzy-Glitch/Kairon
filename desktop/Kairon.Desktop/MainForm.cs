@@ -54,6 +54,12 @@ public sealed class MainForm : Form
     {
         var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
+        // Creating the WebView2 environment (spinning up the Edge runtime against our user-data
+        // folder) needs neither child process to be up - only the final Navigate does. Starting it
+        // here overlaps it with backend/AI startup instead of paying for it afterwards, and changes
+        // no startup or failure behaviour: the awaits below still gate in exactly the same order.
+        var webViewEnvironment = CreateWebViewEnvironmentAsync();
+
         var backendFailure = await StartBackendAsync(cts.Token);
         if (backendFailure is not null) { ShowStartupFailure(backendFailure); return; }
 
@@ -63,8 +69,12 @@ public sealed class MainForm : Form
         if (aiFailure is not null) { ShowStartupFailure(aiFailure); return; }
 
         _statusLabel.Text = "Loading Kairon...";
-        await ShowWebViewAsync();
+        await ShowWebViewAsync(webViewEnvironment);
     }
+
+    private static Task<Microsoft.Web.WebView2.Core.CoreWebView2Environment> CreateWebViewEnvironmentAsync() =>
+        Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(
+            userDataFolder: AppPaths.WebView2DataDirectory());
 
     private Task<StartupFailure?> StartBackendAsync(CancellationToken cancellationToken)
     {
@@ -153,14 +163,14 @@ public sealed class MainForm : Form
             TimeSpan.FromSeconds(30), cancellationToken);
     }
 
-    private async Task ShowWebViewAsync()
+    private async Task ShowWebViewAsync(
+        Task<Microsoft.Web.WebView2.Core.CoreWebView2Environment> environmentTask)
     {
         _webView = new WebView2 { Dock = DockStyle.Fill };
         Controls.Add(_webView);
 
-        var userDataFolder = AppPaths.WebView2DataDirectory();
-        var environment = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(
-            userDataFolder: userDataFolder);
+        // Usually already finished by now - it has been running since StartupAsync began.
+        var environment = await environmentTask;
         await _webView.EnsureCoreWebView2Async(environment);
 
         // Bound only disposable browser cache. Cookies/local storage/settings are preserved, and
@@ -191,6 +201,14 @@ public sealed class MainForm : Form
         _webView.CoreWebView2.Navigate(BackendUrl);
     }
 
+    /// <summary>Stops both children concurrently rather than one after the other. They are entirely
+    /// independent processes with no shared state and no ordering requirement between them, so
+    /// serializing their teardown only meant paying each one's grace window twice on every close.
+    /// Still fully synchronous from the caller's point of view: FormClosing must not return until
+    /// both are actually down.</summary>
+    private void StopChildProcesses() =>
+        Task.WaitAll(Task.Run(_backend.Stop), Task.Run(_ai.Stop));
+
     private static string CreateEphemeralKey() =>
         Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
@@ -211,8 +229,7 @@ public sealed class MainForm : Form
             $"Kairon could not start.\n\nStage:\n{failure.Stage}\n\nReason:\n{failure.Reason}\n\nSee Kairon logs for details.",
             "Kairon", MessageBoxButtons.OK, MessageBoxIcon.Error);
 
-        _backend.Stop();
-        _ai.Stop();
+        StopChildProcesses();
         Close();
     }
 
@@ -239,8 +256,7 @@ public sealed class MainForm : Form
         //     graceful path in case Stop() itself ever fails for some other reason.
         try
         {
-            _backend.Stop();
-            _ai.Stop();
+            StopChildProcesses();
         }
         finally
         {
