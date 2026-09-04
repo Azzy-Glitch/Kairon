@@ -5,6 +5,8 @@ bin/
 obj/
 *.db
 *.db-journal
+*.sqlite
+*.sqlite3
 *.user
 *.suo
 *.cache
@@ -20,6 +22,8 @@ Properties/launchSettings.json
 appsettings.Development.json
 appsettings.Local.json
 secrets.json
+*service-account*.json
+*serviceaccount*.json
 
 # ============================================
 # React / Node Frontend
@@ -59,7 +63,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
-.idea/backend/logs/
 .idea/
 
 # Additional local environments, caches, logs, and credential files
