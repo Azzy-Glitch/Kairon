@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import random
 import socket
 import threading
+import time
 import traceback
 import urllib.error
 import urllib.request
@@ -93,6 +95,8 @@ class Kairon:
         queue_capacity: int = 1000,
         success_sample_rate: float = 1.0,
         ignored_path_prefixes: tuple = DEFAULT_IGNORED_PATH_PREFIXES,
+        enable_metrics: bool = True,
+        metrics_interval_seconds: float = 5.0,
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.project_id = project_id
@@ -107,13 +111,20 @@ class Kairon:
         # Errors are always sent; only successful requests are sampled.
         self.success_sample_rate = min(1.0, max(0.0, success_sample_rate))
         self.ignored_path_prefixes = tuple(ignored_path_prefixes)
+        self.enable_metrics = enable_metrics
+        self.metrics_interval_seconds = max(1.0, float(metrics_interval_seconds))
 
         self._queue: "queue.Queue[tuple]" = queue.Queue(maxsize=max(1, queue_capacity))
         self._queue_lock = threading.Lock()
         self._dropped_count = 0
         self._thread: Optional[threading.Thread] = None
+        self._metrics_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._sampler = random.Random()
+        self._metrics_lock = threading.Lock()
+        self._metric_requests = 0
+        self._metric_errors = 0
+        self._metric_duration_ms = 0
 
     # --- lifecycle -------------------------------------------------------------------
 
@@ -124,6 +135,11 @@ class Kairon:
             self._stop_event.clear()
             self._thread = threading.Thread(target=self._run, name="kairon-sender", daemon=True)
             self._thread.start()
+        if self.enabled and self.enable_metrics and self._metrics_thread is None:
+            self._metrics_thread = threading.Thread(
+                target=self._run_metrics, name="kairon-metrics", daemon=True
+            )
+            self._metrics_thread.start()
 
         global _default_instance
         _default_instance = self
@@ -213,6 +229,27 @@ class Kairon:
     def is_ignored(self, path: str) -> bool:
         return any(path.startswith(prefix) for prefix in self.ignored_path_prefixes)
 
+    def _record_request(self, duration_ms: int, is_error: bool) -> None:
+        """Accumulates middleware request measurements for the automatic metrics sample."""
+        if not self.enabled or not self.enable_metrics:
+            return
+        with self._metrics_lock:
+            self._metric_requests += 1
+            self._metric_duration_ms += max(0, int(duration_ms))
+            if is_error:
+                self._metric_errors += 1
+
+    def _drain_request_metrics(self) -> tuple[int, int, Optional[float]]:
+        with self._metrics_lock:
+            requests = self._metric_requests
+            errors = self._metric_errors
+            duration = self._metric_duration_ms
+            self._metric_requests = 0
+            self._metric_errors = 0
+            self._metric_duration_ms = 0
+        latency = round(duration / requests, 1) if requests else None
+        return requests, errors, latency
+
     # --- internal enqueue (also used by kairon.middleware) -----------------------------
 
     def _enqueue_telemetry(self, payload: dict) -> bool:
@@ -255,6 +292,35 @@ class Kairon:
                 # needs a chance to go out.
                 _logger.debug("kairon: failed to send telemetry", exc_info=True)
 
+    def _run_metrics(self) -> None:
+        last_wall = time.perf_counter()
+        last_cpu = time.process_time()
+
+        while not self._stop_event.wait(self.metrics_interval_seconds):
+            try:
+                now_wall = time.perf_counter()
+                now_cpu = time.process_time()
+                elapsed = max(now_wall - last_wall, 0.001)
+                cpu_percent = min(
+                    100.0,
+                    max(0.0, ((now_cpu - last_cpu) / elapsed) * 100 / (os.cpu_count() or 1)),
+                )
+                last_wall = now_wall
+                last_cpu = now_cpu
+
+                requests, errors, latency = self._drain_request_metrics()
+                self.record_metric(
+                    cpu_percent=round(cpu_percent, 1),
+                    memory_percent=_process_memory_percent(),
+                    response_time_ms=latency,
+                    request_count=requests,
+                    error_count=errors,
+                    component=self.service,
+                )
+            except Exception:
+                # Automatic metrics are best-effort and must never affect the host application.
+                _logger.debug("kairon: failed to collect process metrics", exc_info=True)
+
     def _send(self, path: str, payload: dict) -> None:
         if not self.enabled:
             return
@@ -277,3 +343,70 @@ class Kairon:
         except Exception:
             # Any other unexpected transport fault is still contained here.
             pass
+
+
+def _process_memory_percent() -> Optional[float]:
+    """Returns this process's resident-memory share using only the Python standard library."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("length", ctypes.c_ulong),
+                    ("memory_load", ctypes.c_ulong),
+                    ("total_physical", ctypes.c_ulonglong),
+                    ("available_physical", ctypes.c_ulonglong),
+                    ("total_page_file", ctypes.c_ulonglong),
+                    ("available_page_file", ctypes.c_ulonglong),
+                    ("total_virtual", ctypes.c_ulonglong),
+                    ("available_virtual", ctypes.c_ulonglong),
+                    ("available_extended_virtual", ctypes.c_ulonglong),
+                ]
+
+            class ProcessMemoryCounters(ctypes.Structure):
+                _fields_ = [
+                    ("cb", ctypes.c_ulong),
+                    ("page_fault_count", ctypes.c_ulong),
+                    ("peak_working_set_size", ctypes.c_size_t),
+                    ("working_set_size", ctypes.c_size_t),
+                    ("quota_peak_paged_pool_usage", ctypes.c_size_t),
+                    ("quota_paged_pool_usage", ctypes.c_size_t),
+                    ("quota_peak_non_paged_pool_usage", ctypes.c_size_t),
+                    ("quota_non_paged_pool_usage", ctypes.c_size_t),
+                    ("pagefile_usage", ctypes.c_size_t),
+                    ("peak_pagefile_usage", ctypes.c_size_t),
+                ]
+
+            kernel32 = ctypes.windll.kernel32
+            psapi = ctypes.windll.psapi
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+            kernel32.GlobalMemoryStatusEx.argtypes = [ctypes.POINTER(MemoryStatusEx)]
+            kernel32.GlobalMemoryStatusEx.restype = ctypes.c_int
+            psapi.GetProcessMemoryInfo.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(ProcessMemoryCounters),
+                ctypes.c_ulong,
+            ]
+            psapi.GetProcessMemoryInfo.restype = ctypes.c_int
+
+            system = MemoryStatusEx()
+            system.length = ctypes.sizeof(system)
+            process = ProcessMemoryCounters()
+            process.cb = ctypes.sizeof(process)
+            if not kernel32.GlobalMemoryStatusEx(ctypes.byref(system)):
+                return None
+            if not psapi.GetProcessMemoryInfo(
+                kernel32.GetCurrentProcess(), ctypes.byref(process), process.cb
+            ):
+                return None
+            return round((process.working_set_size / system.total_physical) * 100, 1)
+
+        if os.path.exists("/proc/self/statm"):
+            with open("/proc/self/statm", encoding="ascii") as statm:
+                resident_pages = int(statm.read().split()[1])
+            total_pages = int(os.sysconf("SC_PHYS_PAGES"))
+            return round((resident_pages / total_pages) * 100, 1) if total_pages > 0 else None
+    except (AttributeError, IndexError, OSError, TypeError, ValueError):
+        pass
+    return None

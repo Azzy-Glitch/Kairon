@@ -135,6 +135,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  min-width: 0;
+  contain: layout style;
 }
 
 .ui-metric-tile-breached {
@@ -175,6 +177,9 @@
 
 .ui-metric-tile-chart {
   height: 64px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .ui-metric-tile-empty {

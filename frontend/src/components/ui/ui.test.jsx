@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event';
 import Button from './Button';
 import Badge from './Badge';
 import Card from './Card';
-import MetricTile from './MetricTile';
+import MetricTile, { metricTilePropsEqual } from './MetricTile';
 import DataTable from './DataTable';
 import EmptyState from './EmptyState';
 import StatusTimeline from './StatusTimeline';
@@ -68,6 +68,15 @@ describe('MetricTile', () => {
     render(<MetricTile label="CPU usage" value={95} unit="%" threshold={80} data={[{ t: '10:00', v: 95 }]} />);
     expect(screen.getByText('95%')).toBeInTheDocument();
     expect(screen.getByLabelText('Over threshold')).toBeInTheDocument();
+  });
+
+  it('skips an expensive chart redraw when a poll returns equivalent samples', () => {
+    const previous = { label: 'CPU', value: 12, data: [{ t: '10:00', v: 12 }], domain: [0, 100] };
+    const equivalent = { label: 'CPU', value: 12, data: [{ t: '10:00', v: 12 }], domain: [0, 100] };
+    const changed = { label: 'CPU', value: 13, data: [{ t: '10:01', v: 13 }], domain: [0, 100] };
+
+    expect(metricTilePropsEqual(previous, equivalent)).toBe(true);
+    expect(metricTilePropsEqual(previous, changed)).toBe(false);
   });
 });
 

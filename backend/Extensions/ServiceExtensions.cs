@@ -74,6 +74,7 @@ public static class ServiceExtensions
     {
         services.AddSingleton<PersistenceMaintenanceState>();
         services.AddScoped<ISqliteBackupService, SqliteBackupService>();
+        services.AddScoped<IDataManagementService, DataManagementService>();
         services.AddScoped<ILocalSchemaMigrator, SqliteSchemaMigrator>();
         services.AddHostedService<PersistenceMaintenanceService>();
 

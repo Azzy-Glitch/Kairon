@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo, useId } from 'react';
 import { AreaChart, Area, ReferenceLine, ResponsiveContainer, Tooltip, YAxis } from 'recharts';
 
 function formatDelta(deltaPercent) {
@@ -32,7 +32,7 @@ function TileTooltip({ active, payload, label, unit }) {
  * section 7's live-charts phase), not to the tile itself - keeps this component reusable for
  * both genuinely live metrics and a fixed demo/preview dataset.
  */
-export default function MetricTile({
+function MetricTile({
   label,
   value,
   unit = '',
@@ -47,6 +47,7 @@ export default function MetricTile({
   breachedForLabel,
   className = ''
 }) {
+  const gradientId = `metric-fill-${useId().replace(/:/g, '')}`;
   const isBreached = typeof threshold === 'number' && typeof value === 'number' && value > threshold;
   const delta = formatDelta(deltaPercent);
   const hasSamples = data.length > 0;
@@ -73,11 +74,11 @@ export default function MetricTile({
 
       <div className="ui-metric-tile-chart">
         {hasSamples ? (
-          <ResponsiveContainer width="100%" height={64}>
+          <ResponsiveContainer width="100%" height={64} debounce={120}>
             <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
               <YAxis hide domain={domain || ['auto', 'auto']} />
               <defs>
-                <linearGradient id={`metric-fill-${label}`} x1="0" y1="0" x2="0" y2="1">
+                <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={seriesColor} stopOpacity={0.1} />
                   <stop offset="100%" stopColor={seriesColor} stopOpacity={0} />
                 </linearGradient>
@@ -95,11 +96,11 @@ export default function MetricTile({
                 dataKey={dataKey}
                 stroke={seriesColor}
                 strokeWidth={1.5}
-                fill={`url(#metric-fill-${label})`}
+                fill={`url(#${gradientId})`}
                 isAnimationActive={false}
                 dot={false}
               />
-              <Tooltip content={<TileTooltip unit={unit} />} labelKey={timeKey} />
+              <Tooltip content={<TileTooltip unit={unit} />} labelKey={timeKey} isAnimationActive={false} />
             </AreaChart>
           </ResponsiveContainer>
         ) : (
@@ -114,3 +115,34 @@ export default function MetricTile({
     </div>
   );
 }
+
+function sameArray(left, right) {
+  if (left === right) return true;
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+function sameSeries(left = [], right = [], dataKey = 'v', timeKey = 't') {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((sample, index) =>
+    sample?.[dataKey] === right[index]?.[dataKey] && sample?.[timeKey] === right[index]?.[timeKey]
+  );
+}
+
+export function metricTilePropsEqual(previous, next) {
+  const scalarKeys = [
+    'label', 'value', 'unit', 'dataKey', 'timeKey', 'seriesColor', 'threshold',
+    'thresholdLabel', 'deltaPercent', 'breachedForLabel', 'className'
+  ];
+  if (scalarKeys.some((key) => previous[key] !== next[key])) return false;
+  if (!sameArray(previous.domain, next.domain)) return false;
+  return sameSeries(
+    previous.data,
+    next.data,
+    next.dataKey || 'v',
+    next.timeKey || 't'
+  );
+}
+
+export default memo(MetricTile, metricTilePropsEqual);

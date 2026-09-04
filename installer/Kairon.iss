@@ -66,6 +66,16 @@ Filename: "{app}\Kairon.exe"; Description: "Launch Kairon"; Flags: nowait postin
 Filename: "{sys}\sc.exe"; Parameters: "stop Kairon.Agent"; Flags: runhidden waituntilterminated; RunOnceId: "StopAgent"
 Filename: "{sys}\sc.exe"; Parameters: "delete Kairon.Agent"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteAgent"
 
+[UninstallDelete]
+; Remove only database material created inside Kairon's managed local-data layout. Source trees,
+; arbitrary files elsewhere, logs and exported copies downloaded by the user are out of scope.
+Type: files; Name: "{localappdata}\Kairon\data\kairon.db"
+Type: files; Name: "{localappdata}\Kairon\data\kairon.db-wal"
+Type: files; Name: "{localappdata}\Kairon\data\kairon.db-shm"
+Type: files; Name: "{localappdata}\Kairon\backups\kairon-*.db"
+Type: dirifempty; Name: "{localappdata}\Kairon\data"
+Type: dirifempty; Name: "{localappdata}\Kairon\backups"
+
 [Code]
 const
   AgentServiceName = 'Kairon.Agent';

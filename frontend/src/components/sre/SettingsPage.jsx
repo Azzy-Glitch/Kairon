@@ -6,8 +6,8 @@ import Tabs from '../ui/Tabs';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
 import { useToast } from '../Toast';
-import { aiConfigApi } from '../../api';
-import { IconShield, IconRefresh } from '../Icons';
+import { aiConfigApi, dataManagementApi } from '../../api';
+import { IconDownload, IconShield, IconRefresh, IconTrash } from '../Icons';
 
 const THEME_OPTIONS = [
   { id: 'system', label: 'System' },
@@ -77,6 +77,8 @@ export default function SettingsPage() {
       </section>
 
       <AiConfigurationSection />
+
+      <DataManagementSection databaseAvailable={health.database} />
 
       {isLoading ? (
         <p className="panel-pending-text">Loading status...</p>
@@ -354,6 +356,108 @@ function AiConfigurationSection() {
             <span className="panel-pending-text">{testResult.error || 'Unknown error.'}</span>
           )}
         </div>
+      )}
+    </section>
+  );
+}
+
+function DataManagementSection({ databaseAvailable }) {
+  const toast = useToast();
+  const [downloading, setDownloading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [confirmation, setConfirmation] = useState('');
+  const [deletedResult, setDeletedResult] = useState(null);
+
+  const download = async () => {
+    setDownloading(true);
+    try {
+      const result = await dataManagementApi.downloadData();
+      const url = URL.createObjectURL(result.blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = result.fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      toast.addToast('Kairon database downloaded', 'success');
+    } catch (error) {
+      toast.addToast(error?.message || 'Could not download the database', 'error');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const deleteAll = async () => {
+    if (confirmation !== 'DELETE') return;
+    setDeleting(true);
+    try {
+      const result = await dataManagementApi.deleteAllData(confirmation);
+      setDeletedResult(result);
+      setConfirmation('');
+      setConfirming(false);
+      toast.addToast('All Kairon database data deleted', 'success');
+    } catch (error) {
+      toast.addToast(error?.message || 'Could not delete the database data', 'error');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <section className="settings-data-management">
+      <div className="settings-data-management-head">
+        <span className="settings-row-label">Your data</span>
+        <p className="panel-pending-text">
+          Download a portable SQLite copy or permanently remove all records stored by KAIRON.
+        </p>
+      </div>
+
+      <div className="settings-data-management-actions">
+        <Button variant="secondary" onClick={download} disabled={!databaseAvailable || downloading || deleting}>
+          <IconDownload className="w-4 h-4 mr-1" />
+          {downloading ? 'Preparing download...' : 'Download my data'}
+        </Button>
+        <Button variant="danger" onClick={() => setConfirming(true)} disabled={!databaseAvailable || downloading || deleting || confirming}>
+          <IconTrash className="w-4 h-4 mr-1" />
+          Delete all data
+        </Button>
+      </div>
+
+      {confirming && (
+        <div className="settings-delete-confirmation" role="group" aria-label="Confirm data deletion">
+          <div>
+            <strong>This cannot be undone.</strong>
+            <p className="panel-pending-text">
+              Projects, telemetry, incidents, AI configuration, credentials, audit history and KAIRON-created database backups will be removed.
+              Download your data first if you want to keep a copy.
+            </p>
+          </div>
+          <label className="block-label" htmlFor="delete-data-confirmation">Type DELETE to confirm</label>
+          <input
+            id="delete-data-confirmation"
+            className="approval-input"
+            value={confirmation}
+            onChange={(event) => setConfirmation(event.target.value)}
+            autoComplete="off"
+          />
+          <div className="settings-delete-confirmation-actions">
+            <Button variant="ghost" onClick={() => { setConfirming(false); setConfirmation(''); }} disabled={deleting}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={deleteAll} disabled={confirmation !== 'DELETE' || deleting}>
+              {deleting ? 'Deleting...' : 'Permanently delete data'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {deletedResult && (
+        <p className="settings-data-deleted" role="status">
+          Deleted {deletedResult.deletedRecords} database records and {deletedResult.deletedBackups} stored backups.
+          Restart KAIRON to begin with a completely fresh session.
+        </p>
       )}
     </section>
   );

@@ -220,6 +220,40 @@ def test_record_metric_populates_expected_fields():
     assert payload["Service"] == "OrderProcessingService"
 
 
+def test_request_metrics_are_aggregated_and_drained():
+    client = _client("http://127.0.0.1:1")
+    client._record_request(10, False)
+    client._record_request(30, True)
+
+    assert client._drain_request_metrics() == (2, 1, 20.0)
+    assert client._drain_request_metrics() == (0, 0, None)
+
+
+def test_start_automatically_posts_process_and_request_metrics(local_server):
+    client = _client(local_server, metrics_interval_seconds=1)
+    client.start()
+    try:
+        client._record_request(24, False)
+
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not any(
+            path == "/api/telemetry/metrics" for path, _, _ in _RecordingHandler.received
+        ):
+            time.sleep(0.05)
+
+        metrics = [
+            body for path, _, body in _RecordingHandler.received
+            if path == "/api/telemetry/metrics"
+        ]
+        assert metrics
+        assert metrics[0]["RequestCount"] == 1
+        assert metrics[0]["ErrorCount"] == 0
+        assert metrics[0]["ResponseTimeMs"] == 24.0
+        assert metrics[0]["CpuPercent"] is not None
+    finally:
+        client.stop()
+
+
 def test_timestamp_is_z_suffixed_not_numeric_offset():
     """The backend's Timestamp fields are DateTime, not DateTimeOffset. System.Text.Json's default
     DateTime converter round-trips a "Z"-suffixed UTC instant as-is (the same format .NET's own

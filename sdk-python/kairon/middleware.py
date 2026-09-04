@@ -67,6 +67,10 @@ class KaironMiddleware(BaseHTTPMiddleware):
             status_code = 500 if exception is not None else response.status_code
             is_error = exception is not None or status_code >= 500
 
+            # Match the .NET SDK: every non-ignored request contributes to the periodic Metrics
+            # sample, independently of success-event sampling below.
+            kairon._record_request(duration_ms, is_error)
+
             # Errors are always reported; only successes are sampled - losing an error to
             # sampling would be the one loss that actually matters.
             if is_error or kairon.should_sample():

@@ -164,9 +164,10 @@ if ($LASTEXITCODE -ne 0) { throw "Installer compilation failed." }
 #     Forum rules, so this is the path that matters most for actually clearing SmartScreen).
 #   - $env:KAIRON_SIGN_PFX_PATH (+ $env:KAIRON_SIGN_PFX_PASSWORD): a traditional OV certificate
 #     exported to a .pfx file kept outside the repository, e.g. mounted from a secrets manager.
-$installerExe = Get-ChildItem -Path (Join-Path $artifacts "installer") -Filter *.exe | Select-Object -First 1
+$installerPath = Join-Path $artifacts "installer\Kairon-Setup-$productVersion-win-x64.exe"
+$installerExe = Get-Item -LiteralPath $installerPath -ErrorAction SilentlyContinue
 if (-not $installerExe) {
-    throw "Installer compilation reported success but no .exe was found in $(Join-Path $artifacts 'installer')."
+    throw "Installer compilation reported success but the expected output was not found: $installerPath"
 }
 
 $signThumbprint = $env:KAIRON_SIGN_THUMBPRINT

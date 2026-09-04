@@ -22,18 +22,35 @@ vi.mock('../../api', () => ({
     saveConfig: vi.fn(),
     testConnection: vi.fn(),
     listModels: vi.fn()
+  },
+  dataManagementApi: {
+    downloadData: vi.fn(),
+    deleteAllData: vi.fn()
   }
+}));
+
+vi.mock('../../hooks/useDemo', () => ({
+  useHealth: () => ({
+    health: {
+      backend: true, database: true, aiService: true, detectionEnabled: true,
+      remediationEnabled: true, aiMode: 'mock'
+    },
+    isLoading: false
+  })
 }));
 
 describe('SettingsPage > AI configuration', () => {
   let aiConfigApi;
+  let dataManagementApi;
 
   beforeEach(async () => {
-    ({ aiConfigApi } = await import('../../api'));
+    ({ aiConfigApi, dataManagementApi } = await import('../../api'));
     aiConfigApi.getConfig.mockReset().mockResolvedValue({ provider: '', model: '', hasApiKey: false, updatedAt: null });
     aiConfigApi.saveConfig.mockReset();
     aiConfigApi.testConnection.mockReset();
     aiConfigApi.listModels.mockReset();
+    dataManagementApi.downloadData.mockReset();
+    dataManagementApi.deleteAllData.mockReset();
   });
 
   it('defaults to Groq with no configuration saved yet', async () => {
@@ -176,5 +193,48 @@ describe('SettingsPage > AI configuration', () => {
 
     expect(await screen.findByText('AI provider')).toBeInTheDocument();
     expect(screen.getByText('Detection')).toBeInTheDocument();
+  });
+
+  it('downloads a database export with the server-provided filename', async () => {
+    const user = userEvent.setup();
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:kairon-export');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    dataManagementApi.downloadData.mockResolvedValue({
+      blob: new Blob(['sqlite']),
+      fileName: 'kairon-data.db'
+    });
+
+    render(<SettingsPage />);
+    const downloadButton = await screen.findByRole('button', { name: /download my data/i });
+    await waitFor(() => expect(downloadButton).toBeEnabled());
+    await user.click(downloadButton);
+
+    await waitFor(() => expect(dataManagementApi.downloadData).toHaveBeenCalledOnce());
+    expect(createObjectURL).toHaveBeenCalledOnce();
+    expect(click).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:kairon-export');
+    createObjectURL.mockRestore();
+    revokeObjectURL.mockRestore();
+    click.mockRestore();
+  });
+
+  it('requires DELETE before permanently deleting database data', async () => {
+    const user = userEvent.setup();
+    dataManagementApi.deleteAllData.mockResolvedValue({ deletedRecords: 12, deletedBackups: 2 });
+
+    render(<SettingsPage />);
+    const deleteButton = await screen.findByRole('button', { name: /^delete all data$/i });
+    await waitFor(() => expect(deleteButton).toBeEnabled());
+    await user.click(deleteButton);
+
+    const permanentDelete = screen.getByRole('button', { name: /permanently delete data/i });
+    expect(permanentDelete).toBeDisabled();
+    await user.type(screen.getByLabelText(/type delete to confirm/i), 'DELETE');
+    expect(permanentDelete).toBeEnabled();
+    await user.click(permanentDelete);
+
+    await waitFor(() => expect(dataManagementApi.deleteAllData).toHaveBeenCalledWith('DELETE'));
+    expect(await screen.findByRole('status')).toHaveTextContent('Deleted 12 database records and 2 stored backups');
   });
 });

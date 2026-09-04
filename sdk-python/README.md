@@ -37,14 +37,20 @@ app.add_middleware(KaironMiddleware)
 `kairon.middleware` is a separate import specifically so the core `kairon` package never
 requires starlette/fastapi — only apps that use the middleware need that extra.
 
+Once started, the SDK automatically publishes process CPU, resident memory, request count,
+server-error count, and average request latency every five seconds. Middleware requests feed
+those counters automatically; application code does not need to call `record_metric()`.
+
 ## Design
 
 Mirrors the .NET SDK's resilience contract exactly:
 
 - One bounded, drop-oldest in-memory queue (`queue_capacity`, default 1000) — never blocks the
   calling request, never grows unbounded.
-- One background sender thread, one telemetry item per HTTP POST (no batching), short
-  independent per-request timeout (`timeout_seconds`, default 5s).
+- One background sender thread plus a lightweight process-metrics sampler, one telemetry item
+  per HTTP POST (no batching), short independent per-request timeout (`timeout_seconds`, default
+  5s). Automatic metrics can be tuned with `metrics_interval_seconds` or disabled with
+  `enable_metrics=False`.
 - Fail-open everywhere: every network call is wrapped, nothing here ever raises into your
   application code. The one exception path that *does* re-raise is the host application's own
   exception inside `KaironMiddleware` — telemetry capture never swallows your own errors.

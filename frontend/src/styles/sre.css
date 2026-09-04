@@ -272,7 +272,8 @@
 
 .telemetry-snapshot-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  align-items: stretch;
   gap: 12px;
 }
 
@@ -1494,6 +1495,39 @@
   background: var(--surface-sunken);
   border-radius: var(--radius-button);
 }
+
+/* --- User-controlled database export and deletion ------------------------ */
+
+.settings-data-management {
+  margin-top: 16px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+.settings-data-management-head { margin-bottom: 14px; }
+
+.settings-data-management-actions,
+.settings-delete-confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-delete-confirmation {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--critical) 45%, var(--border));
+  border-radius: var(--radius-button);
+  background: color-mix(in srgb, var(--critical) 7%, var(--surface));
+}
+
+.settings-delete-confirmation .approval-input { max-width: 320px; margin: 0; }
+.settings-data-deleted { margin-top: 12px; color: var(--healthy); font-size: 13px; }
 
 /* -----------------------------------------------------------------------
    SDK page (docs/DESKTOP_SHELL.md)

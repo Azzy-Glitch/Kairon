@@ -171,10 +171,19 @@ function toSeries(recent, pick) {
  * own series color even while breaching, per MetricTile's own "threshold as a line, not a colour"
  * rule; only the headline number and tile border switch to critical.
  */
-function TelemetrySnapshot({ metrics }) {
-  const recent = metrics?.recent || [];
+const EMPTY_METRICS = [];
+
+const TelemetrySnapshot = React.memo(function TelemetrySnapshot({ metrics }) {
+  const recent = metrics?.recent || EMPTY_METRICS;
 
   const errorRatePercent = metrics?.errorRate != null ? metrics.errorRate * 100 : null;
+  const series = useMemo(() => ({
+    cpu: toSeries(recent, (sample) => sample.cpuPercent),
+    latency: toSeries(recent, (sample) => sample.responseTimeMs),
+    errors: toSeries(recent, (sample) => (sample.requestCount ? (sample.errorCount / sample.requestCount) * 100 : null)),
+    retries: toSeries(recent, (sample) => sample.retryCount),
+    queue: toSeries(recent, (sample) => sample.queueDepth)
+  }), [recent]);
 
   return (
     <div className="telemetry-snapshot">
@@ -193,7 +202,7 @@ function TelemetrySnapshot({ metrics }) {
           label="CPU usage"
           value={round(metrics?.cpuPercent)}
           unit="%"
-          data={toSeries(recent, (s) => s.cpuPercent)}
+          data={series.cpu}
           seriesColor="var(--series-1)"
           threshold={80}
           domain={domainForMetric('percent')}
@@ -202,7 +211,7 @@ function TelemetrySnapshot({ metrics }) {
           label="Latency (p95)"
           value={round(metrics?.latencyMs)}
           unit="ms"
-          data={toSeries(recent, (s) => s.responseTimeMs)}
+          data={series.latency}
           seriesColor="var(--series-2)"
           threshold={1000}
           domain={domainForMetric('unbounded', { threshold: 1000, peak: metrics?.latencyMs })}
@@ -211,7 +220,7 @@ function TelemetrySnapshot({ metrics }) {
           label="Error rate"
           value={round(errorRatePercent)}
           unit="%"
-          data={toSeries(recent, (s) => (s.requestCount ? (s.errorCount / s.requestCount) * 100 : null))}
+          data={series.errors}
           seriesColor="var(--series-3)"
           threshold={10}
           domain={domainForMetric('percent')}
@@ -220,7 +229,7 @@ function TelemetrySnapshot({ metrics }) {
           label="Retry rate"
           value={round(metrics?.retriesPerMinute)}
           unit="/min"
-          data={toSeries(recent, (s) => s.retryCount)}
+          data={series.retries}
           seriesColor="var(--series-5)"
           threshold={30}
           domain={domainForMetric('unbounded', { threshold: 30, peak: metrics?.retriesPerMinute })}
@@ -228,7 +237,7 @@ function TelemetrySnapshot({ metrics }) {
         <MetricTile
           label="Queue depth"
           value={round(metrics?.queueDepth)}
-          data={toSeries(recent, (s) => s.queueDepth)}
+          data={series.queue}
           seriesColor="var(--series-4)"
           threshold={50}
           domain={domainForMetric('unbounded', { threshold: 50, peak: metrics?.queueDepth })}
@@ -236,7 +245,7 @@ function TelemetrySnapshot({ metrics }) {
       </div>
     </div>
   );
-}
+}, (previous, next) => previous.metrics?.sampledAt === next.metrics?.sampledAt);
 
 function ActiveIncidentCard({ incident, onOpen }) {
   return (

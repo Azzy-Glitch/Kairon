@@ -58,6 +58,7 @@ def test_successful_request_is_instrumented():
     assert payload["Method"] == "GET"
     assert payload["StatusCode"] == 200
     assert payload["Service"] == "OrderProcessingService"
+    assert kairon._drain_request_metrics()[0] == 1
 
 
 def test_exception_is_captured_and_still_reraised():
