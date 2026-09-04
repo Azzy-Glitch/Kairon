@@ -10,10 +10,12 @@ Autonomous SRE backend consumes.
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
 import json
 import logging
 import os
 import re
+from urllib.parse import urlparse
 
 import httpx
 from dotenv import load_dotenv
@@ -102,6 +104,44 @@ async def providers() -> dict:
 # because these names are rebound, not just mutated.
 
 
+def _is_loopback_host(host: str) -> bool:
+    """localhost and the loopback ranges only - never a hostname that merely looks local."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _validate_endpoint(endpoint: str) -> None:
+    """Rejects an endpoint that would send the provider API key somewhere unsafe.
+
+    This runs inside _merge_configured, before any provider is constructed or called, so a rejected
+    endpoint never reaches an outbound request and the key is never transmitted. Plain HTTP is
+    refused because the Authorization header carrying the key would cross the network in clear
+    text; loopback is exempt so a local or self-hosted provider (an on-box proxy, a dev gateway)
+    still works without demanding a certificate for 127.0.0.1.
+    """
+    parsed = urlparse(endpoint)
+
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise AiServiceError(
+            "Endpoint must be an absolute http(s) URL, for example "
+            "https://host/compatible-mode/v1/chat/completions.",
+            status_code=400,
+            code="invalid_endpoint",
+        )
+
+    if parsed.scheme == "http" and not _is_loopback_host(parsed.hostname):
+        raise AiServiceError(
+            "Endpoint must use HTTPS. Plain HTTP would send the provider API key in clear text; "
+            "only loopback addresses (localhost, 127.0.0.1, ::1) may use HTTP.",
+            status_code=400,
+            code="insecure_endpoint",
+        )
+
+
 def _merge_configured(request: ConfigureRequest) -> AiConfig:
     """Applies a ConfigureRequest onto the current CONFIG, keeping any field the caller omitted
     (notably the API key, so changing just the model never requires resending a known-good key)."""
@@ -126,6 +166,8 @@ def _merge_configured(request: ConfigureRequest) -> AiConfig:
         # Explicitly supplied - the caller is authoritative, including when it is blank, which
         # clears the override so the provider's own default endpoint applies again.
         endpoint = request.endpoint.strip()
+        if endpoint:
+            _validate_endpoint(endpoint)
 
     updated = dataclasses.replace(CONFIG, provider=provider, model=model, endpoint=endpoint)
     new_key = (request.api_key or "").strip()

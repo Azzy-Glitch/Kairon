@@ -48,6 +48,11 @@ public sealed class AiConfigController : ControllerBase
         if (!SupportedProviders.Contains(provider))
             return BadRequest(new { error = $"Unsupported provider. Choose one of: {string.Join(", ", SupportedProviders)}." });
 
+        // Before anything is stored: a rejected endpoint must never be persisted, and must never
+        // reach the AI service, which is what would put the key on the wire.
+        if (ValidateEndpoint(request.Endpoint) is { } endpointError)
+            return BadRequest(new { error = endpointError });
+
         // Persist first - if the AI service call below fails (e.g. it hasn't finished starting
         // yet), the user's key is not lost, and the startup sync applies it on the next attempt.
         var summary = await _config.SaveAsync(provider, request.ApiKey, request.Model, request.Endpoint, cancellationToken);
@@ -92,6 +97,10 @@ public sealed class AiConfigController : ControllerBase
         var provider = (request.Provider ?? string.Empty).Trim().ToLowerInvariant();
         if (!SupportedProviders.Contains(provider))
             return BadRequest(new { error = $"Unsupported provider. Choose one of: {string.Join(", ", SupportedProviders)}." });
+
+        // Checked before the key is resolved, let alone sent - a rejected endpoint never gets one.
+        if (ValidateEndpoint(request.Endpoint) is { } endpointError)
+            return BadRequest(new { error = endpointError });
 
         var apiKey = await ResolveApiKeyForTestAsync(provider, request.ApiKey, cancellationToken);
 
@@ -143,6 +152,32 @@ public sealed class AiConfigController : ControllerBase
         var selection = await _config.GetSelectionAsync(cancellationToken);
         if (selection is { } current && string.Equals(current.Provider, provider, StringComparison.OrdinalIgnoreCase))
             return await _config.GetDecryptedApiKeyAsync(cancellationToken);
+
+        return null;
+    }
+
+    /// <summary>
+    /// Refuses an endpoint that would carry the provider API key over plain HTTP. The AI service
+    /// enforces the same rule as the authoritative guard (it is what actually sends the key), but
+    /// checking here too means a bad endpoint is rejected with a clear 400 and never persisted.
+    /// Loopback keeps HTTP so a local or self-hosted provider does not need a certificate.
+    /// </summary>
+    private static string? ValidateEndpoint(string? endpoint)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint)) return null;
+
+        if (!Uri.TryCreate(endpoint.Trim(), UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return "Endpoint must be an absolute http(s) URL, for example " +
+                   "https://host/compatible-mode/v1/chat/completions.";
+        }
+
+        if (uri.Scheme == Uri.UriSchemeHttp && !uri.IsLoopback)
+        {
+            return "Endpoint must use HTTPS. Plain HTTP would send the provider API key in clear " +
+                   "text; only loopback addresses (localhost, 127.0.0.1, ::1) may use HTTP.";
+        }
 
         return null;
     }

@@ -190,6 +190,55 @@ public sealed class AiConfigControllerTests : IDisposable
         Assert.Equal(string.Empty, stored.Endpoint);
     }
 
+    [Theory]
+    [InlineData("https://ws-example.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions")]
+    [InlineData("http://localhost:8080/v1/chat/completions")]
+    [InlineData("http://127.0.0.1:8080/v1/chat/completions")]
+    [InlineData("http://[::1]:8080/v1/chat/completions")]
+    public async Task HttpsRemoteAndLoopbackHttpEndpointsAreAccepted(string endpoint)
+    {
+        var result = await _controller.Save(
+            new SaveAiConfigRequest { Provider = "qwen", ApiKey = "sk-ws-x", Endpoint = endpoint },
+            CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.Equal(endpoint, _ai.LastConfigureRequest?.Endpoint);
+    }
+
+    [Theory]
+    [InlineData("http://example.com/v1/chat/completions")]   // plain HTTP to a remote host
+    [InlineData("not-a-url")]
+    [InlineData("://missing-scheme")]
+    [InlineData("ftp://example.com/v1")]
+    [InlineData("file:///etc/passwd")]
+    public async Task UnsafeOrMalformedEndpointsAreRejectedWithoutStoringOrSendingAnything(string endpoint)
+    {
+        var result = await _controller.Save(
+            new SaveAiConfigRequest { Provider = "qwen", ApiKey = "sk-super-secret", Endpoint = endpoint },
+            CancellationToken.None);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        // The key must not reach the AI service (which is what would put it on the wire), and must
+        // not be persisted either - a rejected endpoint leaves no trace.
+        Assert.Equal(0, _ai.ConfigureCalls);
+        Assert.False(await _configService.HasValidConfigurationAsync());
+    }
+
+    [Fact]
+    public async Task TestConnectionRejectsAnUnsafeEndpointBeforeAnyKeyIsSent()
+    {
+        await _controller.Save(
+            new SaveAiConfigRequest { Provider = "qwen", ApiKey = "sk-ws-saved" }, CancellationToken.None);
+
+        var result = await _controller.Test(
+            new SaveAiConfigRequest { Provider = "qwen", Endpoint = "http://attacker.example/collect" },
+            CancellationToken.None);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        // Rejected before the stored key was even resolved, let alone forwarded.
+        Assert.Null(_ai.LastTestRequest);
+    }
+
     [Fact]
     public async Task GetNeverReturnsAKeyEvenAfterASave()
     {

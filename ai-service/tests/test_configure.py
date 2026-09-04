@@ -220,6 +220,98 @@ class TestConfigureApplies:
         assert main.CONFIG.endpoint == dedicated
 
 
+class TestEndpointMustBeSafe:
+    """Plain HTTP would put the provider API key on the wire in clear text. Loopback is exempt so a
+    local/self-hosted provider still works without a certificate."""
+
+    REMOTE_HTTPS = "https://ws-example.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+    def test_https_remote_is_accepted(self, client):
+        response = client.post(
+            "/configure", json={"provider": "qwen", "api_key": "sk-x", "endpoint": self.REMOTE_HTTPS}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["endpoint"] == self.REMOTE_HTTPS
+
+    def test_http_remote_is_rejected(self, client):
+        response = client.post(
+            "/configure",
+            json={"provider": "qwen", "api_key": "sk-x", "endpoint": "http://example.com/v1/chat/completions"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["code"] == "insecure_endpoint"
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://localhost:8080/v1/chat/completions",
+            "http://127.0.0.1:8080/v1/chat/completions",
+            "http://[::1]:8080/v1/chat/completions",
+        ],
+    )
+    def test_loopback_http_is_accepted(self, client, endpoint):
+        response = client.post(
+            "/configure", json={"provider": "qwen", "api_key": "sk-x", "endpoint": endpoint}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["endpoint"] == endpoint
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "not-a-url",
+            "://missing-scheme",
+            "ftp://example.com/v1",
+            "file:///etc/passwd",
+            "https://",
+        ],
+    )
+    def test_malformed_or_unsupported_urls_are_rejected(self, client, endpoint):
+        response = client.post(
+            "/configure", json={"provider": "qwen", "api_key": "sk-x", "endpoint": endpoint}
+        )
+
+        assert response.status_code == 400
+        assert response.json()["code"] in ("invalid_endpoint", "insecure_endpoint")
+
+    def test_a_rejected_endpoint_never_sends_the_api_key_anywhere(self, client, monkeypatch):
+        """The point of validating inside _merge_configured: rejection happens before any provider
+        is built or called, so the key cannot reach the attacker-supplied host."""
+        import kairon.providers.openai_compatible as oc
+
+        attempted = []
+
+        class _RecordingClient(_CapturingPostClient):
+            async def post(self, url, **kwargs):
+                attempted.append((url, kwargs.get("headers", {})))
+                return await super().post(url, **kwargs)
+
+        monkeypatch.setattr(oc.httpx, "AsyncClient", _RecordingClient)
+
+        response = client.post(
+            "/configure/test",
+            json={
+                "provider": "qwen",
+                "api_key": "sk-super-secret-value",
+                "endpoint": "http://attacker.example/collect",
+            },
+        )
+
+        assert response.status_code == 400
+        assert attempted == []                              # no outbound request at all
+        assert "sk-super-secret-value" not in response.text  # and nothing echoed back
+
+    def test_a_rejected_endpoint_leaves_the_live_configuration_untouched(self, client):
+        client.post("/configure", json={"provider": "qwen", "api_key": "sk-x", "endpoint": self.REMOTE_HTTPS})
+
+        client.post("/configure", json={"provider": "qwen", "endpoint": "http://attacker.example/collect"})
+
+        assert main.CONFIG.endpoint == self.REMOTE_HTTPS
+
+
 class TestConfigureTestNeverMutatesLiveConfig:
     def test_test_endpoint_leaves_the_active_provider_untouched(self, client):
         client.post("/configure", json={"provider": "gemini", "api_key": "AIza_original", "model": "m1"})
