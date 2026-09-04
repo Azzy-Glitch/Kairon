@@ -166,6 +166,36 @@ class TestConfigureApplies:
 
         assert main.CONFIG.endpoint == "https://proxy.example/groq"
 
+    def test_an_explicit_endpoint_is_applied(self, client):
+        dedicated = "https://ws-8s7id56fv8yt5bmm.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+        response = client.post(
+            "/configure", json={"provider": "qwen", "api_key": "sk-ws-x", "endpoint": dedicated}
+        )
+
+        assert response.json()["endpoint"] == dedicated
+        assert main.CONFIG.endpoint == dedicated
+        assert client.get("/providers").json()["configured"]["endpoint"] == dedicated
+
+    def test_an_explicit_endpoint_wins_even_when_switching_provider(self, client):
+        # The provider-switch-clears-endpoint rule only exists to stop an old provider's override
+        # silently leaking onto a new one; a caller deliberately supplying a new endpoint on the
+        # same request must never be second-guessed by that rule.
+        main.CONFIG = dataclasses.replace(main.CONFIG, provider="qwen", endpoint="https://stale.example/qwen")
+        main.SERVICE.config = main.CONFIG
+        dedicated = "https://ws-8s7id56fv8yt5bmm.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+        response = client.post(
+            "/configure", json={"provider": "groq", "api_key": "gsk_x", "endpoint": dedicated}
+        )
+
+        assert response.json()["endpoint"] == dedicated
+
+    def test_omitted_endpoint_falls_back_to_the_providers_default(self, client):
+        response = client.post("/configure", json={"provider": "groq", "api_key": "gsk_x"})
+
+        assert response.json()["endpoint"] == "https://api.groq.com/openai/v1/chat/completions"
+
 
 class TestConfigureTestNeverMutatesLiveConfig:
     def test_test_endpoint_leaves_the_active_provider_untouched(self, client):
@@ -176,6 +206,29 @@ class TestConfigureTestNeverMutatesLiveConfig:
         still_active = client.get("/providers").json()["configured"]
         assert still_active["provider"] == "gemini"
         assert still_active["model"] == "m1"
+
+    def test_explicit_endpoint_is_used_for_the_probe_without_touching_live_config(self, client, monkeypatch):
+        import kairon.providers.openai_compatible as oc
+
+        client.post("/configure", json={"provider": "qwen", "api_key": "sk-ws-original", "model": "qwen-plus"})
+        captured_urls = []
+
+        class _RecordingClient(_CapturingPostClient):
+            async def post(self, url, **kwargs):
+                captured_urls.append(url)
+                return await super().post(url, **kwargs)
+
+        monkeypatch.setattr(oc.httpx, "AsyncClient", _RecordingClient)
+        dedicated = "https://ws-8s7id56fv8yt5bmm.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+        response = client.post(
+            "/configure/test", json={"provider": "qwen", "api_key": "sk-ws-x", "endpoint": dedicated}
+        )
+
+        assert response.json()["endpoint"] == dedicated
+        assert captured_urls == [dedicated]
+        # The probe must never leak into the live, already-applied configuration.
+        assert main.CONFIG.endpoint == ""
 
     def test_no_usable_key_honestly_reports_mock(self, client):
         response = client.post("/configure/test", json={"provider": "groq"})

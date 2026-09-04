@@ -47,7 +47,7 @@ public sealed class AiProviderConfigServiceTests : IDisposable
     [Fact]
     public async Task SaveNeverReturnsTheRawKey()
     {
-        var summary = await _service.SaveAsync("groq", "gsk_super_secret_value", "openai/gpt-oss-120b");
+        var summary = await _service.SaveAsync("groq", "gsk_super_secret_value", "openai/gpt-oss-120b", null);
 
         Assert.True(summary.HasApiKey);
         Assert.Equal("groq", summary.Provider);
@@ -58,7 +58,7 @@ public sealed class AiProviderConfigServiceTests : IDisposable
     [Fact]
     public async Task TheStoredKeyDecryptsBackToExactlyWhatWasSaved()
     {
-        await _service.SaveAsync("groq", "gsk_super_secret_value", null);
+        await _service.SaveAsync("groq", "gsk_super_secret_value", null, null);
 
         Assert.Equal("gsk_super_secret_value", await _service.GetDecryptedApiKeyAsync());
         Assert.True(await _service.HasValidConfigurationAsync());
@@ -67,7 +67,7 @@ public sealed class AiProviderConfigServiceTests : IDisposable
     [Fact]
     public async Task EncryptedValueNeverContainsThePlainKey()
     {
-        await _service.SaveAsync("groq", "gsk_super_secret_value", null);
+        await _service.SaveAsync("groq", "gsk_super_secret_value", null, null);
 
         // Reach past the service to the raw stored row - the whole point of encrypting at rest is
         // that the ciphertext itself never contains the secret in a recognizable form.
@@ -78,9 +78,9 @@ public sealed class AiProviderConfigServiceTests : IDisposable
     [Fact]
     public async Task OmittingTheKeyOnASecondSaveKeepsThePreviousOne()
     {
-        await _service.SaveAsync("groq", "gsk_original_key", "model-a");
+        await _service.SaveAsync("groq", "gsk_original_key", "model-a", null);
 
-        var summary = await _service.SaveAsync("groq", null, "model-b");
+        var summary = await _service.SaveAsync("groq", null, "model-b", null);
 
         Assert.True(summary.HasApiKey);
         Assert.Equal("model-b", summary.Model);
@@ -90,7 +90,7 @@ public sealed class AiProviderConfigServiceTests : IDisposable
     [Fact]
     public async Task BlankModelMeansAutoRecommended()
     {
-        var summary = await _service.SaveAsync("groq", "gsk_x", "  ");
+        var summary = await _service.SaveAsync("groq", "gsk_x", "  ", null);
 
         Assert.Equal(string.Empty, summary.Model);
     }
@@ -98,8 +98,8 @@ public sealed class AiProviderConfigServiceTests : IDisposable
     [Fact]
     public async Task SecondSaveUpdatesTheSameSingletonRowRatherThanCreatingAnother()
     {
-        await _service.SaveAsync("groq", "gsk_x", "model-a");
-        await _service.SaveAsync("qwen", "qwen_x", "model-b");
+        await _service.SaveAsync("groq", "gsk_x", "model-a", null);
+        await _service.SaveAsync("qwen", "qwen_x", "model-b", null);
 
         Assert.Equal(1, await _db.AiProviderConfigs.CountAsync());
         var summary = await _service.GetAsync();
@@ -109,19 +109,40 @@ public sealed class AiProviderConfigServiceTests : IDisposable
     [Fact]
     public async Task BlankProviderIsRejected()
     {
-        await Assert.ThrowsAsync<ArgumentException>(() => _service.SaveAsync("  ", "gsk_x", null));
+        await Assert.ThrowsAsync<ArgumentException>(() => _service.SaveAsync("  ", "gsk_x", null, null));
     }
 
     [Fact]
     public async Task GetSelectionReflectsTheStoredProviderAndModel()
     {
-        await _service.SaveAsync("gemini", "AIza_x", "gemini-2.5-flash-lite");
+        await _service.SaveAsync("gemini", "AIza_x", "gemini-2.5-flash-lite", null);
 
         var selection = await _service.GetSelectionAsync();
 
         Assert.NotNull(selection);
         Assert.Equal("gemini", selection!.Value.Provider);
         Assert.Equal("gemini-2.5-flash-lite", selection.Value.Model);
+    }
+
+    [Fact]
+    public async Task CustomEndpointRoundTripsExactly()
+    {
+        const string dedicatedEndpoint =
+            "https://ws-8s7id56fv8yt5bmm.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions";
+
+        var summary = await _service.SaveAsync("qwen", "sk-ws-x", null, dedicatedEndpoint);
+
+        Assert.Equal(dedicatedEndpoint, summary.Endpoint);
+        var selection = await _service.GetSelectionAsync();
+        Assert.Equal(dedicatedEndpoint, selection!.Value.Endpoint);
+    }
+
+    [Fact]
+    public async Task BlankEndpointMeansTheProvidersDefault()
+    {
+        var summary = await _service.SaveAsync("groq", "gsk_x", null, "   ");
+
+        Assert.Equal(string.Empty, summary.Endpoint);
     }
 
     public void Dispose()

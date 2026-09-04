@@ -16,6 +16,12 @@ public class AiConfigureRequestDto
 
     [JsonPropertyName("model")]
     public string? Model { get; set; }
+
+    /// <summary>Overrides the provider's default endpoint - for a provider fronted by a
+    /// dedicated/regional URL (e.g. an Alibaba Model Studio Token Plan workspace) instead of the
+    /// shared public one. Blank/omitted keeps the provider's default.</summary>
+    [JsonPropertyName("endpoint")]
+    public string? Endpoint { get; set; }
 }
 
 public class AiConfigureResponseDto
@@ -31,6 +37,9 @@ public class AiConfigureResponseDto
 
     [JsonPropertyName("model")]
     public string Model { get; set; } = string.Empty;
+
+    [JsonPropertyName("endpoint")]
+    public string Endpoint { get; set; } = string.Empty;
 }
 
 public class AiTestConnectionResponseDto
@@ -43,6 +52,9 @@ public class AiTestConnectionResponseDto
 
     [JsonPropertyName("model")]
     public string Model { get; set; } = string.Empty;
+
+    [JsonPropertyName("endpoint")]
+    public string Endpoint { get; set; } = string.Empty;
 
     [JsonPropertyName("success")]
     public bool Success { get; set; }

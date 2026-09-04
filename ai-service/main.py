@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from kairon.config import DEFAULT_MODELS, AiConfig, is_placeholder
+from kairon.config import DEFAULT_ENDPOINTS, DEFAULT_MODELS, AiConfig, is_placeholder
 from kairon.schemas import (
     ConfigureRequest,
     ContextReq,
@@ -114,10 +114,13 @@ def _merge_configured(request: ConfigureRequest) -> AiConfig:
         )
 
     model = (request.model or "").strip() or DEFAULT_MODELS.get(provider, "")
-    # A custom AI__Endpoint override only makes sense for the provider it was set for - switching
-    # provider without clearing it would point the new provider's calls at the old one's URL.
-    # Staying on the same provider (e.g. just changing model or key) leaves any override intact.
-    endpoint = "" if provider != CONFIG.provider else CONFIG.endpoint
+    # An explicit endpoint always wins - the caller is deliberately pointing this provider at a
+    # dedicated/regional URL (e.g. an Alibaba Model Studio workspace domain). Otherwise, a custom
+    # AI__Endpoint override only makes sense for the provider it was set for - switching provider
+    # without clearing it would point the new provider's calls at the old one's URL. Staying on the
+    # same provider (e.g. just changing model or key) leaves any override intact.
+    explicit_endpoint = (request.endpoint or "").strip()
+    endpoint = explicit_endpoint or ("" if provider != CONFIG.provider else CONFIG.endpoint)
 
     updated = dataclasses.replace(CONFIG, provider=provider, model=model, endpoint=endpoint)
     new_key = (request.api_key or "").strip()
@@ -158,6 +161,7 @@ async def configure_test(request: ConfigureRequest) -> dict:
         "provider": candidate.provider,
         "effective_provider": candidate.effective_provider,
         "model": candidate.model,
+        "endpoint": candidate.endpoint or DEFAULT_ENDPOINTS.get(candidate.provider, ""),
     }
 
     if candidate.effective_provider == "mock":

@@ -55,6 +55,7 @@ public sealed class AiConfigSyncHostedService : BackgroundService
             Provider = selection.Value.Provider,
             ApiKey = apiKey,
             Model = selection.Value.Model,
+            Endpoint = selection.Value.Endpoint,
         };
 
         var deadline = DateTime.UtcNow + GiveUpAfter;
@@ -93,7 +94,7 @@ public sealed class AiConfigSyncHostedService : BackgroundService
             GiveUpAfter.TotalSeconds);
     }
 
-    private async Task<(string Provider, string Model)?> SafeGetSelectionAsync(
+    private async Task<(string Provider, string Model, string Endpoint)?> SafeGetSelectionAsync(
         IAiProviderConfigService providerConfig, CancellationToken cancellationToken)
     {
         try

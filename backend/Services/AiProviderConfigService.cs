@@ -8,9 +8,10 @@ namespace Kairon.Backend.Services;
 
 /// <summary>Safe to return from any endpoint - the API key is never included, only whether one is
 /// set (frontend AI Configuration panel section 12: never return a stored key to the browser).</summary>
-public sealed record AiProviderConfigSummary(string Provider, string Model, bool HasApiKey, DateTime? UpdatedAt)
+public sealed record AiProviderConfigSummary(
+    string Provider, string Model, string Endpoint, bool HasApiKey, DateTime? UpdatedAt)
 {
-    public static readonly AiProviderConfigSummary NotConfigured = new(string.Empty, string.Empty, false, null);
+    public static readonly AiProviderConfigSummary NotConfigured = new(string.Empty, string.Empty, string.Empty, false, null);
 }
 
 /// <summary>
@@ -26,9 +27,10 @@ public interface IAiProviderConfigService
 
     /// <summary>Upserts the singleton row. A null/blank <paramref name="apiKey"/> keeps whatever
     /// key is already stored (so changing just the model never requires resending a known-good
-    /// key); a null/blank <paramref name="model"/> means "Auto / Recommended".</summary>
+    /// key); a null/blank <paramref name="model"/> means "Auto / Recommended"; a null/blank
+    /// <paramref name="endpoint"/> means the provider's default public endpoint.</summary>
     Task<AiProviderConfigSummary> SaveAsync(
-        string provider, string? apiKey, string? model, CancellationToken cancellationToken = default);
+        string provider, string? apiKey, string? model, string? endpoint, CancellationToken cancellationToken = default);
 
     /// <summary>True only when a row exists with a real (decryptable, non-blank) key - the signal
     /// AiMicroservice uses to decide whether a saved UI configuration should override
@@ -40,9 +42,9 @@ public interface IAiProviderConfigService
     /// /configure endpoint) - never returned by any controller action.</summary>
     Task<string?> GetDecryptedApiKeyAsync(CancellationToken cancellationToken = default);
 
-    /// <summary>The full current selection (provider/model), for internal use when only the model
-    /// is changing and the existing provider/key still apply.</summary>
-    Task<(string Provider, string Model)?> GetSelectionAsync(CancellationToken cancellationToken = default);
+    /// <summary>The full current selection (provider/model/endpoint), for internal use when only
+    /// part of the configuration is changing and the rest still applies.</summary>
+    Task<(string Provider, string Model, string Endpoint)?> GetSelectionAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed class AiProviderConfigService : IAiProviderConfigService
@@ -67,7 +69,7 @@ public sealed class AiProviderConfigService : IAiProviderConfigService
     }
 
     public async Task<AiProviderConfigSummary> SaveAsync(
-        string provider, string? apiKey, string? model, CancellationToken cancellationToken = default)
+        string provider, string? apiKey, string? model, string? endpoint, CancellationToken cancellationToken = default)
     {
         var normalizedProvider = (provider ?? string.Empty).Trim().ToLowerInvariant();
         if (string.IsNullOrEmpty(normalizedProvider))
@@ -84,6 +86,7 @@ public sealed class AiProviderConfigService : IAiProviderConfigService
 
         entity.Provider = normalizedProvider;
         entity.Model = (model ?? string.Empty).Trim();
+        entity.Endpoint = (endpoint ?? string.Empty).Trim();
         entity.UpdatedAt = now;
 
         var trimmedKey = (apiKey ?? string.Empty).Trim();
@@ -117,10 +120,10 @@ public sealed class AiProviderConfigService : IAiProviderConfigService
         }
     }
 
-    public async Task<(string Provider, string Model)?> GetSelectionAsync(CancellationToken cancellationToken = default)
+    public async Task<(string Provider, string Model, string Endpoint)?> GetSelectionAsync(CancellationToken cancellationToken = default)
     {
         var entity = await FindAsync(cancellationToken);
-        return entity is null ? null : (entity.Provider, entity.Model);
+        return entity is null ? null : (entity.Provider, entity.Model, entity.Endpoint);
     }
 
     private Task<AiProviderConfig?> FindAsync(CancellationToken cancellationToken) =>
@@ -128,5 +131,5 @@ public sealed class AiProviderConfigService : IAiProviderConfigService
 
     private static AiProviderConfigSummary ToSummary(AiProviderConfig? entity) => entity is null
         ? AiProviderConfigSummary.NotConfigured
-        : new AiProviderConfigSummary(entity.Provider, entity.Model, entity.EncryptedApiKey.Length > 0, entity.UpdatedAt);
+        : new AiProviderConfigSummary(entity.Provider, entity.Model, entity.Endpoint, entity.EncryptedApiKey.Length > 0, entity.UpdatedAt);
 }

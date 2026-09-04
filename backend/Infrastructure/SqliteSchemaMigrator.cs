@@ -19,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -85,6 +85,22 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                 _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: AiProviderConfigs", version);
             }
 
+            // Version 3: adds AiProviderConfigs.Endpoint - lets a saved provider point at a
+            // dedicated/regional URL (e.g. an Alibaba Model Studio Token Plan workspace) instead of
+            // always using the provider's shared public endpoint.
+            if (version == 2)
+            {
+                // ALTER TABLE ADD COLUMN has no IF NOT EXISTS in SQLite - a genuinely fresh install
+                // already has this column (EnsureCreatedAsync built the table from the current
+                // model), so guard with an explicit check the way CREATE TABLE's IF NOT EXISTS does.
+                var columns = await ColumnsAsync(connection, transaction, "AiProviderConfigs", cancellationToken);
+                if (!columns.Contains("Endpoint"))
+                    await ExecuteAsync(connection, transaction, AddAiProviderConfigsEndpointColumnSql, cancellationToken);
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 3;", cancellationToken);
+                version = 3;
+                _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: AiProviderConfigs.Endpoint", version);
+            }
+
             if (version != CurrentVersion)
                 throw new InvalidOperationException($"No SQLite migration path exists from version {version}.");
 
@@ -117,6 +133,9 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
             "UpdatedAt" TEXT NOT NULL
         );
         """;
+
+    private const string AddAiProviderConfigsEndpointColumnSql =
+        """ALTER TABLE "AiProviderConfigs" ADD COLUMN "Endpoint" TEXT NOT NULL DEFAULT '';""";
 
     private async Task ValidateModelAsync(
         DbConnection connection,

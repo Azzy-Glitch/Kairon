@@ -124,7 +124,7 @@ function AiConfigurationSection() {
   const toast = useToast();
 
   const [loaded, setLoaded] = useState(false);
-  const [saved, setSaved] = useState({ provider: '', model: '', hasApiKey: false, updatedAt: null });
+  const [saved, setSaved] = useState({ provider: '', model: '', endpoint: '', hasApiKey: false, updatedAt: null });
 
   const [provider, setProvider] = useState('groq');
   const [apiKey, setApiKey] = useState('');
@@ -132,6 +132,7 @@ function AiConfigurationSection() {
   const [customModel, setCustomModel] = useState('');
   const [discoveredModels, setDiscoveredModels] = useState([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [endpoint, setEndpoint] = useState('');
 
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -149,6 +150,7 @@ function AiConfigurationSection() {
           setModelChoice(CUSTOM_MODEL);
           setCustomModel(config.model);
         }
+        if (config.endpoint) setEndpoint(config.endpoint);
       })
       .catch(() => {
         // No saved configuration yet, or the backend isn't reachable - the form still works, it
@@ -168,6 +170,7 @@ function AiConfigurationSection() {
     setModelChoice(AUTO_MODEL);
     setCustomModel('');
     setDiscoveredModels([]);
+    setEndpoint('');
     setTestResult(null);
   };
 
@@ -203,7 +206,8 @@ function AiConfigurationSection() {
       const result = await aiConfigApi.testConnection({
         provider,
         apiKey: apiKey.trim() || undefined,
-        model: resolvedModel()
+        model: resolvedModel(),
+        endpoint: endpoint.trim() || undefined
       });
       setTestResult(result);
       toast.addToast(
@@ -224,7 +228,8 @@ function AiConfigurationSection() {
       const result = await aiConfigApi.saveConfig({
         provider,
         apiKey: apiKey.trim() || undefined,
-        model: resolvedModel()
+        model: resolvedModel(),
+        endpoint: endpoint.trim() || undefined
       });
       setSaved(result);
       setApiKey('');
@@ -326,6 +331,22 @@ function AiConfigurationSection() {
             autoComplete="off"
           />
         )}
+
+        <label className="block-label" htmlFor="ai-config-endpoint">
+          Custom endpoint
+        </label>
+        <input
+          id="ai-config-endpoint"
+          className="approval-input"
+          value={endpoint}
+          onChange={(e) => setEndpoint(e.target.value)}
+          placeholder="Leave blank to use the provider's default endpoint"
+          autoComplete="off"
+        />
+        <p className="settings-ai-config-endpoint-hint panel-pending-text">
+          Only needed if this provider is fronted by a dedicated or regional URL instead of its
+          shared public one - for example an Alibaba Model Studio Token Plan workspace.
+        </p>
       </div>
 
       <div className="settings-ai-config-actions">
@@ -338,6 +359,7 @@ function AiConfigurationSection() {
         {loaded && saved.hasApiKey && (
           <span className="settings-ai-config-saved-note">
             Currently configured: {saved.provider}{saved.model ? ` · ${saved.model}` : ' · Auto'}
+            {saved.endpoint ? ` · ${saved.endpoint}` : ''}
           </span>
         )}
       </div>

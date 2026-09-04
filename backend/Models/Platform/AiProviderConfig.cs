@@ -22,6 +22,12 @@ public sealed class AiProviderConfig
     /// current default for the provider rather than the frontend guessing one.</summary>
     public string Model { get; set; } = string.Empty;
 
+    /// <summary>Empty means the provider's default public endpoint. Set only when the provider is
+    /// fronted by a dedicated/regional URL instead - for example an Alibaba Model Studio Token
+    /// Plan workspace, which rejects calls made to the shared DashScope endpoint even with a
+    /// valid key.</summary>
+    public string Endpoint { get; set; } = string.Empty;
+
     public string EncryptedApiKey { get; set; } = string.Empty;
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

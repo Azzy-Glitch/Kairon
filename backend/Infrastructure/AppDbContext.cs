@@ -228,6 +228,7 @@ public class AppDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Provider).HasMaxLength(50).IsRequired();
             entity.Property(e => e.Model).HasMaxLength(200);
+            entity.Property(e => e.Endpoint).HasMaxLength(500);
             entity.Property(e => e.EncryptedApiKey).HasMaxLength(4000);
         });
 

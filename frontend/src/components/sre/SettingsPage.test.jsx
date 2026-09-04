@@ -147,16 +147,72 @@ describe('SettingsPage > AI configuration', () => {
     expect(await screen.findByText(/currently configured: groq/i)).toBeInTheDocument();
   });
 
-  it('switching provider resets the key field and the model choice', async () => {
+  it('switching provider resets the key field, the model choice, and the endpoint field', async () => {
     const user = userEvent.setup();
     render(<SettingsPage />);
     await waitFor(() => expect(aiConfigApi.getConfig).toHaveBeenCalled());
 
     await user.type(screen.getByLabelText(/api key/i), 'gsk_groq_key');
+    await user.type(screen.getByLabelText(/custom endpoint/i), 'https://example.com/v1');
     await user.selectOptions(screen.getByLabelText(/provider/i), 'qwen');
 
     expect(screen.getByLabelText(/provider/i)).toHaveValue('qwen');
     expect(screen.getByLabelText(/api key/i)).toHaveValue('');
+    expect(screen.getByLabelText(/custom endpoint/i)).toHaveValue('');
+  });
+
+  it('a typed custom endpoint is sent with Test Connection and Save', async () => {
+    const user = userEvent.setup();
+    const dedicatedEndpoint = 'https://ws-8s7id56fv8yt5bmm.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions';
+    aiConfigApi.testConnection.mockResolvedValue({ success: true, provider: 'qwen', effectiveProvider: 'qwen', model: 'qwen-plus' });
+    aiConfigApi.saveConfig.mockResolvedValue({
+      provider: 'qwen', model: '', endpoint: dedicatedEndpoint, hasApiKey: true, updatedAt: new Date().toISOString(), applied: true
+    });
+
+    render(<SettingsPage />);
+    await waitFor(() => expect(aiConfigApi.getConfig).toHaveBeenCalled());
+
+    await user.selectOptions(screen.getByLabelText(/provider/i), 'qwen');
+    await user.type(screen.getByLabelText(/api key/i), 'sk-ws-x');
+    await user.type(screen.getByLabelText(/custom endpoint/i), dedicatedEndpoint);
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    await waitFor(() => expect(aiConfigApi.testConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'qwen', endpoint: dedicatedEndpoint })
+    ));
+
+    await user.click(screen.getByRole('button', { name: /save configuration/i }));
+
+    await waitFor(() => expect(aiConfigApi.saveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'qwen', endpoint: dedicatedEndpoint })
+    ));
+    expect(await screen.findByText(new RegExp(dedicatedEndpoint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))).toBeInTheDocument();
+  });
+
+  it('leaving the endpoint field blank sends undefined, never an empty string', async () => {
+    const user = userEvent.setup();
+    aiConfigApi.testConnection.mockResolvedValue({ success: true, provider: 'groq', effectiveProvider: 'groq', model: 'm' });
+
+    render(<SettingsPage />);
+    await waitFor(() => expect(aiConfigApi.getConfig).toHaveBeenCalled());
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    await waitFor(() => expect(aiConfigApi.testConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ endpoint: undefined })
+    ));
+  });
+
+  it('a previously saved endpoint pre-fills the field on load', async () => {
+    aiConfigApi.getConfig.mockResolvedValue({
+      provider: 'qwen', model: '', endpoint: 'https://ws-example.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions',
+      hasApiKey: true, updatedAt: new Date().toISOString()
+    });
+
+    render(<SettingsPage />);
+
+    await waitFor(() => expect(screen.getByLabelText(/custom endpoint/i)).toHaveValue(
+      'https://ws-example.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions'
+    ));
   });
 
   it('selecting Custom model reveals a free-text model field that Test Connection uses', async () => {

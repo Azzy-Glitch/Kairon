@@ -67,7 +67,7 @@ public sealed class AiMicroserviceModeTests : IDisposable
     [Fact]
     public async Task ASavedConfigurationOverridesStaticMockModeTrue()
     {
-        await _configService.SaveAsync("groq", "gsk_real_looking_key", "openai/gpt-oss-120b");
+        await _configService.SaveAsync("groq", "gsk_real_looking_key", "openai/gpt-oss-120b", null);
         var ai = CreateMicroservice(staticMockMode: true);
 
         Assert.Equal("groq", await ai.GetModeAsync());
@@ -76,7 +76,7 @@ public sealed class AiMicroserviceModeTests : IDisposable
     [Fact]
     public async Task ASavedConfigurationMeansAnalyzeErrorNoLongerReturnsTheHardcodedMock()
     {
-        await _configService.SaveAsync("groq", "gsk_real_looking_key", "openai/gpt-oss-120b");
+        await _configService.SaveAsync("groq", "gsk_real_looking_key", "openai/gpt-oss-120b", null);
         var ai = CreateMicroservice(staticMockMode: true);
 
         // Nothing is listening on 127.0.0.1:1, so this proves a REAL call was attempted (and

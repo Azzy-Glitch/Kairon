@@ -14,14 +14,16 @@ export function getConfig() {
 }
 
 /** apiKey is optional - omit it to keep whatever key is already saved (e.g. when only the model
- * is changing). model is optional/blank for "Auto / Recommended". */
-export function saveConfig({ provider, apiKey, model }) {
-  return request(client.post('/v1/ai-config', { provider, apiKey, model }));
+ * is changing). model is optional/blank for "Auto / Recommended". endpoint is optional/blank for
+ * the provider's default public endpoint - only needed when the provider is fronted by a
+ * dedicated/regional URL instead (e.g. an Alibaba Model Studio Token Plan workspace). */
+export function saveConfig({ provider, apiKey, model, endpoint }) {
+  return request(client.post('/v1/ai-config', { provider, apiKey, model, endpoint }));
 }
 
-/** apiKey is optional - omit it to test the already-saved key for this provider. */
-export function testConnection({ provider, apiKey, model }) {
-  return request(client.post('/v1/ai-config/test', { provider, apiKey, model }));
+/** apiKey/endpoint are optional - omit either to test the already-saved value for this provider. */
+export function testConnection({ provider, apiKey, model, endpoint }) {
+  return request(client.post('/v1/ai-config/test', { provider, apiKey, model, endpoint }));
 }
 
 /** Live model discovery where the provider supports it (Groq only today) - { supported: false }

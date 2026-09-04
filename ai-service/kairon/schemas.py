@@ -37,11 +37,14 @@ class MismatchReq(BaseModel):
 class ConfigureRequest(BaseModel):
     """Applies a provider selection at runtime. `api_key` is optional so a caller can change just
     the model without resending an already-known key; omitted/blank fields keep their current
-    value rather than clearing it."""
+    value rather than clearing it. `endpoint` overrides the provider's default base URL - needed
+    for deployments that front a provider behind a dedicated/regional endpoint (for example an
+    Alibaba Model Studio workspace's own inference domain) rather than the shared public one."""
 
     provider: str
     api_key: Optional[str] = None
     model: Optional[str] = None
+    endpoint: Optional[str] = None
 
 
 # --- Evidence package (AI PRD section 6). ---

@@ -138,6 +138,35 @@ public sealed class AiConfigControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task SavePassesACustomEndpointThroughToTheAiMicroservice()
+    {
+        const string dedicatedEndpoint =
+            "https://ws-8s7id56fv8yt5bmm.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions";
+
+        var result = await _controller.Save(
+            new SaveAiConfigRequest { Provider = "qwen", ApiKey = "sk-ws-x", Endpoint = dedicatedEndpoint },
+            CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.Equal(dedicatedEndpoint, _ai.LastConfigureRequest?.Endpoint);
+    }
+
+    [Fact]
+    public async Task TestConnectionWithoutRetypingAnEndpointUsesTheStoredOne()
+    {
+        const string dedicatedEndpoint =
+            "https://ws-8s7id56fv8yt5bmm.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions";
+        await _controller.Save(
+            new SaveAiConfigRequest { Provider = "qwen", ApiKey = "sk-ws-x", Endpoint = dedicatedEndpoint },
+            CancellationToken.None);
+
+        var result = await _controller.Test(new SaveAiConfigRequest { Provider = "qwen" }, CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.Equal(dedicatedEndpoint, _ai.LastTestRequest?.Endpoint);
+    }
+
+    [Fact]
     public async Task GetNeverReturnsAKeyEvenAfterASave()
     {
         await _controller.Save(new SaveAiConfigRequest { Provider = "groq", ApiKey = "gsk_super_secret" }, CancellationToken.None);

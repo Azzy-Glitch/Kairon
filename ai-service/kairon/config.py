@@ -124,6 +124,7 @@ class AiConfig:
             "provider": self.provider,
             "effective_provider": self.effective_provider,
             "model": self.model,
+            "endpoint": self.endpoint or DEFAULT_ENDPOINTS.get(self.provider, ""),
             "timeout_seconds": self.timeout_seconds,
             "max_retries": self.max_retries,
             "max_output_tokens": self.max_output_tokens,

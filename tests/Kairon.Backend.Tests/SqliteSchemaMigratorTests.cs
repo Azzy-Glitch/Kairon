@@ -60,6 +60,51 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
     }
 
     [Fact]
+    public async Task ExistingVersion2DatabaseGainsEndpointColumnWithoutLosingData()
+    {
+        // Simulates a genuine upgrade from a database already adopted as schema version 2 - it has
+        // AiProviderConfigs, but from before the Endpoint column existed - not just
+        // "EnsureCreatedAsync happened to include it already", which every other test here would
+        // otherwise mask.
+        await using var db = CreateContext();
+        await db.Database.EnsureCreatedAsync();
+        var project = new Project { Name = "preserve-me-three" };
+        db.Projects.Add(project);
+        await db.SaveChangesAsync();
+
+        await db.Database.ExecuteSqlRawAsync("DROP TABLE \"AiProviderConfigs\";");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE "AiProviderConfigs" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_AiProviderConfigs" PRIMARY KEY,
+                "Provider" TEXT NOT NULL,
+                "Model" TEXT NOT NULL,
+                "EncryptedApiKey" TEXT NOT NULL,
+                "CreatedAt" TEXT NOT NULL,
+                "UpdatedAt" TEXT NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 2;");
+
+        await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
+
+        Assert.Equal(SqliteSchemaMigrator.CurrentVersion, await UserVersionAsync(db));
+        Assert.Equal("preserve-me-three", (await db.Projects.SingleAsync()).Name);
+
+        // Proves the new column is genuinely usable, not just present - EF would fail to write a
+        // row at all if the migration had left the schema out of sync with the current model.
+        db.AiProviderConfigs.Add(new AiProviderConfig
+        {
+            Provider = "qwen", Model = "qwen-plus",
+            Endpoint = "https://ws-example.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+            EncryptedApiKey = "cipher",
+        });
+        await db.SaveChangesAsync();
+        Assert.Equal(
+            "https://ws-example.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions",
+            (await db.AiProviderConfigs.SingleAsync()).Endpoint);
+    }
+
+    [Fact]
     public async Task NewerUnknownSchemaFailsClosed()
     {
         await using var db = CreateContext();
