@@ -1,3 +1,4 @@
+using Kairon.Backend.Configuration;
 using Kairon.Backend.Models;
 using Kairon.Backend.Models.Sre;
 
@@ -207,12 +208,13 @@ public class MetricDeviationRule : IDetectionRule
     public DetectionRuleKind Kind => DetectionRuleKind.MetricDeviation;
     public string RuleId => "metric-deviation";
 
-    private static readonly (string Name, string Unit, Func<Metric, double?> Selector)[] Tracked =
+    private static readonly (string Name, string Unit, Func<Metric, double?> Selector,
+        Func<DetectionOptions, double> MinimumChange)[] Tracked =
     {
-        ("cpu", "%", m => m.CpuPercent),
-        ("memory", "%", m => m.MemoryPercent),
-        ("latency", "ms", m => m.ResponseTimeMs),
-        ("queue", "", m => m.QueueDepth)
+        ("cpu", "%", m => m.CpuPercent, o => o.CpuDeviationMinimumPoints),
+        ("memory", "%", m => m.MemoryPercent, o => o.MemoryDeviationMinimumPoints),
+        ("latency", "ms", m => m.ResponseTimeMs, o => o.LatencyDeviationMinimumMs),
+        ("queue", "", m => m.QueueDepth, o => o.QueueDeviationMinimum)
     };
 
     public DetectionSignal? Evaluate(DetectionContext ctx)
@@ -221,7 +223,7 @@ public class MetricDeviationRule : IDetectionRule
         // deviation is worth anything at all.
         if (ctx.Metrics.Count < 4) return null;
 
-        foreach (var (name, unit, selector) in Tracked)
+        foreach (var (name, unit, selector, minimumChange) in Tracked)
         {
             var series = ctx.Metrics
                 .Select(selector)
@@ -239,6 +241,10 @@ public class MetricDeviationRule : IDetectionRule
 
             // A flat baseline gives stdDev 0 and would divide by zero; require real movement.
             if (stdDev < 0.0001) continue;
+
+            // Statistical significance is not operational significance. This prevents normal
+            // near-idle jitter (for example 0.0 -> 0.2% CPU) from becoming a false incident.
+            if (current - mean < minimumChange(ctx.Options)) continue;
 
             var sigma = (current - mean) / stdDev;
             if (sigma < ctx.Options.DeviationSigma) continue;

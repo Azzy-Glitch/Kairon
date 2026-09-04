@@ -253,6 +253,17 @@ public class DetectionTests : IDisposable
     }
 
     [Fact]
+    public void DeviationRuleIgnoresStatisticallyLargeButOperationallyTinyIdleJitter()
+    {
+        var metrics = new List<Metric>
+        {
+            Sample(0, cpu: 0.0), Sample(1, cpu: 0.1), Sample(2, cpu: 0.0), Sample(3, cpu: 0.2)
+        };
+
+        Assert.Null(new MetricDeviationRule().Evaluate(_h.Context(_now, metrics)));
+    }
+
+    [Fact]
     public void DeviationRuleNeedsABaseline()
     {
         var metrics = new List<Metric> { Sample(0, cpu: 20), Sample(1, cpu: 90) };
@@ -355,6 +366,19 @@ public class DetectionTests : IDisposable
     {
         var signals = await _h.CreateDetectionEngine()
             .EvaluateAsync(Guid.NewGuid(), "Production");
+
+        Assert.Empty(signals);
+    }
+
+    [Fact]
+    public async Task EngineIgnoresTelemetryForADeletedOrUnregisteredProject()
+    {
+        _h.SeedMetric(DateTime.UtcNow, cpu: 99);
+        _h.Db.Projects.RemoveRange(_h.Db.Projects);
+        await _h.Db.SaveChangesAsync();
+
+        var signals = await _h.CreateDetectionEngine()
+            .EvaluateAsync(_h.ProjectId, _h.Environment, _h.Service);
 
         Assert.Empty(signals);
     }

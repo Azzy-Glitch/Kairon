@@ -220,10 +220,30 @@ public sealed class TelemetryKeyEnforcementTests : IDisposable
         _h.Db, TestHarness.Opt(new PlatformSecurityOptions { RequireTelemetryKey = require }), TimeProvider.System);
 
     [Fact]
-    public async Task DisabledByDefaultAllowsAnyProjectThrough()
+    public async Task DisabledKeyRequirementStillRejectsAnUnregisteredProject()
     {
         var authorized = await Service(require: false).AuthorizeAsync(Guid.NewGuid(), null, default);
-        Assert.True(authorized);
+        Assert.False(authorized);
+    }
+
+    [Fact]
+    public async Task DisabledKeyRequirementAllowsARegisteredActiveProjectWithoutAKey()
+    {
+        var project = new Project { Name = "test" };
+        _h.Db.Projects.Add(project);
+        _h.Db.SaveChanges();
+
+        Assert.True(await Service(require: false).AuthorizeAsync(project.Id, null, default));
+    }
+
+    [Fact]
+    public async Task InactiveProjectIsRejectedEvenWhenKeysAreOptional()
+    {
+        var project = new Project { Name = "test", IsActive = false };
+        _h.Db.Projects.Add(project);
+        _h.Db.SaveChanges();
+
+        Assert.False(await Service(require: false).AuthorizeAsync(project.Id, null, default));
     }
 
     [Fact]

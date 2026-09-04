@@ -69,6 +69,13 @@ public sealed class ProjectCredentialService : IProjectCredentialService
 
     public async Task<bool> AuthorizeAsync(Guid projectId, string? suppliedKey, CancellationToken cancellationToken)
     {
+        // Discovered processes are not connected projects. Requiring an active project here keeps
+        // stale SDK processes (especially after Delete all data) from recreating orphan telemetry
+        // and autonomous incidents under arbitrary project ids.
+        if (!await _db.Projects.AsNoTracking()
+                .AnyAsync(x => x.Id == projectId && x.IsActive, cancellationToken))
+            return false;
+
         if (!_options.RequireTelemetryKey) return true;
         if (string.IsNullOrWhiteSpace(suppliedKey) || suppliedKey.Length < 16) return false;
         var prefix = suppliedKey[..Math.Min(12, suppliedKey.Length)];

@@ -46,6 +46,14 @@ public class DetectionOptions
     /// <summary>Standard deviations from the window baseline that count as a sudden deviation.</summary>
     public double DeviationSigma { get; set; } = 3.0;
 
+    // Sigma alone is unstable around a near-zero baseline: 0.0 -> 0.2% CPU can be several sigma
+    // while being operationally meaningless. Each unit therefore also needs a useful minimum
+    // absolute change before a deviation can become an incident.
+    public double CpuDeviationMinimumPoints { get; set; } = 5;
+    public double MemoryDeviationMinimumPoints { get; set; } = 5;
+    public double LatencyDeviationMinimumMs { get; set; } = 100;
+    public double QueueDeviationMinimum { get; set; } = 5;
+
     /// <summary>Identical errors on one endpoint within the window that count as "repeated errors".</summary>
     public int RepeatedErrorCount { get; set; } = 5;
 

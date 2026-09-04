@@ -122,8 +122,11 @@ public sealed class TestHarness : IDisposable
         new(Db, AllRules(), cooldown ?? new InMemoryDetectionCooldownStore(),
             Opt(Detection), NullLogger<DetectionEngine>.Instance);
 
-    public CorrelationEngine CreateCorrelationEngine() =>
-        new(Db, Audit, new IncidentKeyGenerator(Db), Opt(Detection), NullLogger<CorrelationEngine>.Instance);
+    public CorrelationEngine CreateCorrelationEngine()
+    {
+        EnsureProject();
+        return new(Db, Audit, new IncidentKeyGenerator(Db), Opt(Detection), NullLogger<CorrelationEngine>.Instance);
+    }
 
     public EvidenceCollector CreateEvidenceCollector() =>
         new(Db, Tools, Opt(AiOptions), Opt(Detection), NullLogger<EvidenceCollector>.Instance);
@@ -160,6 +163,7 @@ public sealed class TestHarness : IDisposable
         long? retries = null,
         long? queue = null)
     {
+        EnsureProject();
         var metric = new Metric
         {
             Id = Guid.NewGuid(),
@@ -191,6 +195,7 @@ public sealed class TestHarness : IDisposable
         string? errorType = "DownstreamTimeoutException",
         string? errorMessage = "Order processing retry exhausted")
     {
+        EnsureProject();
         var row = new Incident
         {
             Id = Guid.NewGuid(),
@@ -235,6 +240,7 @@ public sealed class TestHarness : IDisposable
         IncidentSeverity severity = IncidentSeverity.High,
         string? correlationKey = null)
     {
+        EnsureProject();
         var incident = new SreIncident
         {
             IncidentKey = $"INC-{Db.SreIncidents.Count() + 1:D4}",
@@ -263,6 +269,22 @@ public sealed class TestHarness : IDisposable
         Db.SreIncidents.Add(incident);
         Db.SaveChanges();
         return incident;
+    }
+
+    public void EnsureProject()
+    {
+        if (Db.Projects.Local.Any(p => p.Id == ProjectId) || Db.Projects.Any(p => p.Id == ProjectId))
+            return;
+
+        Db.Projects.Add(new Kairon.Backend.Models.Platform.Project
+        {
+            Id = ProjectId,
+            Name = "Order API",
+            Slug = "order-api",
+            IsActive = true,
+            CreatedAt = DateTime.UtcNow
+        });
+        Db.SaveChanges();
     }
 
     public void Dispose()

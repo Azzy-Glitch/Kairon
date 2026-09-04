@@ -83,6 +83,15 @@ public class CorrelationTests : IDisposable
     }
 
     [Fact]
+    public async Task ADeviationIsLabeledAsAnAnomalyNotAThresholdBreach()
+    {
+        var incidents = await _h.CreateCorrelationEngine()
+            .CorrelateAsync(new List<DetectionSignal> { Signal("metric-deviation:cpu", "cpu") });
+
+        Assert.Equal($"{_h.Service} CPU Anomaly", incidents[0].Title);
+    }
+
+    [Fact]
     public async Task ALogPatternOnlySignalGetsAMeaningfulTitleNotAnomaly()
     {
         var incidents = await _h.CreateCorrelationEngine()
@@ -276,5 +285,19 @@ public class CorrelationTests : IDisposable
 
         Assert.Empty(incidents);
         Assert.Equal(0, await _h.Db.SreIncidents.CountAsync());
+    }
+
+    [Fact]
+    public async Task SignalsCannotRecreateAnIncidentAfterTheirProjectWasDeleted()
+    {
+        var engine = _h.CreateCorrelationEngine();
+        _h.Db.Projects.RemoveRange(_h.Db.Projects);
+        await _h.Db.SaveChangesAsync();
+
+        var incidents = await engine.CorrelateAsync(
+            new List<DetectionSignal> { Signal("cpu-threshold", "cpu") });
+
+        Assert.Empty(incidents);
+        Assert.Empty(_h.Db.SreIncidents);
     }
 }

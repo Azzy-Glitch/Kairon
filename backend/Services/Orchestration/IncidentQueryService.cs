@@ -64,7 +64,7 @@ public class IncidentQueryService : IIncidentQueryService
         int limit,
         CancellationToken cancellationToken = default)
     {
-        var query = _db.SreIncidents.AsNoTracking().AsQueryable();
+        var query = RegisteredIncidents();
 
         if (!string.IsNullOrWhiteSpace(status))
         {
@@ -105,8 +105,7 @@ public class IncidentQueryService : IIncidentQueryService
         // multiplication. Safe here: this is a single AsNoTracking() read of one incident by id,
         // not a paged list, so there is no risk of the well-known split-query paging/ordering
         // pitfall (that only applies when Skip/Take is combined with a split query on the root).
-        var incident = await _db.SreIncidents
-            .AsNoTracking()
+        var incident = await RegisteredIncidents()
             .AsSplitQuery()
             .Include(i => i.Actions)
             .Include(i => i.Events)
@@ -212,7 +211,9 @@ public class IncidentQueryService : IIncidentQueryService
     {
         var events = await _db.IncidentEvents
             .AsNoTracking()
-            .Where(e => e.IncidentId == id)
+            .Where(e => e.IncidentId == id
+                        && _db.SreIncidents.Any(i => i.Id == e.IncidentId
+                            && _db.Projects.Any(p => p.Id == i.ProjectId && p.IsActive)))
             .OrderBy(e => e.Timestamp)
             .ToListAsync(cancellationToken);
 
@@ -224,6 +225,8 @@ public class IncidentQueryService : IIncidentQueryService
         var events = await _db.IncidentEvents
             .AsNoTracking()
             .Include(e => e.Incident)
+            .Where(e => e.Incident != null
+                        && _db.Projects.Any(p => p.Id == e.Incident.ProjectId && p.IsActive))
             .OrderByDescending(e => e.Timestamp)
             .Take(Math.Clamp(limit, 1, 100))
             .ToListAsync(cancellationToken);
@@ -250,7 +253,9 @@ public class IncidentQueryService : IIncidentQueryService
     {
         var evidence = await _db.IncidentEvidence
             .AsNoTracking()
-            .Where(e => e.IncidentId == id)
+            .Where(e => e.IncidentId == id
+                        && _db.SreIncidents.Any(i => i.Id == e.IncidentId
+                            && _db.Projects.Any(p => p.Id == i.ProjectId && p.IsActive)))
             .OrderBy(e => e.CollectedAt)
             .ToListAsync(cancellationToken);
 
@@ -267,7 +272,7 @@ public class IncidentQueryService : IIncidentQueryService
 
     public async Task<SreDashboardDto> GetDashboardAsync(Guid? projectId, CancellationToken cancellationToken = default)
     {
-        var query = _db.SreIncidents.AsNoTracking().AsQueryable();
+        var query = RegisteredIncidents();
         if (projectId.HasValue)
             query = query.Where(i => i.ProjectId == projectId.Value);
 
@@ -279,7 +284,8 @@ public class IncidentQueryService : IIncidentQueryService
         var open = recent.Where(i => i.IsOpen).ToList();
         var since = DateTime.UtcNow.AddHours(-24);
 
-        var metricsQuery = _db.Metrics.AsNoTracking().AsQueryable();
+        var metricsQuery = _db.Metrics.AsNoTracking()
+            .Where(m => _db.Projects.Any(p => p.Id == m.ProjectId && p.IsActive));
         if (projectId.HasValue)
             metricsQuery = metricsQuery.Where(m => m.ProjectId == projectId.Value);
 
@@ -389,6 +395,16 @@ public class IncidentQueryService : IIncidentQueryService
             return false;
         }
     }
+
+    /// <summary>
+    /// Autonomous views are intentionally limited to active, explicitly registered projects.
+    /// Machine discovery can retain process inventory without presenting its unpaired processes
+    /// as monitored applications, and orphaned history remains preserved in storage until the
+    /// operator explicitly deletes it.
+    /// </summary>
+    private IQueryable<SreIncident> RegisteredIncidents() => _db.SreIncidents
+        .AsNoTracking()
+        .Where(i => _db.Projects.Any(p => p.Id == i.ProjectId && p.IsActive));
 
     private static SreIncidentSummaryDto ToSummary(SreIncident i)
     {

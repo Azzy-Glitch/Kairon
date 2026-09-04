@@ -49,6 +49,12 @@ builder.Services.AddControllers(options =>
     options.Filters.Add<ValidationFilter>();
     // Gates the approve/reject/cancel endpoints when SreSecurity:RequireOperatorKey is enabled.
     options.Filters.Add<OperatorAuthorizationFilter>();
+}).AddJsonOptions(options =>
+{
+    // SQLite returns stored UTC DateTimes as Kind=Unspecified. Always include the UTC marker so
+    // browsers convert observations to the operator's actual local time instead of showing UTC
+    // clock values as if they were already local.
+    options.JsonSerializerOptions.Converters.Add(new UtcDateTimeJsonConverter());
 });
 
 builder.Services.AddEndpointsApiExplorer();

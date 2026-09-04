@@ -37,11 +37,9 @@ public class TelemetryController : ControllerBase
     }
 
     /// <summary>
-    /// Checks the per-project credential (docs/DESKTOP_SHELL.md) when
-    /// PlatformSecurity:RequireTelemetryKey is on. Off by default, and a project with no issued
-    /// credential keeps working unauthenticated even when it's on - this mirrors
-    /// OperatorAuthorizationFilter's fail-open-until-configured stance, and is what keeps every
-    /// existing test and the demo scenario passing unmodified.
+    /// Requires an active registered project, then checks its credential when
+    /// PlatformSecurity:RequireTelemetryKey is on. Process discovery alone never registers a
+    /// project, so it cannot create application incidents.
     /// </summary>
     private async Task<bool> AuthorizeAsync(Guid projectId, CancellationToken cancellationToken) =>
         await _credentials.AuthorizeAsync(projectId, Request.Headers[_security.TelemetryKeyHeader], cancellationToken);
@@ -66,7 +64,7 @@ public class TelemetryController : ControllerBase
             ErrorType = dto.ExceptionType,
             StackTrace = dto.StackTrace,
             Environment = string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
-            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : dto.Timestamp,
+            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : UtcDateTimeJsonConverter.Normalize(dto.Timestamp),
             // The SDK has always sent ApplicationName; persisting it (and the service name) is what
             // lets detection and correlation attribute this row to a service.
             Application = string.IsNullOrWhiteSpace(dto.ApplicationName) ? null : dto.ApplicationName,
@@ -114,7 +112,7 @@ public class TelemetryController : ControllerBase
             Service = dto.Service,
             Component = dto.Component,
             Environment = string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
-            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : dto.Timestamp
+            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : UtcDateTimeJsonConverter.Normalize(dto.Timestamp)
         };
 
         _db.Metrics.Add(metric);
@@ -145,7 +143,7 @@ public class TelemetryController : ControllerBase
         var agentEvent = new AgentEvent
         {
             ProjectId = dto.ProjectId,
-            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : dto.Timestamp,
+            Timestamp = dto.Timestamp == default ? DateTime.UtcNow : UtcDateTimeJsonConverter.Normalize(dto.Timestamp),
             EventType = dto.EventType,
             Environment = string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
             Application = dto.Application,
@@ -174,7 +172,8 @@ public class TelemetryController : ControllerBase
     [RequiresOperator]
     public async Task<IActionResult> GetIncidents([FromQuery] string? projectId, CancellationToken ct)
     {
-        var q = _db.Incidents.AsQueryable();
+        var q = _db.Incidents
+            .Where(i => _db.Projects.Any(p => p.Id == i.ProjectId && p.IsActive));
 
         if (!string.IsNullOrEmpty(projectId))
         {
@@ -200,7 +199,8 @@ public class TelemetryController : ControllerBase
         [FromQuery] int? limit,
         CancellationToken ct)
     {
-        var q = _db.Metrics.AsQueryable();
+        var q = _db.Metrics
+            .Where(m => _db.Projects.Any(p => p.Id == m.ProjectId && p.IsActive));
 
         if (!string.IsNullOrEmpty(projectId))
         {

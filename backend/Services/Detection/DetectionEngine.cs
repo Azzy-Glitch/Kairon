@@ -101,6 +101,16 @@ public class DetectionEngine : IDetectionEngine
         if (!_options.Enabled)
             return Array.Empty<DetectionSignal>();
 
+        // A sender can retry queued telemetry after its project was deleted, and legacy data may
+        // predate project registration. Neither case is a connected app, so it must never enter
+        // the autonomous incident pipeline.
+        if (!await _db.Projects.AsNoTracking()
+                .AnyAsync(p => p.Id == projectId && p.IsActive, cancellationToken))
+        {
+            _logger.LogDebug("Skipping detection for unregistered project {ProjectId}", projectId);
+            return Array.Empty<DetectionSignal>();
+        }
+
         var evaluatedAt = now ?? DateTime.UtcNow;
         var windowStart = evaluatedAt.AddSeconds(-_options.EvaluationWindowSeconds);
 

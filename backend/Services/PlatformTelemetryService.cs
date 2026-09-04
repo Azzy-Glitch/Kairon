@@ -201,7 +201,9 @@ public sealed class PlatformTelemetryService : IPlatformTelemetryService
     private static bool IsValid(NormalizedTelemetryEventDto item) => item.EventId != Guid.Empty
         && item.ProjectId != Guid.Empty && !string.IsNullOrWhiteSpace(item.EventType)
         && !string.IsNullOrWhiteSpace(item.Source) && !string.IsNullOrWhiteSpace(item.Application);
-    private static DateTime TimestampOf(NormalizedTelemetryEventDto item) => item.Timestamp == default ? DateTime.UtcNow : item.Timestamp.ToUniversalTime();
+    private static DateTime TimestampOf(NormalizedTelemetryEventDto item) => item.Timestamp == default
+        ? DateTime.UtcNow
+        : UtcDateTimeJsonConverter.Normalize(item.Timestamp);
     private static string ServiceOf(NormalizedTelemetryEventDto item) => string.IsNullOrWhiteSpace(item.Service) ? item.Application : item.Service;
     private static string EnvironmentOf(NormalizedTelemetryEventDto item) => EnvironmentOf(item.Environment);
     private static string EnvironmentOf(string value) => string.IsNullOrWhiteSpace(value) ? "Development" : value;

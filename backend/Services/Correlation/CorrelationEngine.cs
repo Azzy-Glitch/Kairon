@@ -48,10 +48,22 @@ public class CorrelationEngine : ICorrelationEngine
         if (signals.Count == 0)
             return Array.Empty<SreIncident>();
 
+        // A project can be deleted after detection was queued but before correlation executes.
+        // Re-check here so an in-flight work item cannot resurrect an orphan incident.
+        var projectIds = signals.Select(s => s.ProjectId).Distinct().ToList();
+        var activeProjectIds = (await _db.Projects.AsNoTracking()
+                .Where(p => projectIds.Contains(p.Id) && p.IsActive)
+                .Select(p => p.Id)
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
+        var eligibleSignals = signals.Where(s => activeProjectIds.Contains(s.ProjectId)).ToList();
+        if (eligibleSignals.Count == 0)
+            return Array.Empty<SreIncident>();
+
         var touched = new List<SreIncident>();
         var window = TimeSpan.FromSeconds(_options.CorrelationWindowSeconds);
 
-        foreach (var group in signals.GroupBy(s => s.CorrelationKey))
+        foreach (var group in eligibleSignals.GroupBy(s => s.CorrelationKey))
         {
             var grouped = group.ToList();
             var cutoff = grouped.Max(s => s.DetectedAt) - window;
@@ -259,12 +271,16 @@ public class CorrelationEngine : ICorrelationEngine
     private static string BuildTitle(List<DetectionSignal> signals, DetectionSignal primary)
     {
         var metrics = signals.Select(s => s.MetricName).Distinct().ToList();
+        if (metrics.Count == 1 && signals.All(s => s.RuleId.StartsWith("metric-deviation:", StringComparison.Ordinal)))
+            return $"{primary.Service} {Friendly(primary.MetricName)} Anomaly";
         return $"{primary.Service} {Condition(metrics, primary.MetricName)}";
     }
 
     private static string BuildTitleFromSnapshots(List<CorrelatedSignalSnapshot> snapshots, string service)
     {
         var metrics = snapshots.Select(s => s.MetricName).Distinct().ToList();
+        if (metrics.Count == 1 && snapshots.All(s => s.Rule.StartsWith("metric-deviation:", StringComparison.Ordinal)))
+            return $"{service} {Friendly(metrics[0])} Anomaly";
         return $"{service} {Condition(metrics, metrics.FirstOrDefault() ?? string.Empty)}";
     }
 
