@@ -19,6 +19,7 @@ AppId={{9BE9042A-B83A-4BED-9651-7C5B7086C9AF}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppCopyright=Copyright (c) 2026 Abdul Aziz Qureshi
 DefaultDirName={autopf}\Kairon
 DefaultGroupName=Kairon
 PrivilegesRequired=admin

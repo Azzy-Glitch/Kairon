@@ -8,7 +8,9 @@ version = "1.0.1"
 description = "Kairon telemetry SDK for Python applications - a collector, not a dependency on the Kairon platform."
 readme = "README.md"
 requires-python = ">=3.9"
-license = "MIT"
+authors = [{ name = "Abdul Aziz Qureshi" }]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 dependencies = []
 
 [project.optional-dependencies]

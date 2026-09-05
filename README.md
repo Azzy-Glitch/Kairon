@@ -8,7 +8,7 @@ operator through approval, remediation, and verification.
 
 | Current release | Platform | Core stack | License |
 |---|---|---|---|
-| **1.0.1** | Windows x64 | .NET 10, React 18/Vite 7, Python/FastAPI | MIT |
+| **1.0.1** | Windows x64 | .NET 10, React 18/Vite 7, Python/FastAPI | Apache-2.0 |
 
 Every .NET executable produced from a Git checkout includes the source commit in its product
 version, for example `1.0.1+d8d46f68...`. This distinguishes builds that share the same release
@@ -543,4 +543,6 @@ version sources together for a release and build from a clean, reviewed commit.
 
 ## License
 
-KAIRON is licensed under the [MIT License](LICENSE).
+KAIRON is licensed under the [Apache License 2.0](LICENSE).
+
+Copyright (c) 2026 Abdul Aziz Qureshi.

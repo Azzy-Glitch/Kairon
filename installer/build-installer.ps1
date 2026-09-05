@@ -60,6 +60,7 @@ foreach ($stagingDirectory in @($package, $backend, $agent, $useragent, $ai, $py
     }
 }
 New-Item -ItemType Directory -Force -Path $package, $backend, $agent, $useragent, $ai, (Join-Path $artifacts "installer") | Out-Null
+Copy-Item -LiteralPath (Join-Path $repository "LICENSE"), (Join-Path $repository "NOTICE") -Destination $package
 
 Push-Location (Join-Path $repository "frontend")
 try {

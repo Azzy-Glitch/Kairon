@@ -13,6 +13,7 @@ RUN dotnet restore backend/Kairon.Backend.csproj
 COPY backend/ backend/
 RUN dotnet publish backend/Kairon.Backend.csproj -c Release -o /out --no-restore -p:SkipFrontendBuild=true
 COPY --from=frontend /source/frontend/dist/ /out/wwwroot/
+COPY LICENSE NOTICE /out/
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 RUN apt-get update \
