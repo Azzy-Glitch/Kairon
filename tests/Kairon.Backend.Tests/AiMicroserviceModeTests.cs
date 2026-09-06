@@ -32,14 +32,14 @@ public sealed class AiMicroserviceModeTests : IDisposable
         _configService = new AiProviderConfigService(_db, new EphemeralDataProtectionProvider(), TimeProvider.System);
     }
 
-    private AiMicroservice CreateMicroservice(bool staticMockMode)
+    private AiMicroservice CreateMicroservice(bool staticMockMode, string? reportedMode = null)
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["AiService:MockMode"] = staticMockMode.ToString() })
             .Build();
 
         return new AiMicroservice(
-            new HttpClient { BaseAddress = new Uri("http://127.0.0.1:1") },
+            reportedMode is null ? new HttpClient { BaseAddress = new Uri("http://127.0.0.1:1") } : new HttpClient(new ModeHandler(reportedMode)) { BaseAddress = new Uri("http://127.0.0.1:1") },
             configuration,
             Options.Create(new AiOrchestrationOptions()),
             _configService,
@@ -57,18 +57,18 @@ public sealed class AiMicroserviceModeTests : IDisposable
     }
 
     [Fact]
-    public async Task NoSavedConfigurationPreservesTheExistingStaticMockModeFalse()
+    public async Task AnUnavailableExternalServiceIsNotReportedAsLive()
     {
         var ai = CreateMicroservice(staticMockMode: false);
 
-        Assert.Equal("live", await ai.GetModeAsync());
+        Assert.Equal("unavailable", await ai.GetModeAsync());
     }
 
     [Fact]
     public async Task ASavedConfigurationOverridesStaticMockModeTrue()
     {
         await _configService.SaveAsync("groq", "gsk_real_looking_key", "openai/gpt-oss-120b", null);
-        var ai = CreateMicroservice(staticMockMode: true);
+        var ai = CreateMicroservice(staticMockMode: true, reportedMode: "live");
 
         Assert.Equal("groq", await ai.GetModeAsync());
     }
@@ -89,5 +89,17 @@ public sealed class AiMicroserviceModeTests : IDisposable
     {
         _db.Dispose();
         _connection.Dispose();
+    }
+
+    [Fact]
+    public async Task ExternalMockIsReportedAsMockEvenWhenStaticMockIsDisabled()
+    {
+        Assert.Equal("mock", await CreateMicroservice(false, "mock").GetModeAsync());
+    }
+
+    private sealed class ModeHandler(string mode) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("{\"mode\":\"" + mode + "\"}") });
     }
 }

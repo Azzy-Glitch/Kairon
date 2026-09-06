@@ -67,6 +67,20 @@ out, and cancellation-aware; a failure returns a result rather than throwing. Th
 is bounded (`QueueCapacity`, default 1000) and drops the oldest item under pressure rather than
 growing or blocking the host application.
 
+## Delivery diagnostics and shutdown
+
+Resolve `IKaironTelemetryQueue` to inspect lifetime `DeliveredCount`, `FailedCount`,
+and `DroppedCount`. `PendingCount` excludes an in-flight send. `FlushAsync(token)` waits
+for queued and in-flight items, bounded by five seconds or the supplied cancellation,
+whichever is earlier. It returns false after any lifetime failure/drop or on timeout.
+Stop request producers before calling it for a final result. The hosted sender closes
+its queue and attempts a five-second drain during shutdown, then cancels outstanding I/O.
+
+Delivery remains best effort, without durable storage or automatic retries: an ambiguous
+timeout cannot safely be retried against the legacy endpoints without risking duplicates.
+Monitor the counters; queue emptiness is not proof of collector acceptance. Custom
+`IKaironTelemetryQueue` implementations must implement the added diagnostic members.
+
 ## Requirements
 
 Targets `net10.0` and references `Microsoft.AspNetCore.App` — for use in an ASP.NET Core host.

@@ -24,6 +24,10 @@ public interface IKaironTelemetryQueue
     long DroppedCount { get; }
 
     int PendingCount { get; }
+    long DeliveredCount { get; }
+    long FailedCount { get; }
+    /// <summary>Includes queued and in-flight items; false on timeout or any lifetime loss.</summary>
+    Task<bool> FlushAsync(CancellationToken cancellationToken = default);
 }
 
 internal record TelemetryWorkItem(TelemetryPayload? Telemetry, MetricPayload? Metric);
@@ -31,7 +35,14 @@ internal record TelemetryWorkItem(TelemetryPayload? Telemetry, MetricPayload? Me
 public class KaironTelemetryQueue : IKaironTelemetryQueue
 {
     private readonly Channel<TelemetryWorkItem> _channel;
-    private long _dropped;
+    private long _dropped, _delivered, _failed;
+    private readonly object _gate = new();
+    private int _outstanding;
+    private TaskCompletionSource _idle = Completed();
+    private static TaskCompletionSource Completed() {
+        var source = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        source.SetResult(); return source;
+    }
 
     public KaironTelemetryQueue(IOptions<KaironOptions> options)
     {
@@ -44,12 +55,33 @@ public class KaironTelemetryQueue : IKaironTelemetryQueue
             FullMode = BoundedChannelFullMode.DropOldest,
             SingleReader = true,
             SingleWriter = false
-        });
+        }, _ => { Interlocked.Increment(ref _dropped); Finish(); });
     }
 
     public long DroppedCount => Interlocked.Read(ref _dropped);
 
     public int PendingCount => _channel.Reader.Count;
+    public long DeliveredCount => Interlocked.Read(ref _delivered);
+    public long FailedCount => Interlocked.Read(ref _failed);
+
+    internal void Complete() => _channel.Writer.TryComplete();
+    internal void RecordDelivery(bool delivered) {
+        if (delivered) Interlocked.Increment(ref _delivered);
+        else Interlocked.Increment(ref _failed);
+        Finish();
+    }
+    private void Finish() {
+        lock (_gate) { if (--_outstanding == 0) _idle.TrySetResult(); }
+    }
+    public async Task<bool> FlushAsync(CancellationToken cancellationToken = default) {
+        Task idle;
+        lock (_gate) idle = _idle.Task;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        try { await idle.WaitAsync(deadline.Token); }
+        catch (OperationCanceledException) { return false; }
+        return FailedCount == 0 && DroppedCount == 0;
+    }
 
     public bool TryEnqueue(TelemetryPayload payload) => Write(new TelemetryWorkItem(payload, null));
 
@@ -57,11 +89,14 @@ public class KaironTelemetryQueue : IKaironTelemetryQueue
 
     private bool Write(TelemetryWorkItem item)
     {
-        if (_channel.Writer.TryWrite(item))
-            return true;
-
-        Interlocked.Increment(ref _dropped);
-        return false;
+        lock (_gate) {
+            if (_outstanding++ == 0)
+                _idle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (_channel.Writer.TryWrite(item)) return true;
+            Interlocked.Increment(ref _dropped);
+            Finish();
+            return false;
+        }
     }
 
     internal IAsyncEnumerable<TelemetryWorkItem> ReadAllAsync(CancellationToken cancellationToken) =>
@@ -85,24 +120,31 @@ public class KaironTelemetrySender : BackgroundService
         _client = client;
     }
 
+    public override async Task StopAsync(CancellationToken cancellationToken) {
+        _queue.Complete();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        try {
+            if (ExecuteTask is not null) await ExecuteTask.WaitAsync(deadline.Token);
+        } catch (OperationCanceledException) { }
+        // Cancel an in-flight HTTP request if the bounded drain expired.
+        await base.StopAsync(deadline.Token);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
         {
             await foreach (var item in _queue.ReadAllAsync(stoppingToken))
             {
-                try
-                {
-                    if (item.Telemetry is not null)
-                        await _client.SendAsync(item.Telemetry, stoppingToken);
-                    else if (item.Metric is not null)
-                        await _client.SendMetricAsync(item.Metric, stoppingToken);
-                }
-                catch
-                {
-                    // The client already swallows its own failures; this is belt and braces so a
-                    // single bad item can never stop the drain loop.
-                }
+                var delivered = false;
+                try {
+                    var result = item.Telemetry is not null
+                        ? await _client.SendAsync(item.Telemetry, stoppingToken)
+                        : await _client.SendMetricAsync(item.Metric!, stoppingToken);
+                    delivered = result?.Success == true;
+                } catch { /* Fail open; loss remains visible in FailedCount. */ }
+                finally { _queue.RecordDelivery(delivered); }
             }
         }
         catch (OperationCanceledException)

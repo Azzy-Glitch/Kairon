@@ -19,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -68,7 +68,7 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
             // keeps its backup.
             if (version == 0)
             {
-                await ValidateModelAsync(connection, transaction, EntitiesAsOf(version: 1), cancellationToken);
+                await ValidateModelAsync(connection, transaction, EntitiesAsOf(version: 1), cancellationToken, legacy: true);
                 await ExecuteAsync(connection, transaction, "PRAGMA user_version = 1;", cancellationToken);
                 version = 1;
                 _logger.LogInformation("Adopted verified SQLite 1.0.1 schema as local schema version {Version}", version);
@@ -99,6 +99,16 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                 await ExecuteAsync(connection, transaction, "PRAGMA user_version = 3;", cancellationToken);
                 version = 3;
                 _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: AiProviderConfigs.Endpoint", version);
+            }
+
+            if (version == 3) {
+                foreach (var table in new[] { "Incidents", "Metrics" }) {
+                    var columns = await ColumnsAsync(connection, transaction, table, cancellationToken);
+                    if (!columns.Contains("MachineId"))
+                        await ExecuteAsync(connection, transaction, $"ALTER TABLE \"{table}\" ADD COLUMN \"MachineId\" TEXT NULL;", cancellationToken);
+                }
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 4;", cancellationToken);
+                version = 4;
             }
 
             if (version != CurrentVersion)
@@ -141,7 +151,7 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
         DbConnection connection,
         DbTransaction transaction,
         IEnumerable<IEntityType> entities,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool legacy = false)
     {
         foreach (var entity in entities)
         {
@@ -155,6 +165,7 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var actual = await ColumnsAsync(connection, transaction, table, cancellationToken);
 
+            if (legacy && table is "Incidents" or "Metrics") expected.Remove("MachineId");
             var missing = expected.Except(actual, StringComparer.OrdinalIgnoreCase).Order().ToArray();
             if (actual.Count == 0 || missing.Length > 0)
             {

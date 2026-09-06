@@ -17,7 +17,7 @@ public sealed class SdkInstallationTests : IDisposable
 
     private MonitoredApplication SeedApplication(Guid projectId)
     {
-        _h.Db.Projects.Add(new Project { Id = projectId, Name = "Demo", Slug = "demo" });
+        _h.Db.Projects.Add(new Project { Id = projectId, Name = "Development", Slug = "demo" });
         var app = new MonitoredApplication
         {
             Id = Guid.NewGuid(), ProjectId = projectId, Name = "Kairon.DemoApp", Service = "OrderProcessingService"

@@ -161,6 +161,9 @@ namespace Kairon.Backend.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<Guid?>("MachineId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<Guid>("ProjectId")
                         .HasColumnType("uniqueidentifier");
 
@@ -232,6 +235,9 @@ namespace Kairon.Backend.Migrations
 
                     b.Property<double?>("MemoryPercent")
                         .HasColumnType("float");
+
+                    b.Property<Guid?>("MachineId")
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<Guid>("ProjectId")
                         .HasColumnType("uniqueidentifier");

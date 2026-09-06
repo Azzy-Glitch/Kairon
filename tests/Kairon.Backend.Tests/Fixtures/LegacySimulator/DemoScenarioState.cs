@@ -39,7 +39,7 @@ public class DemoStateDto
     public string Service { get; set; } = "OrderProcessingService";
     public string Application { get; set; } = "Kairon.DemoApp";
     public Guid ProjectId { get; set; }
-    public string Environment { get; set; } = "Demo";
+    public string Environment { get; set; } = "Development";
 }
 
 public class DemoCommandResult

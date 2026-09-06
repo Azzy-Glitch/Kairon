@@ -9,7 +9,6 @@ import { useFilteredBySource } from '../../lib/SourceFilterContext';
 import { resolveSource, sourceMeta } from '../../lib/source';
 import { domainForMetric } from '../../lib/chartDomains';
 import { useIncidents } from '../../hooks/useIncidents';
-import { useDemo } from '../../hooks/useDemo';
 import { useServiceMetrics } from '../../hooks/useTelemetry';
 import { relativeTime, formatDateTime, formatMetricValue, groupByService } from '../../services/incidentService';
 import { IconServer, IconShield, IconChevronDown } from '../Icons';
@@ -28,7 +27,7 @@ function toSeries(recent, pick) {
 /**
  * Service-centric health view (frontend PRD section 24; redesign brief section 8: Services).
  *
- * Composed entirely from the existing incident list and demo telemetry - no new backend endpoint.
+ * Composed entirely from the existing incident list and service telemetry - no new backend endpoint.
  * A "service" here is whatever the incident's own `service` field says; there is no separate
  * service registry to query, so a service with zero incidents ever is not something this page can
  * know about (frontend PRD section 28: do not fabricate data that is not available).
@@ -42,7 +41,6 @@ function toSeries(recent, pick) {
  */
 export default function ServicesPage() {
   const feed = useIncidents({ status: '', pollMs: 5000 });
-  const demo = useDemo({ pollMs: 5000 });
   const [selectedName, setSelectedName] = useState(null);
 
   const filteredIncidents = useFilteredBySource(feed.incidents, resolveSource);
@@ -85,7 +83,7 @@ export default function ServicesPage() {
         query={feed}
         loadingLabel="Loading service health..."
         emptyTitle="No services observed yet"
-        emptyHint="A service appears here once Kairon detects and correlates a signal against it. Run the incident simulation to see one."
+        emptyHint="A service appears here once Kairon detects and correlates a signal against it. Connect a service to begin collecting evidence."
         emptyIcon={<IconShield className="w-10 h-10" />}
       >
         {() => (
@@ -105,7 +103,6 @@ export default function ServicesPage() {
                       key={svc.name}
                       service={svc}
                       source={source}
-                      demoState={svc.name === 'OrderProcessingService' ? demo.data : null}
                       onOpen={() => setSelectedName(svc.name)}
                     />
                   ))}
@@ -120,7 +117,7 @@ export default function ServicesPage() {
   );
 }
 
-function ServiceCard({ service, source, demoState, onOpen }) {
+function ServiceCard({ service, source, onOpen }) {
   const healthy = service.health === 'Healthy';
   const meta = sourceMeta[source];
 
@@ -166,14 +163,6 @@ function ServiceCard({ service, source, demoState, onOpen }) {
           <span className="service-stat-value">{service.incidents.length}</span>
         </div>
       </div>
-
-      {demoState && (
-        <div className="service-card-metrics">
-          <span>CPU {formatMetricValue(demoState.cpuPercent, '%')}</span>
-          <span>Latency {formatMetricValue(demoState.latencyMs, 'ms')}</span>
-          <span>Errors {formatMetricValue(demoState.errorRate != null ? demoState.errorRate * 100 : null, '%')}</span>
-        </div>
-      )}
 
       {service.worstActive ? (
         <div className="service-card-incident">

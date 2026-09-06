@@ -29,7 +29,7 @@ vi.mock('../../api', () => ({
   }
 }));
 
-vi.mock('../../hooks/useDemo', () => ({
+vi.mock('../../hooks/useHealth', () => ({
   useHealth: () => ({
     health: {
       backend: true, database: true, aiService: true, detectionEnabled: true,

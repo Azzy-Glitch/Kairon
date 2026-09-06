@@ -11,7 +11,7 @@ export default defineConfig({
     proxy: {
       // Mirrors the installed same-origin layout while preserving the Vite development server.
       '/api': {
-        target: 'http://localhost:8000',
+        target: process.env.KAIRON_BACKEND_URL || 'http://localhost:8000',
         changeOrigin: true,
         configure: (proxy) => {
           // Development equivalent of the desktop WebView header injection. The secret remains

@@ -230,13 +230,51 @@ public class DetectionTests : IDisposable
 
     // --- Sudden deviation ---
 
+    [Theory]
+    [InlineData(0.8, 1.2, 1.6, 2.0, 2.4, 1.6, 1.6, 7.2)]
+    [InlineData(20.0, 21.0, 20.0, 21.0, 20.0, 70.0, 20.0, 70.0)]
+    public void DeviationRejectsIsolatedAndInterruptedSpikes(params double[] values)
+    {
+        var metrics = values.Select((v, i) => Sample(i - 4, cpu: v)).ToList();
+        Assert.Null(new MetricDeviationRule().Evaluate(_h.Context(_now, metrics)));
+    }
+
+    [Fact]
+    public void SustainedStepFromFlatBaselineIsDetected()
+    {
+        var metrics = Enumerable.Range(0, 8).Select(i => Sample(i - 4, cpu: i < 5 ? 20 : 70)).ToList();
+        Assert.NotNull(new MetricDeviationRule().Evaluate(_h.Context(_now, metrics)));
+        metrics[^2].CpuPercent = null;
+        Assert.Null(new MetricDeviationRule().Evaluate(_h.Context(_now, metrics)));
+    }
+
+    [Fact]
+    public void DeviationRequiresElapsedBreachTime()
+    {
+        var metrics = Enumerable.Range(0, 8).Select(i => Sample(i - 4, cpu: i < 5 ? 20 : 70)).ToList();
+        foreach (var metric in metrics) metric.Timestamp = _now;
+        Assert.Null(new MetricDeviationRule().Evaluate(_h.Context(_now, metrics)));
+    }
+
+    [Fact]
+    public void FrequentSamplesStillDetectASustainedStep()
+    {
+        _h.Detection.SustainedBreachSeconds = 20;
+        var metrics = Enumerable.Range(0, 26).Select(i => new Metric {
+            Timestamp = _now.AddSeconds(i - 25), CpuPercent = i < 5 ? 20 : 70
+        }).ToList();
+        Assert.NotNull(new MetricDeviationRule().Evaluate(_h.Context(_now, metrics)));
+    }
+
     [Fact]
     public void DeviationRuleCatchesAStepChangeBelowTheStaticThreshold()
     {
         // Every value here is under the 80% CPU threshold, so only the deviation rule can catch it.
         var metrics = new List<Metric>
         {
-            Sample(0, cpu: 20), Sample(1, cpu: 21), Sample(2, cpu: 20), Sample(3, cpu: 70)
+            Sample(-4, cpu: 20), Sample(-3, cpu: 21), Sample(-2, cpu: 20),
+            Sample(-1, cpu: 21), Sample(0, cpu: 20),
+            Sample(1, cpu: 70), Sample(2, cpu: 70), Sample(3, cpu: 70)
         };
 
         var signal = new MetricDeviationRule().Evaluate(_h.Context(_now, metrics));

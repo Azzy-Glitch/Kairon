@@ -14,7 +14,7 @@ public class IncidentProcessingQueueTests
         var item = DetectionItem();
 
         Assert.True(queue.TryEnqueue(item));
-        Assert.True(queue.TryEnqueue(item with { Environment = " demo ", Service = "orders" }));
+        Assert.True(queue.TryEnqueue(item with { Environment = " development ", Service = "orders" }));
         Assert.Equal(1, queue.Count);
     }
 
@@ -80,6 +80,6 @@ public class IncidentProcessingQueueTests
     private static IncidentWorkItem DetectionItem() => new(
         WorkItemKind.EvaluateDetection,
         Guid.Parse("550e8400-e29b-41d4-a716-446655440000"),
-        "Demo",
+        "Development",
         "Orders");
 }

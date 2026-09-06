@@ -358,7 +358,7 @@ public class LocalDemoSimulator : ILocalDemoSimulator
         LastTickAt = _lastTickAt,
         UsingLocalSimulator = true,
         ProjectId = ProjectId,
-        Environment = "Demo"
+        Environment = "Development"
     };
 
     private static double Lerp(double from, double to, double t) => from + (to - from) * Math.Clamp(t, 0, 1);

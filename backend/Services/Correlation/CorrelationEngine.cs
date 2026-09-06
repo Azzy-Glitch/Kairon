@@ -259,6 +259,7 @@ public class CorrelationEngine : ICorrelationEngine
     private static CorrelatedSignalSnapshot Snapshot(DetectionSignal s) => new()
     {
         Rule = s.RuleId,
+        MachineId = s.MachineId,
         MetricName = s.MetricName,
         Symptom = s.Symptom,
         Observed = s.Observed,

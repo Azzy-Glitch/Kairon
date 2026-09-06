@@ -363,9 +363,8 @@ public class IncidentQueryService : IIncidentQueryService
 
     public List<RemediationToolDto> GetTools()
     {
-        // Policy is evaluated against a representative demo-environment incident so the UI can show
-        // which tools would actually be permitted, rather than listing everything unconditionally.
-        var probe = new SreIncident { Environment = "Demo", Service = "probe" };
+        // No global authorization claim: a real incident and configured target are required.
+        var probe = new SreIncident { Environment = "Production", Service = "" };
 
         return _tools.All().Select(t =>
         {

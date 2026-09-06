@@ -219,35 +219,37 @@ public class MetricDeviationRule : IDetectionRule
 
     public DetectionSignal? Evaluate(DetectionContext ctx)
     {
-        // Needs a baseline plus a current sample; four is the smallest window where a standard
-        // deviation is worth anything at all.
-        if (ctx.Metrics.Count < 4) return null;
+        var baselineCount = Math.Max(3, ctx.Options.DeviationBaselineSamples);
+        var breachCount = Math.Max(2, ctx.Options.DeviationBreachSamples);
+        if (ctx.Metrics.Count < baselineCount + breachCount) return null;
 
         foreach (var (name, unit, selector, minimumChange) in Tracked)
         {
-            var series = ctx.Metrics
-                .Select(selector)
-                .Where(v => v.HasValue)
-                .Select(v => v!.Value)
-                .ToList();
-
-            if (series.Count < 4) continue;
-
-            var current = series[^1];
-            var baseline = series.Take(series.Count - 1).ToList();
+            var series = ctx.Metrics.OrderBy(m => m.Timestamp).ToList();
+            var breachStart = series.Count - breachCount;
+            while (breachStart > 0 && (series[^1].Timestamp - series[breachStart].Timestamp).TotalSeconds < ctx.Options.SustainedBreachSeconds)
+                breachStart--;
+            // Missing values in the breach window break continuity; do not bridge gaps.
+            var recent = series.Skip(breachStart).ToList();
+            if (recent.Any(m => !selector(m).HasValue)) continue;
+            if ((recent[^1].Timestamp - recent[0].Timestamp).TotalSeconds < ctx.Options.SustainedBreachSeconds)
+                continue;
+            var baseline = series.Take(breachStart)
+                .Select(selector).Where(v => v.HasValue).Select(v => v!.Value).ToList();
+            if (baseline.Count < baselineCount) continue;
+            var current = selector(recent[^1])!.Value;
             var mean = baseline.Average();
             var variance = baseline.Sum(v => Math.Pow(v - mean, 2)) / baseline.Count;
             var stdDev = Math.Sqrt(variance);
 
-            // A flat baseline gives stdDev 0 and would divide by zero; require real movement.
-            if (stdDev < 0.0001) continue;
-
-            // Statistical significance is not operational significance. This prevents normal
-            // near-idle jitter (for example 0.0 -> 0.2% CPU) from becoming a false incident.
-            if (current - mean < minimumChange(ctx.Options)) continue;
-
-            var sigma = (current - mean) / stdDev;
-            if (sigma < ctx.Options.DeviationSigma) continue;
+            var minimum = Math.Max(0.0001, minimumChange(ctx.Options));
+            var requiredSigma = Math.Max(0.1, ctx.Options.DeviationSigma);
+            // A flat baseline can still have a genuine sustained step. Bound the denominator
+            // by the operational floor rather than ignoring zero-variance baselines entirely.
+            var scale = Math.Max(stdDev, minimum / requiredSigma);
+            if (recent.Any(m => selector(m)!.Value - mean < minimum ||
+                (selector(m)!.Value - mean) / scale < requiredSigma)) continue;
+            var sigma = (current - mean) / scale;
 
             var signal = ctx.NewSignal(Kind, $"{RuleId}:{name}");
             signal.MetricName = name;

@@ -91,31 +91,31 @@ class MockProvider(AIProvider):
             # certain than an elevated rate, so it outranks every metric-based branch below.
             root_cause = "The monitored process stopped running unexpectedly."
             confidence = 0.95
-            preferred = "RestartDemoService"
+            preferred = "StartService"
             predicted = "The service remains unavailable until the process is restarted."
         elif has_retries:
-            root_cause = "Controlled retry loop causing repeated downstream requests, saturating worker threads."
+            root_cause = "Repeated retries may be amplifying a downstream failure; the cause is not yet confirmed."
             confidence = 0.92
-            preferred = "DisableDemoRetryLoop"
+            preferred = "RunHealthCheck"
             predicted = (
                 "Order processing latency will continue increasing and the request backlog will keep growing."
             )
         elif has_cpu and has_latency:
             root_cause = "CPU saturation is driving request latency above the configured threshold."
             confidence = 0.78
-            preferred = "ReduceDemoWorkerConcurrency"
+            preferred = "RunHealthCheck"
             predicted = "Latency will continue rising and begin affecting dependent endpoints."
         elif has_errors:
             root_cause = "A repeating downstream failure is driving the error rate above threshold."
             confidence = 0.71
-            preferred = "RestartDemoService"
+            preferred = "RestartService"
             predicted = "The error rate will remain elevated and failed requests will accumulate."
         elif has_log_pattern:
             # Evidence from application logs only - no metric threshold breached yet, but the
             # Agent's tailer already deduplicated this down to a real repeated pattern, not noise.
             root_cause = "Application logs show a repeated error pattern, most likely an unhandled exception."
             confidence = 0.68
-            preferred = "RestartDemoService"
+            preferred = "RestartService"
             predicted = "The logged failure will keep recurring until the underlying cause is addressed."
         else:
             root_cause = "Resource pressure on the affected service."
@@ -126,16 +126,16 @@ class MockProvider(AIProvider):
         # Only ever recommend something the backend actually offered. If the preferred tool is not
         # on the list, fall back to the first available one rather than naming a tool that does not
         # exist.
-        action = preferred if preferred in available else (available[0] if available else "")
+        action = preferred if preferred in available else ("RunHealthCheck" if "RunHealthCheck" in available else "")
 
         recommendations = []
         if action:
             recommendations.append(
                 {
                     "action": action,
-                    "reason": "The leading signal in the supplied evidence points to this as the controllable cause.",
-                    "expected_outcome": "The breached metrics return toward their baseline.",
-                    "risk_level": "low",
+                    "reason": "Inspect the enrolled service state." if action == "RunHealthCheck" else "A bounded service operation may restore availability; the underlying cause remains a hypothesis.",
+                    "expected_outcome": "SCM state only; this check does not repair faults." if action == "RunHealthCheck" else "Service availability may recover; fresh scoped telemetry must confirm recovery.",
+                    "risk_level": "low" if action == "RunHealthCheck" else "medium",
                 }
             )
 

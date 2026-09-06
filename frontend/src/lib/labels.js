@@ -13,6 +13,10 @@
  */
 
 export const actionLabel = {
+  StartService: 'Start the Windows service',
+  RestartService: 'Restart the Windows service',
+  StopService: 'Stop the Windows service',
+  // Historical records remain readable; these simulator actions are no longer registered.
   RestartDemoService: 'Restart the service',
   ClearDemoCache: 'Clear the cache',
   DisableDemoRetryLoop: 'Turn off the retry loop',
@@ -22,12 +26,15 @@ export const actionLabel = {
 };
 
 export const actionDescription = {
+  StartService: 'Starts the explicitly enrolled and allowlisted Windows service.',
+  RestartService: 'Restarts the explicitly enrolled and allowlisted Windows service.',
+  StopService: 'Stops the explicitly enrolled and allowlisted Windows service.',
   RestartDemoService: 'Restarts the affected service process.',
   ClearDemoCache: "Clears the service's in-memory cache.",
   DisableDemoRetryLoop: 'Stops the runaway retry loop that is amplifying load.',
   ReduceDemoWorkerConcurrency: 'Lowers concurrent worker threads to relieve resource pressure.',
   ResetDemoFailureSimulation: 'Resets the simulated failure condition back to normal.',
-  RunHealthCheck: "Runs a fresh health check against the service's control API."
+  RunHealthCheck: 'Queries Windows SCM state. Application recovery requires fresh telemetry.'
 };
 
 export const signalLabel = {

@@ -152,6 +152,7 @@ public class RemediationTests : IDisposable
     {
         var incident = _h.SeedIncident();
         incident.Environment = "Production";
+        _h.Remediation.AllowedEnvironments.Remove("Production");
 
         var decision = _h.Policy.ValidateProposal(incident, DemoToolNames.RunHealthCheck, RiskLevel.Low);
 

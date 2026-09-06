@@ -4,6 +4,7 @@ public class MetricDto
 {
     public Guid Id { get; set; }
     public Guid ProjectId { get; set; }
+    public Guid? MachineId { get; set; }
     public DateTime Timestamp { get; set; }
     public double? CpuPercent { get; set; }
     public double? MemoryPercent { get; set; }

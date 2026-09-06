@@ -21,19 +21,36 @@ public class TelemetryController : ControllerBase
     private readonly IIncidentProcessingQueue _queue;
     private readonly IProjectCredentialService _credentials;
     private readonly PlatformSecurityOptions _security;
+    private readonly WindowsRemediationOptions _windows;
 
     public TelemetryController(
         AppDbContext db,
         IContextEngine context,
         IIncidentProcessingQueue queue,
         IProjectCredentialService credentials,
-        IOptions<PlatformSecurityOptions> security)
+        IOptions<PlatformSecurityOptions> security,
+        IOptions<WindowsRemediationOptions>? windows = null)
     {
         _db = db;
         _context = context;
         _queue = queue;
         _credentials = credentials;
         _security = security.Value;
+        _windows = windows?.Value ?? new WindowsRemediationOptions();
+    }
+
+    private async Task<bool> AuthorizeMachineScopeAsync(Guid projectId, Guid? machineId, string environment, string? service, CancellationToken ct)
+    {
+        if (!machineId.HasValue) return true; // Legacy telemetry is readable but cannot verify a machine target.
+        var targets = _windows.Targets.Where(t => t.ProjectId == projectId && t.MachineId == machineId &&
+            t.Environment.Equals(environment, StringComparison.OrdinalIgnoreCase) && t.Service == service).ToList();
+        if (targets.Count != 1 || !await _db.Machines.AnyAsync(m => m.Id == machineId, ct)) return false;
+        var credentialId = targets[0].TelemetryCredentialId;
+        var credential = await _db.ProjectApiCredentials.AsNoTracking().SingleOrDefaultAsync(c => c.Id == credentialId && c.ProjectId == projectId && c.RevokedAt == null, ct);
+        var supplied = Request.Headers[_security.TelemetryKeyHeader].ToString();
+        if (credential is null || string.IsNullOrWhiteSpace(supplied)) return false;
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(supplied)));
+        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(System.Text.Encoding.ASCII.GetBytes(hash), System.Text.Encoding.ASCII.GetBytes(credential.KeyHash));
     }
 
     /// <summary>
@@ -53,9 +70,14 @@ public class TelemetryController : ControllerBase
         if (!await AuthorizeAsync(dto.ProjectId, cancellationToken))
             return Unauthorized(new { error = "A valid project API key is required." });
 
+        if (!await AuthorizeMachineScopeAsync(dto.ProjectId, dto.MachineId, string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
+            string.IsNullOrWhiteSpace(dto.Service) ? dto.ApplicationName : dto.Service, cancellationToken))
+            return Unauthorized(new { error = "The credential is not authorized for this machine and service scope." });
+
         var incident = new Incident
         {
             ProjectId = dto.ProjectId,
+            MachineId = dto.MachineId,
             Endpoint = dto.Endpoint,
             Method = dto.Method,
             StatusCode = dto.StatusCode,
@@ -98,9 +120,13 @@ public class TelemetryController : ControllerBase
         if (!await AuthorizeAsync(dto.ProjectId, cancellationToken))
             return Unauthorized(new { error = "A valid project API key is required." });
 
+        if (!await AuthorizeMachineScopeAsync(dto.ProjectId, dto.MachineId, string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment, dto.Service, cancellationToken))
+            return Unauthorized(new { error = "The credential is not authorized for this machine and service scope." });
+
         var metric = new Metric
         {
             ProjectId = dto.ProjectId,
+            MachineId = dto.MachineId,
             CpuPercent = dto.CpuPercent,
             MemoryPercent = dto.MemoryPercent,
             ResponseTimeMs = dto.ResponseTimeMs,
@@ -170,7 +196,7 @@ public class TelemetryController : ControllerBase
 
     [HttpGet("incidents")]
     [RequiresOperator]
-    public async Task<IActionResult> GetIncidents([FromQuery] string? projectId, CancellationToken ct)
+    public async Task<IActionResult> GetIncidents([FromQuery] string? projectId, CancellationToken ct, [FromQuery] string? service = null)
     {
         var q = _db.Incidents
             .Where(i => _db.Projects.Any(p => p.Id == i.ProjectId && p.IsActive));
@@ -182,6 +208,8 @@ public class TelemetryController : ControllerBase
 
             q = q.Where(i => i.ProjectId == pid);
         }
+
+        if (!string.IsNullOrEmpty(service)) q = q.Where(i => i.Service == service);
 
         var result = await q
             .OrderByDescending(i => i.Timestamp)

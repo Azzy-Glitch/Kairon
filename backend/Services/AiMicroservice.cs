@@ -1,3 +1,4 @@
+using Kairon.Backend.Services.Remediation.Tools;
 using Kairon.Backend.Configuration;
 using Kairon.Backend.DTOs;
 using Kairon.Backend.DTOs.Sre;
@@ -53,9 +54,21 @@ public class AiMicroservice : IAiMicroservice
     public async Task<string> GetModeAsync(CancellationToken cancellationToken = default)
     {
         var selection = await _providerConfig.GetSelectionAsync(cancellationToken);
-        if (selection is { } config && await _providerConfig.HasValidConfigurationAsync(cancellationToken))
-            return config.Provider;
-        return _staticMockModeDefault ? "mock" : "live";
+        var configured = selection is not null && await _providerConfig.HasValidConfigurationAsync(cancellationToken);
+        if (!configured && _staticMockModeDefault) return "mock";
+        try {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(3));
+            using var response = await _httpClient.GetAsync("/health", HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            response.EnsureSuccessStatusCode();
+            await response.Content.LoadIntoBufferAsync(4096, timeout.Token);
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
+            var mode = body.RootElement.GetProperty("mode").GetString();
+            if (mode == "mock") return "mock";
+            if (mode == "live") return configured ? selection!.Value.Provider : "live";
+            return "unknown";
+        } catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch { return "unavailable"; }
     }
 
     public async Task<ErrorAnalysisResponse> AnalyzeErrorAsync(string log, CancellationToken cancellationToken = default)
@@ -373,29 +386,12 @@ public class AiMicroservice : IAiMicroservice
                     ? "A repeating downstream failure is driving the error rate above threshold."
                     : "Resource pressure on the affected service.";
 
-        var recommendation = hasRetryStorm
-            ? new AiRecommendationDto
-            {
-                Action = DemoToolNames.DisableDemoRetryLoop,
-                Reason = "Retry volume is the leading signal; every other metric follows it.",
-                ExpectedOutcome = "Retry count returns to baseline and CPU utilization decreases.",
-                RiskLevel = "low"
-            }
-            : hasCpu
-                ? new AiRecommendationDto
-                {
-                    Action = DemoToolNames.ReduceDemoWorkerConcurrency,
-                    Reason = "Worker concurrency is above what the service can sustain at this load.",
-                    ExpectedOutcome = "CPU utilization drops back under the threshold.",
-                    RiskLevel = "low"
-                }
-                : new AiRecommendationDto
-                {
-                    Action = DemoToolNames.RunHealthCheck,
-                    Reason = "Evidence is insufficient for a targeted action; confirm current state first.",
-                    ExpectedOutcome = "Fresh health data for the affected service.",
-                    RiskLevel = "low"
-                };
+        var recommendation = new AiRecommendationDto {
+            Action = ServiceToolNames.RunHealthCheck,
+            Reason = "Inspect the configured service before proposing a change.",
+            ExpectedOutcome = "Current service state; this read-only check does not repair application faults.",
+            RiskLevel = "low"
+        };
 
         return new InvestigationResultDto
         {
@@ -417,7 +413,7 @@ public class AiMicroservice : IAiMicroservice
                 ? "Request backlog will continue growing and order processing latency will keep increasing."
                 : "Degradation will continue and begin affecting dependent endpoints.",
             EstimatedRisk = evidence.Incident.Severity.ToLowerInvariant() is "critical" or "high" ? "high" : "medium",
-            Recommendations = new List<AiRecommendationDto> { recommendation },
+            Recommendations = evidence.AvailableActions.Any(a => a.Action == recommendation.Action) ? new List<AiRecommendationDto> { recommendation } : new(),
             Provider = "mock",
             Model = "deterministic-mock"
         };

@@ -31,6 +31,7 @@ public class KaironTelemetryClient
 
         // Always send ProjectId
         payload.ProjectId = _options.ProjectId;
+        payload.MachineId = _options.MachineId;
 
         return PostAsync("api/telemetry/incidents", payload, cancellationToken);
     }
@@ -43,6 +44,7 @@ public class KaironTelemetryClient
             return Task.FromResult<TelemetryResponse?>(null);
 
         payload.ProjectId = _options.ProjectId;
+        payload.MachineId = _options.MachineId;
 
         return PostAsync("api/telemetry/metrics", payload, cancellationToken);
     }
@@ -67,7 +69,7 @@ public class KaironTelemetryClient
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.TimeoutSeconds)));
 
-            var response = await _http.SendAsync(request, timeout.Token);
+            using var response = await _http.SendAsync(request, timeout.Token);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -82,7 +84,15 @@ public class KaironTelemetryClient
             // body is informational, so a deserialization problem is reported, never thrown.
             try
             {
-                return await response.Content.ReadFromJsonAsync<TelemetryResponse>(cancellationToken: timeout.Token);
+                // Legacy metric ingestion responds with {status:"recorded"}, not Success.
+                var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>(cancellationToken: timeout.Token);
+                var rejected = body.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                    body.TryGetProperty("success", out var success) && success.ValueKind == System.Text.Json.JsonValueKind.False;
+                return new TelemetryResponse {
+                    Success = !rejected, Message = rejected ? "Collector rejected telemetry." : "Delivered.",
+                    TelemetryId = body.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                        body.TryGetProperty("telemetryId", out var id) && id.ValueKind == System.Text.Json.JsonValueKind.String ? id.GetString() : null
+                };
             }
             catch
             {

@@ -1,4 +1,5 @@
 using Kairon.Backend.Configuration;
+using Kairon.Backend.Services.Remediation.Tools;
 using Kairon.Backend.Models.Sre;
 using Microsoft.Extensions.Options;
 
@@ -83,12 +84,15 @@ public class RemediationPolicy : IRemediationPolicy
                 $"Risk {effectiveRisk} exceeds the configured maximum of {_options.MaxAllowedRisk}.");
         }
 
-        if (!_options.AllowedEnvironments.Contains(incident.Environment, StringComparer.OrdinalIgnoreCase))
+        if (!ProductEnvironments.Contains(incident.Environment) ||
+            !_options.AllowedEnvironments.Contains(incident.Environment, StringComparer.OrdinalIgnoreCase))
         {
             return PolicyDecision.Deny("environment-not-allowed",
                 $"Remediation is not permitted in environment '{incident.Environment}'.");
         }
 
+        if (tool is IScopedRemediationTool scoped && scoped.TargetFingerprint(incident) is null)
+            return PolicyDecision.Deny("target-not-authorized", "No unique, online, enrolled and allowlisted Windows service target matches this incident.");
         return PolicyDecision.Allow($"'{tool.Name}' is registered, permitted, and within the risk ceiling.");
     }
 
@@ -102,6 +106,15 @@ public class RemediationPolicy : IRemediationPolicy
         var proposal = ValidateProposal(incident, action.ActionType, action.RiskLevel);
         if (!proposal.Allowed)
             return proposal;
+
+        if (action.IncidentId != incident.Id)
+            return PolicyDecision.Deny("incident-mismatch", "Action does not belong to this incident.");
+        if (_registry.TryGet(action.ActionType, out var executionTool) && executionTool is IScopedRemediationTool scoped) {
+            var parameters = SreJson.Deserialize(action.ParametersJson, new Dictionary<string, string>());
+            if (!executionTool.ValidateParameters(parameters, out _) ||
+                !parameters.TryGetValue("targetFingerprint", out var binding) || binding != scoped.TargetFingerprint(incident))
+                return PolicyDecision.Deny("target-changed", "The approved target binding is missing or changed; obtain a new recommendation and approval.");
+        }
 
         // The specific reason wins over the generic one: an operator told "approval required" for
         // an action they already rejected would reasonably think approving it again would help.

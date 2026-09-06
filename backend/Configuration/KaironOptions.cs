@@ -46,6 +46,9 @@ public class DetectionOptions
     /// <summary>Standard deviations from the window baseline that count as a sudden deviation.</summary>
     public double DeviationSigma { get; set; } = 3.0;
 
+    public int DeviationBaselineSamples { get; set; } = 5;
+    public int DeviationBreachSamples { get; set; } = 3;
+
     // Sigma alone is unstable around a near-zero baseline: 0.0 -> 0.2% CPU can be several sigma
     // while being operationally meaningless. Each unit therefore also needs a useful minimum
     // absolute change before a deviation can become an incident.
@@ -94,7 +97,7 @@ public class RemediationOptions
     public List<string> BlockedTools { get; set; } = new();
 
     /// <summary>Environments in which execution is permitted at all.</summary>
-    public List<string> AllowedEnvironments { get; set; } = new() { "Development", "Demo", "Staging" };
+    public List<string> AllowedEnvironments { get; set; } = new() { "Development", "Staging", "Production" };
 
     public int ExecutionTimeoutSeconds { get; set; } = 30;
 
@@ -181,19 +184,4 @@ public class SreSecurityOptions
 
     /// <summary>Server-side only. Never returned by any endpoint and never logged.</summary>
     public string? OperatorKey { get; set; }
-}
-
-/// <summary>Where the demo-environment remediation tools point (PRD section 20).</summary>
-public class DemoEnvironmentOptions
-{
-    public const string SectionName = "DemoEnvironment";
-
-    public string BaseUrl { get; set; } = "http://localhost:5080";
-    public int TimeoutSeconds { get; set; } = 10;
-
-    /// <summary>
-    /// When the demo app is not running, tools fall back to an in-process simulator so the whole
-    /// lifecycle still demonstrates end to end. Disable to make tool failures real.
-    /// </summary>
-    public bool AllowLocalSimulatorFallback { get; set; } = true;
 }

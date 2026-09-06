@@ -48,7 +48,7 @@ public abstract class DemoRemediationToolBase : IRemediationTool
         CancellationToken cancellationToken = default)
     {
         if (RequiresDemoEnvironment &&
-            !context.Environment.Equals("Demo", StringComparison.OrdinalIgnoreCase) &&
+            !context.Environment.Equals("Development", StringComparison.OrdinalIgnoreCase) &&
             !context.Environment.Equals("Development", StringComparison.OrdinalIgnoreCase))
         {
             return RemediationToolResult.Fail(

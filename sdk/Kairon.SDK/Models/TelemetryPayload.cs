@@ -3,6 +3,7 @@ namespace Kairon.SDK.Models;
 public class TelemetryPayload
 {
     public Guid ProjectId { get; set; }
+    public Guid? MachineId { get; set; }
 
     public string ApplicationName { get; set; } = string.Empty;
     public string Environment { get; set; } = "Production";

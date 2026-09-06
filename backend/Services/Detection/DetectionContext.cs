@@ -13,6 +13,7 @@ public class DetectionContext
     public required DetectionOptions Options { get; init; }
 
     public Guid ProjectId { get; init; }
+    public Guid? MachineId { get; init; }
     public string Application { get; init; } = "Unknown";
     public string Service { get; init; } = "Unknown";
     public string Environment { get; init; } = "Development";

@@ -1,15 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { telemetryApi, sdkApi } from '../api/index';
 import { IconServer, IconRefresh, IconCopy, IconCheck, IconLink } from './Icons';
 import { useToast } from './Toast';
 import Badge from './ui/Badge';
 import Button from './ui/Button';
 import MetricTile from './ui/MetricTile';
-
-const SOURCES = [
-  { id: 'dotnet', label: '.NET' },
-  { id: 'python', label: 'Python' }
-];
 
 function round(value) {
   if (value === null || value === undefined || Number.isNaN(value)) return null;
@@ -25,16 +20,11 @@ function StatusCodeBadge({ code }) {
   return <Badge tone={tone}>{code}</Badge>;
 }
 
-/**
- * One SDK-source panel (redesign brief section 8: Live telemetry). The backend has no per-project
- * SdkType field (Project/ProjectApiCredential carry only Id/Name/CreatedAt - confirmed by reading
- * ProjectsController directly rather than assuming), so this section lets the operator pick which
- * project represents ".NET" vs "Python" from the same project list the Connect an app page already
- * uses, instead of a free-text GUID field. "Connected" is an honest, locally-derived signal: this
- * project has returned at least one telemetry row on its most recent load.
- */
+// Legacy SDK rows identify projects and services, not authenticated SDK languages.
 function TelemetrySection({ label, projects }) {
   const [projectId, setProjectId] = useState('');
+  const [service, setService] = useState('');
+  const generation = useRef(0);
   const [incidents, setIncidents] = useState([]);
   const [metrics, setMetrics] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -44,30 +34,39 @@ function TelemetrySection({ label, projects }) {
 
   const load = async () => {
     if (!projectId) return;
+    const request = ++generation.current;
     setLoading(true);
     try {
       const [incidentRows, metricRows] = await Promise.all([
-        telemetryApi.getTelemetryIncidents(projectId),
-        telemetryApi.getMetrics(projectId)
+        telemetryApi.getTelemetryIncidents(projectId, service.trim() || undefined),
+        telemetryApi.getMetrics(projectId, service.trim() || undefined)
       ]);
+      if (request !== generation.current) return;
       setIncidents(incidentRows);
       setMetrics(metricRows);
       setLoaded(true);
     } catch (e) {
+      if (request !== generation.current) return;
       addToast(`Failed to load ${label} telemetry: ` + e.message, 'error');
     } finally {
-      setLoading(false);
+      if (request === generation.current) setLoading(false);
     }
   };
 
   useEffect(() => {
+    generation.current++;
+    setIncidents([]);
+    setMetrics([]);
+    setLoaded(false);
     if (!projectId) {
+      setLoading(false);
       setIncidents([]);
       setMetrics([]);
       setLoaded(false);
       return;
     }
     load();
+    return () => { generation.current++; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
@@ -91,7 +90,7 @@ function TelemetrySection({ label, projects }) {
           </div>
           <div>
             <h4>{label}</h4>
-            <p className="section-desc">Raw incidents and metrics reported by the {label} SDK for this project.</p>
+            <p className="section-desc">Requests and metrics for the selected project. SDK language is not inferred from project or service names.</p>
           </div>
         </div>
         <Badge tone={connected ? 'healthy' : 'neutral'}>{connected ? 'Connected' : 'Not connected'}</Badge>
@@ -101,7 +100,7 @@ function TelemetrySection({ label, projects }) {
         <select
           className="approval-input telemetry-project-select"
           value={projectId}
-          onChange={(e) => setProjectId(e.target.value)}
+          onChange={(e) => { setService(''); setProjectId(e.target.value); }}
           aria-label={`${label} project`}
         >
           <option value="">Select a project...</option>
@@ -129,13 +128,16 @@ function TelemetrySection({ label, projects }) {
           </>
         )}
 
+        <input className="approval-input" aria-label="Service filter" placeholder="Exact service name (optional)"
+          value={service} onChange={(e) => setService(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') load(); }} />
         <Button
           variant="ghost"
           size="compact"
           onClick={load}
           disabled={!projectId || loading}
-          aria-label="Refresh"
-          title="Refresh"
+          aria-label="Apply filter and refresh"
+          title="Apply filter and refresh"
         >
           <IconRefresh className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
         </Button>
@@ -144,7 +146,7 @@ function TelemetrySection({ label, projects }) {
       {!projectId ? (
         <p className="panel-pending-text telemetry-empty-hint">
           <IconLink className="w-4 h-4" />
-          Select a project above, or pair a {label} app on the "Connect an app" page to create one.
+          Select a project above, or pair an app on the "Connect an app" page to create one.
         </p>
       ) : (
         <>
@@ -178,15 +180,16 @@ function TelemetrySection({ label, projects }) {
             />
           </div>
 
-          <h5 className="subheading">Incidents ({incidents.length})</h5>
+          <h5 className="subheading">Requests ({incidents.length})</h5>
           {incidents.length === 0 ? (
-            <p className="panel-pending-text">No incidents recorded yet for this project.</p>
+            <p className="panel-pending-text">No requests recorded for this selection.</p>
           ) : (
             <div className="table-responsive">
               <table className="custom-table">
                 <thead>
                   <tr>
                     <th>Time</th>
+                    <th>Service</th>
                     <th>Endpoint</th>
                     <th>Status</th>
                     <th>Duration</th>
@@ -197,6 +200,7 @@ function TelemetrySection({ label, projects }) {
                   {incidents.map((inc, i) => (
                     <tr key={i}>
                       <td>{new Date(inc.timestamp).toLocaleTimeString()}</td>
+                      <td>{inc.service || inc.application || 'Unknown'}</td>
                       <td>
                         <code className="path-code">{inc.endpoint}</code>
                       </td>
@@ -217,11 +221,7 @@ function TelemetrySection({ label, projects }) {
   );
 }
 
-/**
- * Live telemetry (renamed from "Observability" - redesign brief section 8). Source-grouped
- * sections: one panel per SDK language, each independently scoped to a project, with live metric
- * tiles instead of static numbers and a Badge instead of raw colored status-code text.
- */
+// Project-scoped telemetry with optional exact service filtering.
 export default function TelemetryMonitor() {
   const [projects, setProjects] = useState([]);
 
@@ -231,9 +231,7 @@ export default function TelemetryMonitor() {
 
   return (
     <div className="animate-fade-in telemetry-monitor">
-      {SOURCES.map((source) => (
-        <TelemetrySection key={source.id} label={source.label} projects={projects} />
-      ))}
+      <TelemetrySection label="Project telemetry" projects={projects} />
     </div>
   );
 }

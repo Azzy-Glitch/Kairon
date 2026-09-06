@@ -3,7 +3,6 @@ import kaironLogo from '../../assets/kairon-logo.png';
 import TelemetryMonitor from './components/TelemetryMonitor';
 import SreDashboard from './components/sre/SreDashboard';
 import IncidentsPage from './components/sre/IncidentsPage';
-import DemoRunner from './components/sre/DemoRunner';
 import ServicesPage from './components/sre/ServicesPage';
 import AiInsightsPage from './components/sre/AiInsightsPage';
 import RemediationCenterPage from './components/sre/RemediationCenterPage';
@@ -17,7 +16,7 @@ import { ToastProvider } from './components/Toast';
 import { SourceFilterProvider } from './lib/SourceFilterContext';
 import { ThemeProvider } from './lib/ThemeContext';
 import { PollingPreferenceProvider } from './lib/PollingPreferenceContext';
-import { useDemo, useHealth } from './hooks/useDemo';
+import { useHealth } from './hooks/useHealth';
 import { useDashboard } from './hooks/useIncidents';
 import { relativeTime } from './services/incidentService';
 import { formatAbsoluteTime } from './lib/labels';
@@ -83,7 +82,6 @@ const NAV_GROUPS = [
     items: [
       { id: 'sdk', label: 'Connect an app', subtitle: 'Install, configure and pair a .NET or Python app', icon: <IconLink className="w-4 h-4" /> },
       { id: 'devtools', label: 'Diagnostics', subtitle: 'API validation, error analysis and prediction utilities', icon: <IconTerminal className="w-4 h-4" /> },
-      { id: 'demo', label: 'Demo', subtitle: 'Run the end-to-end incident simulation', icon: <IconRefresh className="w-4 h-4" /> },
       { id: 'settings', label: 'Settings', subtitle: 'Provider, policy and environment configuration', icon: <IconSettings className="w-4 h-4" /> }
     ]
   }
@@ -109,7 +107,6 @@ function AppShell() {
   // Incident-level severity, so the header pill reflects what's actually open rather than just
   // whether the backend/AI/database processes are up.
   const dashboard = useDashboard();
-  useDemo(); // keeps the demo-state poll warm so the Demo page opens with fresh data
 
   const active = ALL_TABS.find((t) => t.id === tab) || ALL_TABS[0];
   const overallHealth = deriveHealthState(dashboard.data?.severityDistribution);
@@ -250,7 +247,6 @@ function AppShell() {
           {tab === 'analytics' && <AnalyticsPage />}
           {tab === 'sdk' && <SdkPage />}
           {tab === 'devtools' && <DeveloperTools />}
-          {tab === 'demo' && <DemoRunner onOpenIncident={() => setTab('incidents')} />}
           {tab === 'settings' && <SettingsPage />}
 
           <footer className="footer-bar">

@@ -1,4 +1,5 @@
 using Kairon.Backend.Configuration;
+using Kairon.Backend.Services.Remediation.Tools;
 using Kairon.Backend.DTOs.Sre;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models.Sre;
@@ -448,6 +449,18 @@ public class IncidentOrchestrator : IIncidentOrchestrator
                 continue;
             }
 
+            // Scope is selected by trusted configuration, never by model-supplied parameters.
+            var parameters = recommendation.Parameters ?? new Dictionary<string, string>();
+            if (_tools.TryGet(recommendation.Action, out var scopedTool) && scopedTool is IScopedRemediationTool scoped) {
+                if (parameters.Count != 0) {
+                    _audit.Record(incident, IncidentEventTypes.PolicyEvaluated, "policy", result: "denied",
+                        message: "Windows service tools do not accept AI-supplied target parameters.");
+                    continue;
+                }
+                var binding = scoped.TargetFingerprint(incident);
+                if (binding is null) continue;
+                parameters = new Dictionary<string, string> { ["targetFingerprint"] = binding };
+            }
             var action = new RemediationAction
             {
                 IncidentId = incident.Id,
@@ -460,7 +473,7 @@ public class IncidentOrchestrator : IIncidentOrchestrator
                 Status = RemediationStatus.Proposed,
                 Source = "ai",
                 PolicyDecision = $"{decision.Code}: {decision.Reason}",
-                ParametersJson = SreJson.Serialize(recommendation.Parameters ?? new Dictionary<string, string>())
+                ParametersJson = SreJson.Serialize(parameters)
             };
 
             incident.Actions.Add(action);

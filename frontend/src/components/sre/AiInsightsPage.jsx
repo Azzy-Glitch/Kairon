@@ -7,7 +7,7 @@ import { resolveSource } from '../../lib/source';
 import { getActionLabel } from '../../lib/labels';
 import HorizontalBarChart from '../ui/charts/HorizontalBarChart';
 import { useIncidents, useIncidentDetails } from '../../hooks/useIncidents';
-import { useHealth } from '../../hooks/useDemo';
+import { useHealth } from '../../hooks/useHealth';
 import { confidenceBand, formatConfidence, formatDateTime } from '../../services/incidentService';
 import { IconSparkles, IconBug } from '../Icons';
 

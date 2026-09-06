@@ -1,4 +1,5 @@
 using Kairon.Backend.Configuration;
+using Kairon.Backend.Services.Remediation.Tools;
 using Kairon.Backend.DTOs.Sre;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models.Sre;
@@ -51,6 +52,7 @@ public class EvidenceCollector : IEvidenceCollector
     {
         var symptoms = SreJson.Deserialize(incident.SymptomsJson, new List<string>());
         var snapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
+        var machineId = IncidentMachineScope.GetMachineId(incident);
         var telemetryIds = SreJson.Deserialize(incident.TelemetryReferencesJson, new List<Guid>());
 
         // Look back a little further than detection did, so the model can see the run-up to the
@@ -61,6 +63,7 @@ public class EvidenceCollector : IEvidenceCollector
             .AsNoTracking()
             .Where(m => m.ProjectId == incident.ProjectId
                         && m.Environment == incident.Environment
+                        && m.Service == incident.Service && (!machineId.HasValue || m.MachineId == machineId)
                         && m.Timestamp >= windowStart)
             .OrderByDescending(m => m.Timestamp)
             .Take(_options.MaxMetricSamples)
@@ -70,6 +73,7 @@ public class EvidenceCollector : IEvidenceCollector
             .AsNoTracking()
             .Where(i => i.ProjectId == incident.ProjectId
                         && i.Environment == incident.Environment
+                        && i.Service == incident.Service && (!machineId.HasValue || i.MachineId == machineId)
                         && i.Timestamp >= windowStart
                         && (i.StatusCode >= 400 || i.ErrorMessage != null));
 
@@ -77,7 +81,7 @@ public class EvidenceCollector : IEvidenceCollector
         // preferred over a generic time-window scan.
         var linked = await _db.Incidents
             .AsNoTracking()
-            .Where(i => telemetryIds.Contains(i.Id))
+            .Where(i => telemetryIds.Contains(i.Id) && i.ProjectId == incident.ProjectId && i.Service == incident.Service && i.Environment == incident.Environment && (!machineId.HasValue || i.MachineId == machineId))
             .OrderByDescending(i => i.Timestamp)
             .Take(_options.MaxRelatedErrors)
             .ToListAsync(cancellationToken);
@@ -109,7 +113,7 @@ public class EvidenceCollector : IEvidenceCollector
         // just the ones a threshold rule turned into a signal, with the full (redacted) message.
         var agentEvents = await _db.AgentEvents
             .AsNoTracking()
-            .Where(e => e.ProjectId == incident.ProjectId
+            .Where(e => !machineId.HasValue && e.ProjectId == incident.ProjectId
                         && e.Environment == incident.Environment
                         && e.Service == incident.Service
                         && e.Timestamp >= windowStart)
@@ -204,6 +208,7 @@ public class EvidenceCollector : IEvidenceCollector
             // The closed set of things the model is allowed to propose. Anything it invents
             // outside this list is rejected by policy before it can reach an executor.
             AvailableActions = _tools.All()
+                .Where(t => t is not IScopedRemediationTool scoped || scoped.TargetFingerprint(incident) is not null)
                 .Select(t => new AvailableActionDto
                 {
                     Action = t.Name,

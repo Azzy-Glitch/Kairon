@@ -97,9 +97,11 @@ class Kairon:
         ignored_path_prefixes: tuple = DEFAULT_IGNORED_PATH_PREFIXES,
         enable_metrics: bool = True,
         metrics_interval_seconds: float = 5.0,
+        machine_id: Optional[str] = None,
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.project_id = project_id
+        self.machine_id = machine_id
         self.service = service
         self.application = application or service or "python-app"
         self.environment = environment
@@ -117,6 +119,12 @@ class Kairon:
         self._queue: "queue.Queue[tuple]" = queue.Queue(maxsize=max(1, queue_capacity))
         self._queue_lock = threading.Lock()
         self._dropped_count = 0
+        self._delivered_count = 0
+        self._failed_count = 0
+        self._outstanding = 0
+        self._delivery = threading.Condition()
+        self._closed = False
+        self._sender_stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._metrics_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -145,10 +153,44 @@ class Kairon:
         _default_instance = self
         return self
 
-    def stop(self) -> None:
-        """Signals the sender thread to stop. Fail-open: does not flush the queue, matching the
-        .NET SDK's own lack of a graceful-drain-on-shutdown guarantee."""
+    def flush(self, timeout_seconds: float = 5.0) -> bool:
+        """Wait for queued AND in-flight sends. False on timeout or any lifetime loss.
+        Call after producers stop for a final delivery result. Does not retry requests.
+        """
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        with self._delivery:
+            while self._outstanding:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._delivery.wait(remaining)
+            return self._failed_count == 0 and self._dropped_count == 0
+
+    def stop(self, timeout_seconds: float = 5.0) -> bool:
+        """Stop producers and attempt a bounded drain; never guarantee delivery on timeout."""
+        with self._queue_lock:
+            self._closed = True
         self._stop_event.set()
+        drained = self.flush(timeout_seconds)
+        self._sender_stop.set()
+        return drained
+
+    @property
+    def delivered_count(self) -> int:
+        return self._delivered_count
+
+    @property
+    def failed_count(self) -> int:
+        return self._failed_count
+
+    def _finish(self, delivered=None):
+        with self._delivery:
+            if delivered is True:
+                self._delivered_count += 1
+            elif delivered is False:
+                self._failed_count += 1
+            self._outstanding -= 1
+            self._delivery.notify_all()
 
     @property
     def dropped_count(self) -> int:
@@ -254,21 +296,29 @@ class Kairon:
 
     def _enqueue_telemetry(self, payload: dict) -> bool:
         payload["ProjectId"] = self.project_id
+        payload["MachineId"] = self.machine_id
         return self._enqueue(("api/telemetry/incidents", payload))
 
     def _enqueue_metric(self, payload: dict) -> bool:
         payload["ProjectId"] = self.project_id
+        payload["MachineId"] = self.machine_id
         return self._enqueue(("api/telemetry/metrics", payload))
 
     def _enqueue(self, item: tuple) -> bool:
         try:
             with self._queue_lock:
+                if self._closed:
+                    self._dropped_count += 1
+                    return False
                 if self._queue.full():
                     try:
                         self._queue.get_nowait()
                         self._dropped_count += 1
+                        self._finish()
                     except queue.Empty:
                         pass
+                with self._delivery:
+                    self._outstanding += 1
                 self._queue.put_nowait(item)
             return True
         except Exception:
@@ -279,18 +329,19 @@ class Kairon:
     # --- background send loop -----------------------------------------------------------
 
     def _run(self) -> None:
-        while not self._stop_event.is_set():
+        while not self._sender_stop.is_set():
             try:
                 path, payload = self._queue.get(timeout=0.5)
             except queue.Empty:
                 continue
 
+            delivered = False
             try:
-                self._send(path, payload)
+                delivered = self._send(path, payload)
             except Exception:
-                # A single bad send must never kill the sender thread - the next item still
-                # needs a chance to go out.
-                _logger.debug("kairon: failed to send telemetry", exc_info=True)
+                pass
+            finally:
+                self._finish(delivered is True)
 
     def _run_metrics(self) -> None:
         last_wall = time.perf_counter()
@@ -321,28 +372,25 @@ class Kairon:
                 # Automatic metrics are best-effort and must never affect the host application.
                 _logger.debug("kairon: failed to collect process metrics", exc_info=True)
 
-    def _send(self, path: str, payload: dict) -> None:
+    def _send(self, path: str, payload: dict) -> bool:
         if not self.enabled:
-            return
-
-        url = f"{self.endpoint}/{path}"
-        body = json.dumps(payload, default=str).encode("utf-8")
-
-        request = urllib.request.Request(
-            url, data=body, method="POST", headers={"Content-Type": "application/json"}
-        )
-        if self.api_key:
-            request.add_header("X-Kairon-API-Key", self.api_key)
-
+            return False
         try:
-            urllib.request.urlopen(request, timeout=self.timeout_seconds)
-        except (urllib.error.URLError, socket.timeout):
-            # Backend unreachable, DNS failure, connection refused, or timed out - reported
-            # nowhere but a debug log, exactly like the .NET client's caught-and-swallowed paths.
-            pass
+            request = urllib.request.Request(
+                f"{self.endpoint}/{path}", data=json.dumps(payload, default=str).encode("utf-8"),
+                method="POST", headers={"Content-Type": "application/json"})
+            if self.api_key:
+                request.add_header("X-Kairon-API-Key", self.api_key)
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                if not 200 <= response.status < 300:
+                    return False
+                try:
+                    body = json.loads(response.read())
+                    return not (isinstance(body, dict) and body.get("success") is False)
+                except (ValueError, UnicodeError):
+                    return True  # Legacy or informational response body.
         except Exception:
-            # Any other unexpected transport fault is still contained here.
-            pass
+            return False  # The background sender accounts for this failure.
 
 
 def _process_memory_percent() -> Optional[float]:

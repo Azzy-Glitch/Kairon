@@ -7,6 +7,7 @@ namespace Kairon.SDK.Models;
 public class MetricPayload
 {
     public Guid ProjectId { get; set; }
+    public Guid? MachineId { get; set; }
     public DateTime Timestamp { get; set; } = DateTime.UtcNow;
 
     public double? CpuPercent { get; set; }

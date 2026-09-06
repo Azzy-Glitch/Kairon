@@ -1,4 +1,5 @@
 using Kairon.Backend.Configuration;
+using Kairon.Backend.Services.Remediation.Tools;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models;
 using Kairon.Backend.Models.Sre;
@@ -68,32 +69,44 @@ public class VerificationService : IVerificationService
 
         await _db.SaveChangesAsync(cancellationToken);
 
+        var scoped = _tools.TryGet(action.ActionType, out var tool) ? tool as IScopedRemediationTool : null;
+        var parameters = SreJson.Deserialize(action.ParametersJson, new Dictionary<string, string>());
+        var bound = parameters.GetValueOrDefault("targetFingerprint");
+        var machineId = scoped?.TargetMachineId(incident);
+        var scopeValid = scoped is null || (machineId.HasValue && bound is not null && scoped.TargetFingerprint(incident) == bound);
         var executedAt = action.CompletedAt ?? action.StartedAt ?? DateTime.UtcNow;
 
         // "Before" is the degraded period, ending the moment the remediation ran.
         var beforeWindowStart = incident.Timestamp.AddSeconds(-_detection.EvaluationWindowSeconds);
-        var before = await SampleAsync(incident, beforeWindowStart, executedAt, cancellationToken);
+        var before = await SampleAsync(incident, beforeWindowStart, executedAt, machineId, cancellationToken);
 
         // "After" deliberately starts at the end of the settle period rather than at execution.
         // A fix takes time to take effect, and averaging from the moment it ran folds the whole
         // recovery ramp into the result - which reads as "still breaching" even when the service
         // has fully recovered. What matters is the state it settled at.
         var settleFrom = executedAt.AddSeconds(_options.SettleSeconds);
-        var after = await WaitForSettledTelemetryAsync(incident, settleFrom, cancellationToken);
+        var after = await WaitForSettledTelemetryAsync(incident, settleFrom, machineId, cancellationToken);
 
+        if (scoped is not null && scopeValid) {
+            try {
+                using var probeTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                probeTimeout.CancelAfter(TimeSpan.FromSeconds(5));
+                scopeValid = await scoped.IsRunningAsync(incident, bound!, probeTimeout.Token);
+            } catch { scopeValid = false; }
+        }
         var comparisons = BuildComparisons(incident, before, after);
 
         verification.CompletedAt = DateTime.UtcNow;
         verification.ComparisonsJson = SreJson.Serialize(comparisons);
 
-        if (after.SampleCount == 0)
+        if (!scopeValid || after.MetricSampleCount < Math.Max(1, _options.MinimumSamples))
         {
             // No fresh telemetry means we genuinely do not know. Saying "inconclusive" is the
             // honest answer; claiming recovery here would be the worst possible failure mode.
             verification.Status = VerificationStatus.Inconclusive;
             verification.RecoveryScore = 0;
-            verification.Summary = "No telemetry was received after remediation, so recovery could not be confirmed.";
-            verification.FailureReason = "no-post-remediation-telemetry";
+            verification.Summary = "Insufficient fresh service-scoped telemetry after remediation; recovery cannot be confirmed.";
+            verification.FailureReason = !scopeValid ? "target-scope-or-service-state-unverified" : "no-post-remediation-telemetry";
         }
         else
         {
@@ -103,7 +116,7 @@ public class VerificationService : IVerificationService
                 ? 0
                 : (double)checkedComparisons.Count(c => c.MeetsThreshold) / checkedComparisons.Count;
 
-            var passed = checkedComparisons.Count > 0 &&
+            var passed = checkedComparisons.Count > 0 && comparisons.All(c => c.Before.HasValue && c.After.HasValue && c.MeetsThreshold) &&
                          verification.RecoveryScore >= _options.RequiredRecoveryScore;
 
             verification.Status = passed ? VerificationStatus.Passed : VerificationStatus.Failed;
@@ -126,7 +139,7 @@ public class VerificationService : IVerificationService
             actionId: action.ActionKey,
             result: verification.Status.ToString(),
             message: verification.Summary,
-            data: comparisons);
+            data: new { incident.ProjectId, incident.Environment, incident.Service, machineId, targetFingerprint = bound, scopeValid, comparisons });
 
         await _db.SaveChangesAsync(cancellationToken);
 
@@ -146,6 +159,7 @@ public class VerificationService : IVerificationService
     private async Task<MetricWindow> WaitForSettledTelemetryAsync(
         SreIncident incident,
         DateTime settleFrom,
+        Guid? machineId,
         CancellationToken cancellationToken)
     {
         var deadline = settleFrom.AddSeconds(Math.Max(0, _options.MaxWaitSeconds));
@@ -160,7 +174,7 @@ public class VerificationService : IVerificationService
             }
 
             var window = await SampleAsync(
-                incident, settleFrom, settleFrom.AddSeconds(_options.WindowSeconds), cancellationToken);
+                incident, settleFrom, settleFrom.AddSeconds(_options.WindowSeconds), machineId, cancellationToken);
 
             if (window.MetricSampleCount >= _options.MinimumSamples)
                 return window;
@@ -182,14 +196,17 @@ public class VerificationService : IVerificationService
         SreIncident incident,
         DateTime from,
         DateTime to,
+        Guid? machineId,
         CancellationToken cancellationToken)
     {
         var metrics = await _db.Metrics
             .AsNoTracking()
             .Where(m => m.ProjectId == incident.ProjectId
                         && m.Environment == incident.Environment
+                        && m.Service == incident.Service
+                        && (!machineId.HasValue || m.MachineId == machineId)
                         && m.Timestamp >= from
-                        && m.Timestamp <= to)
+                        && m.Timestamp <= to && m.Timestamp <= DateTime.UtcNow)
             .OrderBy(m => m.Timestamp)
             .Take(300)
             .ToListAsync(cancellationToken);
@@ -198,8 +215,10 @@ public class VerificationService : IVerificationService
             .AsNoTracking()
             .Where(i => i.ProjectId == incident.ProjectId
                         && i.Environment == incident.Environment
+                        && i.Service == incident.Service
+                        && (!machineId.HasValue || i.MachineId == machineId)
                         && i.Timestamp >= from
-                        && i.Timestamp <= to)
+                        && i.Timestamp <= to && i.Timestamp <= DateTime.UtcNow)
             .OrderBy(i => i.Timestamp)
             .Take(500)
             .ToListAsync(cancellationToken);
@@ -223,6 +242,8 @@ public class VerificationService : IVerificationService
             .Where(m => !string.IsNullOrWhiteSpace(m))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        var required = new HashSet<string>(breached, StringComparer.OrdinalIgnoreCase);
+
         foreach (var action in incident.Actions.Where(a => a.Status == RemediationStatus.Executed))
         {
             if (_tools.TryGet(action.ActionType, out var tool))
@@ -242,6 +263,8 @@ public class VerificationService : IVerificationService
             ("latency", "ms", _detection.LatencyMsThreshold, w => w.Latency),
             ("errorRate", "%", _detection.ErrorRateThreshold * 100, w => w.ErrorRatePercent),
             ("retries", "/min", _detection.RetryStormPerMinute, w => w.RetriesPerMinute),
+            ("errors", "count", 0, w => w.Errors),
+            ("requests", "/min", _detection.RequestBurstPerMinute, w => w.RequestsPerMinute),
             ("queue", " items", _detection.QueueDepthThreshold, w => w.QueueDepth)
         };
 
@@ -254,6 +277,8 @@ public class VerificationService : IVerificationService
 
             var beforeValue = selector(before);
             var afterValue = selector(after);
+
+            if (!required.Contains(name) && (!beforeValue.HasValue || !afterValue.HasValue)) continue;
 
             var comparison = new MetricComparison
             {
@@ -269,6 +294,9 @@ public class VerificationService : IVerificationService
             comparisons.Add(comparison);
         }
 
+        foreach (var unknown in required.Except(definitions.Select(d => d.Name), StringComparer.OrdinalIgnoreCase))
+            comparisons.Add(new MetricComparison { Metric = unknown, MeetsThreshold = false });
+
         return comparisons;
     }
 
@@ -281,6 +309,8 @@ public class VerificationService : IVerificationService
         public double? ErrorRatePercent { get; private init; }
         public double? RetriesPerMinute { get; private init; }
         public double? QueueDepth { get; private init; }
+        public double? RequestsPerMinute { get; private init; }
+        public double? Errors { get; private init; }
         public int SampleCount { get; private init; }
 
         /// <summary>Metric samples only. Telemetry rows alone cannot answer "did the metrics recover".</summary>
@@ -323,6 +353,8 @@ public class VerificationService : IVerificationService
                 ErrorRatePercent = requests > 0 ? (double)errors / requests * 100 : null,
                 RetriesPerMinute = metrics.Any(m => m.RetryCount.HasValue) ? retryTotal / spanMinutes : null,
                 QueueDepth = Avg(m => m.QueueDepth),
+                Errors = requests > 0 ? errors : null,
+                RequestsPerMinute = requests / spanMinutes,
                 SampleCount = metrics.Count + telemetry.Count,
                 MetricSampleCount = metrics.Count
             };

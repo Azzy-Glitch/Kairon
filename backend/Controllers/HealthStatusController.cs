@@ -54,14 +54,15 @@ public class HealthStatusController : ControllerBase
             database = false;
         }
 
+        var aiMode = await _ai.GetModeAsync(cancellationToken);
         return Ok(new SystemHealthDto
         {
             Backend = true,
             Database = database,
-            AiService = _ai.IsAvailable,
+            AiService = aiMode is not ("unavailable" or "unknown") && _ai.IsAvailable,
             DetectionEnabled = _detection.Enabled,
             RemediationEnabled = _remediation.Enabled,
-            AiMode = await _ai.GetModeAsync(cancellationToken),
+            AiMode = aiMode,
             DatabaseProvider = _persistence.Provider,
             DatabaseSizeBytes = DatabaseSizeBytes(),
             MaintenanceStatus = _maintenance.Status,

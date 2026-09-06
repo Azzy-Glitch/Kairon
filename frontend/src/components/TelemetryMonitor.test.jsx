@@ -36,13 +36,20 @@ describe('TelemetryMonitor', () => {
     const user = userEvent.setup();
     render(<TelemetryMonitor />);
 
-    const pythonProject = await screen.findByLabelText('Python project');
+    const pythonProject = await screen.findByLabelText('Project telemetry project');
     await user.selectOptions(pythonProject, '18093e69-0faa-471b-ae6d-cda6164e338e');
 
     await waitFor(() => {
-      expect(telemetryApi.getTelemetryIncidents).toHaveBeenCalledWith('18093e69-0faa-471b-ae6d-cda6164e338e');
-      expect(telemetryApi.getMetrics).toHaveBeenCalledWith('18093e69-0faa-471b-ae6d-cda6164e338e');
+      expect(telemetryApi.getTelemetryIncidents).toHaveBeenCalledWith('18093e69-0faa-471b-ae6d-cda6164e338e', undefined);
+      expect(telemetryApi.getMetrics).toHaveBeenCalledWith('18093e69-0faa-471b-ae6d-cda6164e338e', undefined);
     });
     expect(screen.queryByRole('button', { name: /seed test data/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Python project')).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Service filter'), 'OrderApi');
+    await user.click(screen.getByRole('button', { name: 'Apply filter and refresh' }));
+    await waitFor(() => {
+      expect(telemetryApi.getTelemetryIncidents).toHaveBeenLastCalledWith('18093e69-0faa-471b-ae6d-cda6164e338e', 'OrderApi');
+      expect(telemetryApi.getMetrics).toHaveBeenLastCalledWith('18093e69-0faa-471b-ae6d-cda6164e338e', 'OrderApi');
+    });
   });
 });

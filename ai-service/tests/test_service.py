@@ -38,7 +38,7 @@ class TestMockMode:
     async def test_investigation_maps_evidence_to_diagnosis(self, mock_config, retry_storm_evidence):
         result = await AiService(mock_config).investigate(retry_storm_evidence)
 
-        assert "retry loop" in result.root_cause.lower()
+        assert "retries" in result.root_cause.lower()
         assert result.confidence == pytest.approx(0.92)
         assert result.severity == "high"
 
@@ -62,7 +62,7 @@ class TestMockMode:
         result = await AiService(mock_config).investigate(cpu_only_evidence)
 
         assert "cpu" in result.root_cause.lower()
-        assert result.recommendations[0].action == "ReduceDemoWorkerConcurrency"
+        assert result.recommendations[0].action == "RunHealthCheck"
 
     async def test_prediction_is_populated(self, mock_config, retry_storm_evidence):
         result = await AiService(mock_config).investigate(retry_storm_evidence)
@@ -87,7 +87,7 @@ class TestMockMode:
         assert "process" in result.root_cause.lower()
         assert "stopped" in result.root_cause.lower() or "running" in result.root_cause.lower()
         assert result.confidence == pytest.approx(0.95)
-        assert result.recommendations[0].action == "RestartDemoService"
+        assert result.recommendations[0].action == "StartService"
 
     async def test_a_process_crash_outranks_a_retry_storm_signal(self, mock_config, retry_storm_evidence):
         """A crash is more certain evidence than an elevated rate, so it takes priority even when
@@ -156,7 +156,7 @@ class TestFailureIsolation:
         payload = (
             '{"summary":"s","root_cause":"Retry loop","confidence":0.8,"severity":"high",'
             '"predicted_failure":"backlog","estimated_risk":"high",'
-            '"recommendations":[{"action":"DisableDemoRetryLoop","reason":"r",'
+            '"recommendations":[{"action":"RunHealthCheck","reason":"r",'
             '"expected_outcome":"o","risk_level":"low"}]}'
         )
         service = AiService(mock_config, provider=_StubProvider(mock_config, payload))

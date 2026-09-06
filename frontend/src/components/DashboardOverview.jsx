@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { devopsApi } from '../api/index';
-import { useHealth } from '../hooks/useDemo';
+import { useHealth } from '../hooks/useHealth';
 import Button from './ui/Button';
 import { IconBug, IconLink, IconPredict, IconSparkles, IconServer, IconShield } from './Icons';
 

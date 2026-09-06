@@ -99,6 +99,7 @@ public class RemediationExecutor : IRemediationExecutor
 
         var context = new RemediationToolContext
         {
+            ProjectId = incident.ProjectId,
             IncidentId = incident.Id,
             IncidentKey = incident.IncidentKey,
             Service = incident.Service,

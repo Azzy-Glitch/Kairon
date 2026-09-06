@@ -89,7 +89,6 @@ const NAV_TABS = [
   'Analytics',
   'Connect an app',
   'Diagnostics',
-  'Demo',
   'Settings'
 ];
 

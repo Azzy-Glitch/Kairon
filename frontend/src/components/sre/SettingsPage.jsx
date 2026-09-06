@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useHealth } from '../../hooks/useDemo';
+import { useHealth } from '../../hooks/useHealth';
 import { useTheme } from '../../lib/ThemeContext';
 import { POLLING_PRESETS, usePollingPreference } from '../../lib/PollingPreferenceContext';
 import Tabs from '../ui/Tabs';

@@ -19,7 +19,7 @@ public sealed class PlatformTelemetryTests : IDisposable
     {
         EventId = eventId, ProjectId = projectId, Timestamp = DateTime.UtcNow, EventType = eventType,
         Severity = "Error", Source = "dotnet-sdk", Application = "Kairon.DemoApp", Service = "OrderProcessingService",
-        Environment = "Demo", InstallationId = "install-1", SourceVersion = "1.0.0",
+        Environment = "Development", InstallationId = "install-1", SourceVersion = "1.0.0",
         Message = message ?? "boom", ExceptionType = "System.Exception"
     };
 
@@ -38,7 +38,7 @@ public sealed class PlatformTelemetryTests : IDisposable
 
         Assert.Single(_h.Db.Projects, p => p.Id == projectId);
         Assert.Single(_h.Db.MonitoredApplications, a => a.ProjectId == projectId && a.Service == "OrderProcessingService");
-        Assert.Single(_h.Db.Environments, e => e.ProjectId == projectId && e.Name == "Demo");
+        Assert.Single(_h.Db.Environments, e => e.ProjectId == projectId && e.Name == "Development");
         Assert.Single(_h.Db.TelemetrySources, s => s.ProjectId == projectId && s.InstallationId == "install-1");
         Assert.Single(_h.Db.TelemetryReceipts, r => r.EventId == eventId);
     }

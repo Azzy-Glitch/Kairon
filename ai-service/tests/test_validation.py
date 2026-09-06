@@ -58,7 +58,7 @@ class TestInvestigationValidation:
             "estimated_risk": "high",
             "recommendations": [
                 {
-                    "action": "DisableDemoRetryLoop",
+                    "action": "RunHealthCheck",
                     "reason": "leading signal",
                     "expected_outcome": "retries drop",
                     "risk_level": "low",
@@ -72,7 +72,7 @@ class TestInvestigationValidation:
         assert result.root_cause == "Retry loop"
         assert result.confidence == 0.9
         assert len(result.recommendations) == 1
-        assert result.recommendations[0].action == "DisableDemoRetryLoop"
+        assert result.recommendations[0].action == "RunHealthCheck"
 
     def test_missing_root_cause_is_fatal(self):
         payload = self._valid()
@@ -137,7 +137,7 @@ class TestInvestigationValidation:
 
     def test_registered_action_survives_case_differences(self, retry_storm_evidence):
         payload = self._valid()
-        payload["recommendations"][0]["action"] = "disabledemoretryloop"
+        payload["recommendations"][0]["action"] = "runhealthcheck"
 
         result = validate_investigation(payload, evidence=retry_storm_evidence)
 
@@ -177,7 +177,7 @@ class TestInvestigationValidation:
         payload["contributing_factors"] = ["y" * 2_000] * 30
         payload["recommendations"] = [
             {
-                "action": "DisableDemoRetryLoop",
+                "action": "RunHealthCheck",
                 "reason": "z" * 10_000,
                 "parameters": {f"key-{i}": "v" * 2_000 for i in range(50)},
             }

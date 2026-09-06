@@ -9,6 +9,12 @@ using Serilog;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
+if (!ProductEnvironments.Contains(builder.Environment.EnvironmentName))
+    throw new InvalidOperationException("KAIRON runtime environment must be Development, Staging or Production.");
+if (builder.Environment.IsProduction() &&
+    (!builder.Configuration.GetValue("PlatformSecurity:RequireTelemetryKey", true) ||
+     !builder.Configuration.GetValue("SreSecurity:RequireOperatorKey", true)))
+    throw new InvalidOperationException("Production requires telemetry and operator authentication.");
 
 // Resolve the same writable runtime-data layout used by SQLite before Serilog opens its file
 // sink. The installed desktop backend runs as the interactive user and cannot write beneath
@@ -39,9 +45,10 @@ builder.Host.UseSerilog();
 // backs the key ring by default). Keyed to the same product data directory as everything else, so
 // an uninstall/reinstall or a fresh machine profile doesn't leave keys orphaned in a generic
 // per-user ASP.NET location.
-builder.Services.AddDataProtection()
+var dataProtection = builder.Services.AddDataProtection()
     .SetApplicationName("Kairon")
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataPaths.Config, "dataprotection-keys")));
+if (OperatingSystem.IsWindows()) dataProtection.ProtectKeysWithDpapi();
 
 // Add services
 builder.Services.AddControllers(options =>

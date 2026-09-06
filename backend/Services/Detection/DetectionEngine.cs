@@ -75,6 +75,7 @@ public class DetectionEngine : IDetectionEngine
     private readonly IEnumerable<IDetectionRule> _rules;
     private readonly IDetectionCooldownStore _cooldown;
     private readonly DetectionOptions _options;
+    private readonly WindowsRemediationOptions _windows;
     private readonly ILogger<DetectionEngine> _logger;
 
     public DetectionEngine(
@@ -82,12 +83,13 @@ public class DetectionEngine : IDetectionEngine
         IEnumerable<IDetectionRule> rules,
         IDetectionCooldownStore cooldown,
         IOptions<DetectionOptions> options,
-        ILogger<DetectionEngine> logger)
+        ILogger<DetectionEngine> logger, IOptions<WindowsRemediationOptions>? windows = null)
     {
         _db = db;
         _rules = rules;
         _cooldown = cooldown;
         _options = options.Value;
+        _windows = windows?.Value ?? new WindowsRemediationOptions();
         _logger = logger;
     }
 
@@ -142,6 +144,29 @@ public class DetectionEngine : IDetectionEngine
             agentEventsQuery = agentEventsQuery.Where(e => e.Service == service);
         }
 
+        var configured = _windows.Targets.Where(t => t.ProjectId == projectId && t.Environment.Equals(environment, StringComparison.OrdinalIgnoreCase) && t.Service == service).ToList();
+        if (configured.Count > 1) return Array.Empty<DetectionSignal>();
+        Guid? machineId = configured.Count == 1 ? configured[0].MachineId : null;
+        var correlationKey = $"{projectId}|{environment}|{service}" + (machineId.HasValue ? $"|{machineId}" : "");
+        var recoveredAt = await _db.SreIncidents.AsNoTracking()
+            .Where(i => i.ProjectId == projectId && i.CorrelationKey == correlationKey &&
+                i.Status == IncidentStatus.Resolved && i.VerificationState == VerificationStatus.Passed && i.ResolvedAt != null)
+            .OrderByDescending(i => i.ResolvedAt).Select(i => i.ResolvedAt).FirstOrDefaultAsync(cancellationToken);
+        if (recoveredAt.HasValue) {
+            // A verified recovery closes the old fault window. A recurrence must be supported
+            // by new observations, not the same pre-restart errors aging through the window.
+            metricsQuery = metricsQuery.Where(m => m.Timestamp > recoveredAt.Value);
+            telemetryQuery = telemetryQuery.Where(i => i.Timestamp > recoveredAt.Value);
+            agentEventsQuery = agentEventsQuery.Where(e => e.Timestamp > recoveredAt.Value);
+        }
+        if (machineId.HasValue) {
+            metricsQuery = metricsQuery.Where(m => m.MachineId == machineId);
+            telemetryQuery = telemetryQuery.Where(i => i.MachineId == machineId);
+            // Current agent events lack authenticated machine scope. They remain available in
+            // inventory/history, but cannot trigger remediation against an enrolled service.
+            agentEventsQuery = agentEventsQuery.Where(e => false);
+        }
+
         var metrics = await metricsQuery
             .OrderBy(m => m.Timestamp)
             // Bounded so an unusually chatty window cannot pull the whole table into memory.
@@ -176,6 +201,7 @@ public class DetectionEngine : IDetectionEngine
         {
             Options = _options,
             ProjectId = projectId,
+            MachineId = machineId,
             Environment = environment,
             Service = resolvedService,
             Application = application,
@@ -214,6 +240,7 @@ public class DetectionEngine : IDetectionEngine
             if (signal is null)
                 continue;
 
+            signal.MachineId = context.MachineId;
             if (!_cooldown.TryEnter(signal.DedupKey, context.Now, cooldown))
             {
                 _logger.LogDebug("Signal {RuleId} for {Service} suppressed by cooldown", signal.RuleId, signal.Service);

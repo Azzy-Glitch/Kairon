@@ -57,6 +57,20 @@ Mirrors the .NET SDK's resilience contract exactly:
 - No AI credential, no database setting, no remediation option — this is a collector and
   nothing more, same boundary `KaironOptions` documents on the .NET side.
 
+## Delivery diagnostics and shutdown
+
+`delivered_count`, `failed_count`, and `dropped_count` expose lifetime outcomes for
+background sends. `pending_count` counts only waiting items, not in-flight HTTP requests.
+After stopping request producers, `flush(timeout_seconds=5)` waits for both queued and
+in-flight sends. `stop(timeout_seconds=5)` closes the queue, stops metric production, and
+attempts the same bounded drain. Both return `False` on timeout or any lifetime delivery
+failure/drop; an empty queue alone is not a delivery confirmation. A stopped instance is
+closed; create a new instance to restart collection.
+
+Delivery remains best effort: there is no disk spool or automatic retry. An ambiguous
+transport failure may have reached the collector; blindly retrying the legacy endpoints
+could duplicate incidents. Observe the counters and handle a failed drain operationally.
+
 ## Tests
 
 ```bash

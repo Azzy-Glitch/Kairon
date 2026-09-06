@@ -28,8 +28,10 @@ public class OrchestrationTests : IDisposable
             _h.SeedMetric(now.AddSeconds(-120 + i * 10), cpu: 94, latency: 2400, requests: 20, errors: 7, retries: 30, queue: 85);
 
         // Recovered window, after it.
-        for (var i = 0; i < 4; i++)
-            _h.SeedMetric(now.AddSeconds(i), cpu: 24, latency: 120, requests: 20, errors: 0, retries: 0, queue: 2);
+        _h.BeforeVerification = () => {
+            for (var i = 0; i < 4; i++)
+                _h.SeedMetric(DateTime.UtcNow, cpu: 24, latency: 120, requests: 20, errors: 0, retries: 0, queue: 2);
+        };
     }
 
     // --- Investigation ---
@@ -300,8 +302,10 @@ public class OrchestrationTests : IDisposable
         var now = DateTime.UtcNow;
         for (var i = 0; i < 4; i++)
             _h.SeedMetric(now.AddSeconds(-120 + i * 10), cpu: 94, latency: 2400, requests: 20, errors: 7, retries: 30);
-        for (var i = 0; i < 4; i++)
-            _h.SeedMetric(now.AddSeconds(i), cpu: 96, latency: 2600, requests: 20, errors: 8, retries: 35);
+        _h.BeforeVerification = () => {
+            for (var i = 0; i < 4; i++)
+                _h.SeedMetric(DateTime.UtcNow, cpu: 96, latency: 2600, requests: 20, errors: 8, retries: 35);
+        };
 
         var incident = _h.SeedIncident();
         await _h.CreateOrchestrator().InvestigateAsync(incident.Id);

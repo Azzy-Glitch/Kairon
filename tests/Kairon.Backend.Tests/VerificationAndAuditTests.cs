@@ -43,7 +43,7 @@ public class VerificationAndAuditTests : IDisposable
         for (var i = 0; i < 4; i++)
             _h.SeedMetric(incident.Timestamp.AddSeconds(i * 5), cpu: 94, latency: 2400, retries: 30);
         for (var i = 0; i < 4; i++)
-            _h.SeedMetric(DateTime.UtcNow.AddSeconds(i), cpu: 22, latency: 110, retries: 0);
+            _h.SeedMetric(DateTime.UtcNow, cpu: 22, latency: 110, retries: 0);
 
         var result = await _h.CreateVerificationService().VerifyAsync(incident, action);
 
@@ -60,7 +60,7 @@ public class VerificationAndAuditTests : IDisposable
         for (var i = 0; i < 4; i++)
             _h.SeedMetric(incident.Timestamp.AddSeconds(i * 5), cpu: 94, latency: 2400, retries: 30);
         for (var i = 0; i < 4; i++)
-            _h.SeedMetric(DateTime.UtcNow.AddSeconds(i), cpu: 96, latency: 2600, retries: 40);
+            _h.SeedMetric(DateTime.UtcNow, cpu: 96, latency: 2600, retries: 40);
 
         var result = await _h.CreateVerificationService().VerifyAsync(incident, action);
 
@@ -91,7 +91,7 @@ public class VerificationAndAuditTests : IDisposable
         for (var i = 0; i < 4; i++)
             _h.SeedMetric(incident.Timestamp.AddSeconds(i * 5), cpu: 94, latency: 2400, retries: 30);
         for (var i = 0; i < 4; i++)
-            _h.SeedMetric(DateTime.UtcNow.AddSeconds(i), cpu: 22, latency: 110, retries: 0);
+            _h.SeedMetric(DateTime.UtcNow, cpu: 22, latency: 110, retries: 0);
 
         var result = await _h.CreateVerificationService().VerifyAsync(incident, action);
         var comparisons = SreJson.Deserialize(result.ComparisonsJson, new List<MetricComparison>());
@@ -112,7 +112,7 @@ public class VerificationAndAuditTests : IDisposable
         var action = ExecutedAction(incident);
 
         for (var i = 0; i < 4; i++)
-            _h.SeedMetric(DateTime.UtcNow.AddSeconds(i), cpu: 22, memory: 40, latency: 110, retries: 0);
+            _h.SeedMetric(DateTime.UtcNow, cpu: 22, memory: 40, latency: 110, retries: 0);
 
         var result = await _h.CreateVerificationService().VerifyAsync(incident, action);
         var metrics = SreJson.Deserialize(result.ComparisonsJson, new List<MetricComparison>())

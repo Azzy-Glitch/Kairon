@@ -58,7 +58,7 @@ def retry_storm_evidence() -> EvidencePackage:
             title="OrderProcessingService Service Degradation",
             application="Kairon.DemoApp",
             service="OrderProcessingService",
-            environment="Demo",
+            environment="Development",
             severity="High",
             status="Investigating",
             affected_component="OrderProcessingService",
@@ -108,8 +108,8 @@ def retry_storm_evidence() -> EvidencePackage:
             ),
         ],
         available_actions=[
-            AvailableAction(action="DisableDemoRetryLoop", description="Disables the retry loop", risk_level="Low"),
-            AvailableAction(action="RestartDemoService", description="Restarts the demo service", risk_level="Medium"),
+            AvailableAction(action="RunHealthCheck", description="Disables the retry loop", risk_level="Low"),
+            AvailableAction(action="StartService", description="Restarts the demo service", risk_level="Medium"),
             AvailableAction(action="RunHealthCheck", description="Read-only health probe", risk_level="Low"),
         ],
     )
@@ -122,7 +122,7 @@ def cpu_only_evidence(retry_storm_evidence: EvidencePackage) -> EvidencePackage:
     evidence.correlated_signals = [s for s in evidence.correlated_signals if s.metric in {"cpu", "latency"}]
     evidence.available_actions.append(
         AvailableAction(
-            action="ReduceDemoWorkerConcurrency",
+            action="RunHealthCheck",
             description="Halves worker concurrency",
             risk_level="Medium",
         )

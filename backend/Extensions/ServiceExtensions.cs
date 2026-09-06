@@ -3,7 +3,6 @@ using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Services;
 using Kairon.Backend.Services.Audit;
 using Kairon.Backend.Services.Correlation;
-using Kairon.Backend.Services.Demo;
 using Kairon.Backend.Services.Detection;
 using Kairon.Backend.Services.Evidence;
 using Kairon.Backend.Services.Orchestration;
@@ -92,7 +91,7 @@ public static class ServiceExtensions
         services.Configure<VerificationOptions>(configuration.GetSection(VerificationOptions.SectionName));
         services.Configure<AiOrchestrationOptions>(configuration.GetSection(AiOrchestrationOptions.SectionName));
         services.Configure<SreSecurityOptions>(configuration.GetSection(SreSecurityOptions.SectionName));
-        services.Configure<DemoEnvironmentOptions>(configuration.GetSection(DemoEnvironmentOptions.SectionName));
+        services.Configure<WindowsRemediationOptions>(configuration.GetSection(WindowsRemediationOptions.SectionName));
 
         // --- Detection. Every rule is registered explicitly; adding a rule is one line here and
         // one class, and nothing else in the pipeline changes.
@@ -120,12 +119,11 @@ public static class ServiceExtensions
 
         // --- Remediation. The registry is built from the registered tools, which is what makes
         // "only a registered tool can execute" structurally true rather than a convention.
-        services.AddScoped<IRemediationTool, RestartDemoServiceTool>();
-        services.AddScoped<IRemediationTool, ClearDemoCacheTool>();
-        services.AddScoped<IRemediationTool, DisableDemoRetryLoopTool>();
-        services.AddScoped<IRemediationTool, ReduceDemoWorkerConcurrencyTool>();
-        services.AddScoped<IRemediationTool, ResetDemoFailureSimulationTool>();
-        services.AddScoped<IRemediationTool, RunHealthCheckTool>();
+        services.AddSingleton<IWindowsServiceControl, WindowsServiceControl>();
+        services.AddScoped<IRemediationTool, RestartServiceTool>();
+        services.AddScoped<IRemediationTool, StartServiceTool>();
+        services.AddScoped<IRemediationTool, StopServiceTool>();
+        services.AddScoped<IRemediationTool, ServiceHealthCheckTool>();
         services.AddScoped<IRemediationToolRegistry, RemediationToolRegistry>();
         services.AddScoped<IRemediationToolRegistryAccessor, RemediationToolRegistryAccessor>();
         services.AddScoped<IRemediationPolicy, RemediationPolicy>();
@@ -138,21 +136,9 @@ public static class ServiceExtensions
         services.AddScoped<IIncidentOrchestrator, IncidentOrchestrator>();
         services.AddScoped<IIncidentQueryService, IncidentQueryService>();
 
-        // --- Demo environment. The simulator is a singleton because it holds the scenario state.
-        services.AddSingleton<ILocalDemoSimulator, LocalDemoSimulator>();
-        services.AddHttpClient<IDemoEnvironmentClient, DemoEnvironmentClient>((provider, client) =>
-        {
-            var options = configuration.GetSection(DemoEnvironmentOptions.SectionName).Get<DemoEnvironmentOptions>()
-                          ?? new DemoEnvironmentOptions();
-
-            client.BaseAddress = new Uri(options.BaseUrl.TrimEnd('/') + "/");
-            client.Timeout = TimeSpan.FromSeconds(options.TimeoutSeconds);
-        });
-
         // --- Background workers. This is what keeps AI off the ingestion path.
         services.AddHostedService<IncidentProcessingWorker>();
         services.AddHostedService<DetectionSweepWorker>();
-        services.AddHostedService<DemoSimulationWorker>();
 
         return services;
     }

@@ -60,7 +60,7 @@ class TestAnalyzeEndpoint:
                 "incident_key": "INC-0001",
                 "title": "OrderProcessingService Service Degradation",
                 "service": "OrderProcessingService",
-                "environment": "Demo",
+                "environment": "Development",
                 "severity": "High",
                 "affected_component": "OrderProcessingService",
                 "affected_endpoint": "/api/orders/process",
@@ -77,7 +77,7 @@ class TestAnalyzeEndpoint:
                  "error_count": 7, "retry_count": 30, "queue_depth": 85}
             ],
             "available_actions": [
-                {"action": "DisableDemoRetryLoop", "description": "Disables the retry loop", "risk_level": "Low"}
+                {"action": "RunHealthCheck", "description": "Disables the retry loop", "risk_level": "Low"}
             ],
         }
 
@@ -104,7 +104,7 @@ class TestAnalyzeEndpoint:
 
         assert body["recommendations"], "the retry-storm scenario should produce a recommendation"
         rec = body["recommendations"][0]
-        assert rec["action"] == "DisableDemoRetryLoop"
+        assert rec["action"] == "RunHealthCheck"
         assert rec["reason"]
         assert rec["expected_outcome"]
         assert rec["risk_level"] in {"low", "medium", "high", "critical"}

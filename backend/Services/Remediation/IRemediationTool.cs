@@ -38,6 +38,7 @@ public interface IRemediationTool
 /// <summary>What a tool is allowed to know about the incident it is fixing.</summary>
 public class RemediationToolContext
 {
+    public Guid ProjectId { get; init; }
     public required Guid IncidentId { get; init; }
     public required string IncidentKey { get; init; }
     public required string Service { get; init; }
@@ -95,15 +96,4 @@ public class RemediationToolRegistry : IRemediationToolRegistry
     }
 
     public bool Contains(string name) => TryGet(name, out _);
-}
-
-/// <summary>Canonical demo tool names (PRD section 11), so the AI mock and the registry agree.</summary>
-public static class DemoToolNames
-{
-    public const string RestartDemoService = "RestartDemoService";
-    public const string ClearDemoCache = "ClearDemoCache";
-    public const string DisableDemoRetryLoop = "DisableDemoRetryLoop";
-    public const string ReduceDemoWorkerConcurrency = "ReduceDemoWorkerConcurrency";
-    public const string ResetDemoFailureSimulation = "ResetDemoFailureSimulation";
-    public const string RunHealthCheck = "RunHealthCheck";
 }

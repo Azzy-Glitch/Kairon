@@ -134,13 +134,15 @@ public sealed class TestHarness : IDisposable
     public RemediationExecutor CreateExecutor() =>
         new(Tools, Policy, Audit, Db, Opt(Remediation), NullLogger<RemediationExecutor>.Instance);
 
+    public Action? BeforeVerification { get; set; }
+
     public VerificationService CreateVerificationService() =>
         new(Db, Audit, new RemediationToolRegistryAccessor(Tools), Opt(Verification), Opt(Detection),
             NullLogger<VerificationService>.Instance);
 
     public IncidentOrchestrator CreateOrchestrator() =>
         new(Db, CreateDetectionEngine(), CreateCorrelationEngine(), CreateEvidenceCollector(), Ai,
-            Policy, Tools, CreateExecutor(), CreateVerificationService(), Audit,
+            Policy, Tools, CreateExecutor(), new BeforeVerificationService(CreateVerificationService(), () => BeforeVerification?.Invoke()), Audit,
             new IncidentKeyGenerator(Db), Queue, Opt(AiOptions), Opt(Remediation),
             NullLogger<IncidentOrchestrator>.Instance);
 
@@ -150,7 +152,7 @@ public sealed class TestHarness : IDisposable
     // --- Seeding helpers ---
 
     public Guid ProjectId { get; } = Guid.Parse("550e8400-e29b-41d4-a716-446655440000");
-    public string Environment { get; } = "Demo";
+    public string Environment { get; } = "Development";
     public string Service { get; } = "OrderProcessingService";
 
     public Metric SeedMetric(
@@ -404,7 +406,7 @@ public class FakeDemoEnvironment : IDemoEnvironmentClient
         RetryLoopEnabled = true,
         WorkerConcurrency = 16,
         Service = "OrderProcessingService",
-        Environment = "Demo"
+        Environment = "Development"
     };
 
     public async Task<DemoCommandResult> SendAsync(string command, CancellationToken cancellationToken = default)
@@ -428,4 +430,13 @@ public class FakeDemoEnvironment : IDemoEnvironmentClient
 
     public Task<DemoStateDto> GetStateAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(State);
+}
+
+internal sealed class BeforeVerificationService(IVerificationService inner, Action callback) : IVerificationService
+{
+    public Task<VerificationResult> VerifyAsync(SreIncident incident, RemediationAction action, CancellationToken cancellationToken = default)
+    {
+        callback();
+        return inner.VerifyAsync(incident, action, cancellationToken);
+    }
 }

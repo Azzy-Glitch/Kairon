@@ -6,8 +6,8 @@ import client, { request } from './client';
  * mixed into a real project's live readings.
  */
 
-export function getTelemetryIncidents(projectId) {
-  return request(client.get('/telemetry/incidents', { params: projectId ? { projectId } : {} }));
+export function getTelemetryIncidents(projectId, service) {
+  return request(client.get('/telemetry/incidents', { params: { projectId, service } }));
 }
 
 export function getMetrics(projectId, service) {
