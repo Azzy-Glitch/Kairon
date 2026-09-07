@@ -5,10 +5,8 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 namespace Kairon.Backend.Infrastructure;
 
 /// <summary>
-/// Wires up AppDbContext against whichever provider Persistence:Provider selects. SqlServer stays
-/// the default (matches every existing appsettings.json/test/demo workflow); SQLite is an opt-in
-/// local mode, ported from origin/main's PersistenceRegistration.cs. Both are real, tested paths -
-/// not one placeholder next to the "real" one.
+/// Selects SQLite by default with no external database infrastructure. SQL Server is optional
+/// and chosen at startup through deployment configuration or protected operator settings.
 /// </summary>
 public static class PersistenceRegistration
 {

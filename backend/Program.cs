@@ -50,6 +50,16 @@ var dataProtection = builder.Services.AddDataProtection()
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataPaths.Config, "dataprotection-keys")));
 if (OperatingSystem.IsWindows()) dataProtection.ProtectKeysWithDpapi();
 
+// Database selection changes are applied only before constructing the persistence service graph.
+await DatabaseConfigurationService.ApplySavedAtStartupAsync(builder.Configuration, dataPaths, builder.Environment.IsProduction());
+var selectedDatabaseProvider = builder.Configuration.GetValue<string>("Persistence:Provider") ?? "SQLite";
+var sqliteSelected = selectedDatabaseProvider.Equals("SQLite", StringComparison.OrdinalIgnoreCase);
+builder.Services.AddSingleton(new DatabaseConfigurationLocation(Path.Combine(dataPaths.Config, "database-settings.protected")));
+builder.Services.AddSingleton(new DatabaseRuntimeSelection(sqliteSelected ? "SQLite" : "SqlServer",
+    sqliteSelected ? "SQLite" : DatabaseConfigurationService.ConnectionSignature(builder.Configuration.GetConnectionString("DefaultConnection") ?? "")));
+builder.Services.AddSingleton<IDatabaseConnectionProbe, SqlServerConnectionProbe>();
+builder.Services.AddSingleton<DatabaseConfigurationService>();
+
 // Add services
 builder.Services.AddControllers(options =>
 {

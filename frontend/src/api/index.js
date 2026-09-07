@@ -8,3 +8,5 @@ export * as sdkApi from './sdk';
 export * as agentApi from './agent';
 export * as aiConfigApi from './aiConfig';
 export * as dataManagementApi from './dataManagement';
+
+export * as databaseConfigApi from './databaseConfig';

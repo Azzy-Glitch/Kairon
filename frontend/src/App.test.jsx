@@ -67,6 +67,7 @@ vi.mock('./api/index', () => ({
     getMachines: vi.fn().mockResolvedValue([]),
     getApplications: vi.fn().mockResolvedValue([])
   },
+  databaseConfigApi: { getConfig: vi.fn().mockResolvedValue({ activeProvider: 'SQLite', selected: { provider: 'SQLite' }, requiresRestart: false }) },
   aiConfigApi: {
     getConfig: vi.fn().mockResolvedValue({ provider: '', model: '', hasApiKey: false, updatedAt: null }),
     saveConfig: vi.fn().mockResolvedValue({ provider: 'groq', model: '', hasApiKey: true, updatedAt: new Date().toISOString(), applied: true }),

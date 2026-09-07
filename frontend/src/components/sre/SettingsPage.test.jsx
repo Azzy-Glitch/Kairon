@@ -23,6 +23,10 @@ vi.mock('../../api', () => ({
     testConnection: vi.fn(),
     listModels: vi.fn()
   },
+  databaseConfigApi: {
+    getConfig: vi.fn().mockResolvedValue({ activeProvider: 'SQLite', selected: { provider: 'SQLite' }, requiresRestart: false }),
+    testConnection: vi.fn(), saveConfig: vi.fn()
+  },
   dataManagementApi: {
     downloadData: vi.fn(),
     deleteAllData: vi.fn()

@@ -1,3 +1,4 @@
+import DatabaseSettings from './DatabaseSettings';
 import React, { useEffect, useState } from 'react';
 import { useHealth } from '../../hooks/useHealth';
 import { useTheme } from '../../lib/ThemeContext';
@@ -15,18 +16,7 @@ const THEME_OPTIONS = [
   { id: 'dark', label: 'Dark' }
 ];
 
-/**
- * Settings (frontend PRD section 41): status only, never credentials - with one deliberate
- * exception, the AI Configuration panel below.
- *
- * Every other row here is a read-only reflection of config Kairon already owns end-to-end
- * (appsettings.json toggles, environment variables) - a form that could edit those would be a
- * second, competing source of truth. AI provider/model/key is different: before this panel
- * existed, configuring it required hand-editing ai-service/.env and backend/appsettings.json,
- * which is exactly the friction this product should not ask an end user to have. The panel is the
- * ONE source of truth for that specific setting from now on (persisted server-side, encrypted at
- * rest) - it does not duplicate or shadow anything else on this page.
- */
+/** Operator settings. Sensitive provider/database settings are protected server-side. */
 export default function SettingsPage() {
   const { health, isLoading } = useHealth();
   const { theme, setTheme } = useTheme();
@@ -77,6 +67,8 @@ export default function SettingsPage() {
       </section>
 
       <AiConfigurationSection />
+
+      <DatabaseSettings />
 
       <DataManagementSection databaseAvailable={health.database} />
 

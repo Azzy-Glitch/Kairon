@@ -1627,3 +1627,9 @@
 .sdk-pairing-result { margin-top: 16px; }
 
 .sdk-pairing-code code { font-size: 15px; letter-spacing: 0.02em; }
+
+/* Database settings keep each field and its label together on narrow screens. */
+.database-settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; margin-top: 16px; }
+.database-settings-grid label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.database-settings-grid input:not([type="checkbox"]), .database-settings-grid select { width: 100%; margin: 0; }
+.database-settings-grid label:has(input[type="checkbox"]) { flex-direction: row; align-items: center; }
