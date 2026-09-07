@@ -2,29 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { sdkApi } from '../../api';
 import { useToast } from '../Toast';
 import Tabs from '../ui/Tabs';
-import Badge from '../ui/Badge';
+import SdkGuide from './SdkGuide';
 import { IconLink, IconCopy, IconCheck, IconTrash } from '../Icons';
-import { useIncidents } from '../../hooks/useIncidents';
-import { countBySource } from '../../lib/source';
 
 const VIEWS = [
   { id: 'start', label: 'Get Started' },
   { id: 'pairing', label: 'Pairing' }
 ];
 
-/**
- * SDK integration and pairing (docs/DESKTOP_SHELL.md, frontend PRD-style section 21-22 from the
- * productization spec): a developer who installs Kairon should be able to find "how do I connect
- * my app" without leaving the app.
- *
- * "Get Started" reuses the already-written docs verbatim (README's SDK integration section,
- * sdk-python/README.md) - no new documentation content invented here. "Pairing" is the live
- * counterpart: generate a real, working, short-lived pairing code an SDK can redeem for a
- * persistent credential. That credential is shown here exactly once, at creation - the same
- * one-time-reveal pattern GitHub/AWS use for access tokens, not a violation of "secrets are never
- * stored in the frontend" (Settings' own stated rule): nothing here is persisted client-side,
- * it's a transient value in component state until the page is left or refreshed.
- */
+// SDK guide content is checked against the shipped SDK APIs. Pairing remains live.
 export default function SdkPage() {
   const [view, setView] = useState('start');
 
@@ -32,7 +18,7 @@ export default function SdkPage() {
     <div className="animate-fade-in">
       <Tabs items={VIEWS} activeId={view} onChange={setView} className="dev-tools-subnav" />
 
-      {view === 'start' && <GetStarted />}
+      {view === 'start' && <SdkGuide CodeBlock={CodeBlock} onPairing={() => setView('pairing')} />}
       {view === 'pairing' && <Pairing />}
     </div>
   );
@@ -42,8 +28,13 @@ function useCopy() {
   const toast = useToast();
   const [copiedKey, setCopiedKey] = useState(null);
 
-  const copy = (text, key) => {
-    navigator.clipboard.writeText(text);
+  const copy = async (text, key) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      toast.addToast("Copy failed. Select the text and copy it manually.", "error");
+      return;
+    }
     setCopiedKey(key);
     setTimeout(() => setCopiedKey(null), 2000);
     toast.addToast('Copied to clipboard', 'info');
@@ -56,97 +47,10 @@ function CodeBlock({ code, copyKey }) {
   const { copiedKey, copy } = useCopy();
   return (
     <div className="sdk-code-block">
-      <button type="button" className="small-btn sdk-code-copy" onClick={() => copy(code, copyKey)}>
+      <button type="button" className="small-btn sdk-code-copy" aria-label={`Copy ${copyKey} example`} onClick={() => copy(code, copyKey)}>
         {copiedKey === copyKey ? <IconCheck className="w-3 h-3" /> : <IconCopy className="w-3 h-3" />}
       </button>
       <pre><code>{code}</code></pre>
-    </div>
-  );
-}
-
-const DOTNET_INSTALL = `dotnet add package Kairon.SDK`;
-
-const DOTNET_USAGE = `builder.Services.AddKairon(options =>
-{
-    options.Endpoint = "http://localhost:8000";
-    options.ProjectId = Guid.Parse("...");
-    options.ServiceName = "OrderProcessingService";
-});
-
-app.UseKairon();`;
-
-const PYTHON_INSTALL = `pip install -e .              # core client, stdlib-only
-pip install -e .[fastapi]     # + KaironMiddleware for FastAPI/Starlette`;
-
-const PYTHON_USAGE = `from kairon import Kairon
-
-kairon = Kairon(
-    endpoint="https://your-kairon-server",
-    project_id="my-project",
-    service="OrderProcessingService",
-)
-kairon.start()`;
-
-const PYTHON_FASTAPI = `from kairon.middleware import KaironMiddleware
-
-app.add_middleware(KaironMiddleware)`;
-
-function ConnectionPill({ count }) {
-  return (
-    <Badge tone={count > 0 ? 'healthy' : 'neutral'}>
-      {count > 0 ? `Connected · ${count} service${count === 1 ? '' : 's'}` : 'Not connected'}
-    </Badge>
-  );
-}
-
-function GetStarted() {
-  // Same client-side source-resolution heuristic used everywhere else in this redesign (brief
-  // section 6) - no new backend field, just resolveSource/countBySource over the incidents the
-  // dashboard is already fetching.
-  const { incidents } = useIncidents({ status: '' });
-  const counts = countBySource(incidents || []);
-
-  return (
-    <div className="sdk-get-started">
-      <section className="section-card">
-        <div className="section-header">
-          <div className="section-title-group">
-            <div className="section-icon-badge"><IconLink className="w-6 h-6 tone-neutral" /></div>
-            <div>
-              <h3>.NET SDK</h3>
-              <p className="section-desc">Two lines of integration in an ASP.NET Core application.</p>
-            </div>
-          </div>
-          <ConnectionPill count={counts.dotnet} />
-        </div>
-        <p className="sdk-step-label">Install</p>
-        <CodeBlock code={DOTNET_INSTALL} copyKey="dotnet-install" />
-        <p className="sdk-step-label">Configure</p>
-        <CodeBlock code={DOTNET_USAGE} copyKey="dotnet-usage" />
-        <p className="sdk-hint">
-          Get a real Endpoint, ProjectId and API key for your application on the Pairing tab
-          instead of hand-copying values.
-        </p>
-      </section>
-
-      <section className="section-card">
-        <div className="section-header">
-          <div className="section-title-group">
-            <div className="section-icon-badge"><IconLink className="w-6 h-6 tone-neutral" /></div>
-            <div>
-              <h3>Python SDK</h3>
-              <p className="section-desc">Stdlib-only core client; FastAPI middleware is a separate import.</p>
-            </div>
-          </div>
-          <ConnectionPill count={counts.python} />
-        </div>
-        <p className="sdk-step-label">Install</p>
-        <CodeBlock code={PYTHON_INSTALL} copyKey="python-install" />
-        <p className="sdk-step-label">Configure</p>
-        <CodeBlock code={PYTHON_USAGE} copyKey="python-usage" />
-        <p className="sdk-step-label">FastAPI integration (optional)</p>
-        <CodeBlock code={PYTHON_FASTAPI} copyKey="python-fastapi" />
-      </section>
     </div>
   );
 }
@@ -254,8 +158,8 @@ function Pairing() {
                 {p.name}
                 <span className={`status-badge sdk-project-chip-status ${p.activeCredentials > 0 ? 'status-good' : 'status-neutral'}`}>
                   {p.activeCredentials > 0
-                    ? `Connected · ${p.activeCredentials} active key${p.activeCredentials === 1 ? '' : 's'}`
-                    : 'Not connected yet'}
+                    ? `${p.activeCredentials} active credential${p.activeCredentials === 1 ? '' : 's'}`
+                    : 'No active credentials'}
                 </span>
               </button>
             ))}
@@ -283,7 +187,7 @@ function Pairing() {
               <div className="section-icon-badge"><IconLink className="w-6 h-6 tone-neutral" /></div>
               <div>
                 <h3>Generate a pairing code</h3>
-                <p className="section-desc">Single-use, expires in 10 minutes. The SDK redeems it once for a persistent API key.</p>
+                <p className="section-desc">Single-use, expires in 10 minutes. Redeem once with the selected SDK, then store the returned project key securely. Active credentials do not prove telemetry delivery.</p>
               </div>
             </div>
           </div>
@@ -305,6 +209,7 @@ function Pairing() {
                 <button
                   type="button"
                   className="small-btn sdk-code-copy"
+                  aria-label="Copy pairing code"
                   onClick={() => copy(pairingResult.code, 'pairing-code')}
                 >
                   {copiedKey === 'pairing-code' ? <IconCheck className="w-3 h-3" /> : <IconCopy className="w-3 h-3" />}
