@@ -142,3 +142,11 @@ describe('App navigation', () => {
     });
   });
 });
+
+
+it('navigates from onboarding to the existing Live telemetry page', async () => {
+  render(<App />);
+  await userEvent.click(screen.getByRole('button', { name: /^Connect an app/ }));
+  await userEvent.click(screen.getByRole('button', { name: 'View Live Telemetry' }));
+  expect(screen.getByRole('button', { name: /^Live telemetry/ }).className).toMatch(/active/);
+});

@@ -245,7 +245,7 @@ function AppShell() {
           {tab === 'audit' && <AuditHistory onOpenDiagnostics={() => setTab('devtools')} />}
           {tab === 'insights' && <AiInsightsPage />}
           {tab === 'analytics' && <AnalyticsPage />}
-          {tab === 'sdk' && <SdkPage />}
+          {tab === 'sdk' && <SdkPage onTelemetry={() => setTab('telemetry')} />}
           {tab === 'devtools' && <DeveloperTools />}
           {tab === 'settings' && <SettingsPage />}
 

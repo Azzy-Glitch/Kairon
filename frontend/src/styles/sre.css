@@ -1633,3 +1633,30 @@
 .database-settings-grid label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .database-settings-grid input:not([type="checkbox"]), .database-settings-grid select { width: 100%; margin: 0; }
 .database-settings-grid label:has(input[type="checkbox"]) { flex-direction: row; align-items: center; }
+
+
+/* Application onboarding uses the existing surface, accent and typography tokens. */
+.sdk-onboarding { max-width: 960px; margin: 0 auto; gap: 24px; }
+.sdk-onboarding-intro { padding: 8px 0; }
+.sdk-onboarding-intro h3 { font-size: 24px; margin: 0 0 8px; }
+.sdk-onboarding p { line-height: 1.6; margin: 10px 0; }
+.sdk-onboarding-step { display: flex; align-items: flex-start; gap: 20px; position: relative; }
+.sdk-onboarding-step:not(:nth-last-child(2))::after { content: '↓'; position: absolute; bottom: -25px; left: 40px; color: var(--text-muted); }
+.sdk-step-number { display: grid; place-items: center; flex: 0 0 36px; height: 36px; border-radius: 50%; color: var(--accent); background: var(--accent-soft); font-size: 16px; font-weight: 700; }
+.sdk-step-content { flex: 1; min-width: 0; }
+.sdk-step-content h3 { margin: 4px 0 12px; font-size: 18px; }
+.sdk-primary-action { background: var(--accent); color: white; border-color: var(--accent); margin-top: 6px; padding: 10px 16px; }
+.sdk-primary-action:hover { filter: brightness(1.08); }
+.sdk-primary-action:focus-visible, .sdk-guide-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.sdk-backend-address code { overflow-wrap: anywhere; }
+.sdk-guide-details { margin-top: 16px; }
+.sdk-guide-details > summary { cursor: pointer; font-weight: 600; color: var(--accent); padding: 6px 0; }
+.sdk-guide-details[open] > summary { margin-bottom: 12px; }
+.sdk-advanced { margin-top: 0; }
+.sdk-advanced .section-card { box-shadow: none; }
+@media (max-width: 600px) {
+  .sdk-onboarding-step { padding: 18px 14px; gap: 12px; }
+  .sdk-onboarding-step::after { left: 26px !important; }
+  .sdk-step-number { flex-basis: 28px; height: 28px; font-size: 14px; }
+  .sdk-primary-action { width: 100%; }
+}

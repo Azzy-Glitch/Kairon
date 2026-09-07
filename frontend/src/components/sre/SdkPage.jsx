@@ -11,14 +11,14 @@ const VIEWS = [
 ];
 
 // SDK guide content is checked against the shipped SDK APIs. Pairing remains live.
-export default function SdkPage() {
+export default function SdkPage({ onTelemetry }) {
   const [view, setView] = useState('start');
 
   return (
     <div className="animate-fade-in">
       <Tabs items={VIEWS} activeId={view} onChange={setView} className="dev-tools-subnav" />
 
-      {view === 'start' && <SdkGuide CodeBlock={CodeBlock} onPairing={() => setView('pairing')} />}
+      {view === 'start' && <SdkGuide CodeBlock={CodeBlock} onPairing={() => setView('pairing')} onTelemetry={onTelemetry} />}
       {view === 'pairing' && <Pairing />}
     </div>
   );
