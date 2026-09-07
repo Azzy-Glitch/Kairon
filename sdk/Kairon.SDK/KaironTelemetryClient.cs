@@ -54,16 +54,16 @@ public class KaironTelemetryClient
         object payload,
         CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, path)
-        {
-            Content = JsonContent.Create(payload, payload.GetType())
-        };
-
-        if (!string.IsNullOrWhiteSpace(_options.ApiKey))
-            request.Headers.Add("X-Kairon-API-Key", _options.ApiKey);
-
         try
         {
+            using var request = new HttpRequestMessage(HttpMethod.Post, path)
+            {
+                Content = JsonContent.Create(payload, payload.GetType())
+            };
+
+            if (!string.IsNullOrWhiteSpace(_options.ApiKey))
+                request.Headers.Add("X-Kairon-API-Key", _options.ApiKey);
+
             // Bound every send independently of the ambient token, so a caller that passes
             // CancellationToken.None still cannot be held indefinitely by a hung collector.
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

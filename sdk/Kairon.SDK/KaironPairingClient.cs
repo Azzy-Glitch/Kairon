@@ -41,7 +41,9 @@ public static class KaironPairingClient
                 return new KaironPairingResult(false, "Pairing code was rejected.");
 
             var paired = await response.Content.ReadFromJsonAsync<PairingWireResponse>(cancellationToken);
-            return paired is null
+            return paired is null || paired.ProjectId == Guid.Empty || string.IsNullOrWhiteSpace(paired.ApiKey) ||
+                !Uri.TryCreate(paired.Endpoint, UriKind.Absolute, out var address) ||
+                (address.Scheme != Uri.UriSchemeHttp && address.Scheme != Uri.UriSchemeHttps) || !string.IsNullOrEmpty(address.UserInfo)
                 ? new KaironPairingResult(false, "Pairing response was invalid.")
                 : new KaironPairingResult(true, null, paired.ProjectId, paired.ApiKey, paired.Endpoint);
         }

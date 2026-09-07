@@ -16,8 +16,7 @@ import time
 from typing import Optional
 
 try:
-    from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.requests import Request
+    from starlette.types import ASGIApp, Scope, Receive, Send
 except ImportError as exc:  # pragma: no cover - exercised only when starlette is absent
     raise ImportError(
         "KaironMiddleware requires starlette/fastapi. Install with `pip install kairon-sdk[fastapi]`."
@@ -26,7 +25,7 @@ except ImportError as exc:  # pragma: no cover - exercised only when starlette i
 from .client import Kairon, format_exception, get_default_instance, _utcnow_iso
 
 
-class KaironMiddleware(BaseHTTPMiddleware):
+class KaironMiddleware:
     """
     Usage:
         kairon = Kairon(endpoint=..., project_id=..., service="OrderProcessingService")
@@ -37,34 +36,42 @@ class KaironMiddleware(BaseHTTPMiddleware):
         app.add_middleware(KaironMiddleware, kairon=kairon)
     """
 
-    def __init__(self, app, kairon: Optional[Kairon] = None):
-        super().__init__(app)
+    def __init__(self, app: ASGIApp, kairon: Optional[Kairon] = None):
+        self.app = app
         self._kairon = kairon
 
-    async def dispatch(self, request: Request, call_next):
-        kairon = self._kairon or get_default_instance()
-
-        if kairon is None or not kairon.enabled or kairon.is_ignored(request.url.path):
-            return await call_next(request)
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        try:
+            kairon = self._kairon or get_default_instance()
+            observe = kairon is not None and kairon.enabled and not kairon.is_ignored(scope.get("path", ""))
+        except Exception:
+            observe = False
+        if not observe:
+            return await self.app(scope, receive, send)
 
         start = time.monotonic()
-        exception: Optional[BaseException] = None
-        response = None
+        status_code = 500
+        exception = None
+
+        async def observed_send(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)  # Stream unchanged; do not buffer or consume the response.
 
         try:
-            response = await call_next(request)
+            await self.app(scope, receive, observed_send)
         except Exception as exc:
             exception = exc
-            raise
+            raise  # The application's error handler/server still owns exception behavior.
         finally:
-            self._report(kairon, request, response, exception, start)
+            self._report(kairon, scope, status_code, exception, start)
 
-        return response
-
-    def _report(self, kairon: Kairon, request: Request, response, exception, start: float) -> None:
+    def _report(self, kairon: Kairon, scope: Scope, status_code: int, exception, start: float) -> None:
         try:
             duration_ms = int((time.monotonic() - start) * 1000)
-            status_code = 500 if exception is not None else response.status_code
             is_error = exception is not None or status_code >= 500
 
             # Match the .NET SDK: every non-ignored request contributes to the periodic Metrics
@@ -79,8 +86,8 @@ class KaironMiddleware(BaseHTTPMiddleware):
                         "ApplicationName": kairon.application,
                         "Environment": kairon.environment,
                         "Service": kairon.service,
-                        "Endpoint": request.url.path,
-                        "Method": request.method,
+                        "Endpoint": scope.get("path", ""),
+                        "Method": scope.get("method", ""),
                         "StatusCode": status_code,
                         "Duration": duration_ms,
                         "Error": str(exception) if exception else None,

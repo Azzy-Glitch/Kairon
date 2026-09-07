@@ -27,6 +27,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import UUID
+from urllib.parse import urlsplit
 
 _logger = logging.getLogger("kairon")
 _logger.addHandler(logging.NullHandler())
@@ -67,18 +69,31 @@ def pair(endpoint: str, code: str, version: str = "1.0.1", timeout_seconds: floa
     None on any failure (rejected code, malformed response, unreachable backend) - contained
     here rather than raised, matching every other network path in this client.
     """
-    url = endpoint.rstrip("/") + "/api/v1/sdk/pair"
-    body = json.dumps({"code": code, "sdkType": "python", "version": version}).encode("utf-8")
-    request = urllib.request.Request(
-        url, data=body, method="POST", headers={"Content-Type": "application/json"}
-    )
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, socket.timeout, ValueError):
-        return None
+        parsed = urlsplit(endpoint)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password:
+            return None
+        url = endpoint.rstrip("/") + "/api/v1/sdk/pair"
+        body = json.dumps({"code": code, "sdkType": "python", "version": version}).encode("utf-8")
+        request = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=max(1.0, timeout_seconds)) as response:
+            if not 200 <= response.status < 300:
+                return None
+            raw = response.read(65537)
+            if len(raw) > 65536:
+                return None
+            result = json.loads(raw)
+            if not isinstance(result, dict) or not isinstance(result.get("apiKey"), str) or not result["apiKey"]:
+                return None
+            if not isinstance(result.get("projectId"), str) or UUID(result["projectId"]).int == 0:
+                return None
+            address = urlsplit(result.get("endpoint", ""))
+            if address.scheme not in ("http", "https") or not address.netloc or address.username or address.password:
+                return None
+            return result
     except Exception:
         return None
+
 
 
 class Kairon:
@@ -102,8 +117,8 @@ class Kairon:
         self.endpoint = endpoint.rstrip("/")
         self.project_id = project_id
         self.machine_id = machine_id
-        self.service = service
         self.application = application or service or "python-app"
+        self.service = service or self.application
         self.environment = environment
         self.api_key = api_key
         self.enabled = enabled
@@ -121,6 +136,7 @@ class Kairon:
         self._dropped_count = 0
         self._delivered_count = 0
         self._failed_count = 0
+        self.last_delivery_error: Optional[str] = None
         self._outstanding = 0
         self._delivery = threading.Condition()
         self._closed = False
@@ -139,6 +155,8 @@ class Kairon:
     def start(self) -> "Kairon":
         """Starts the background sender thread and registers this as the process-wide default
         instance for KaironMiddleware() called with no explicit instance."""
+        if self._closed:
+            return self  # A stopped collector is closed; create a new instance.
         if self._thread is None:
             self._stop_event.clear()
             self._thread = threading.Thread(target=self._run, name="kairon-sender", daemon=True)
@@ -173,6 +191,19 @@ class Kairon:
         self._stop_event.set()
         drained = self.flush(timeout_seconds)
         self._sender_stop.set()
+        # Account for queued work that can no longer be delivered after the deadline.
+        # A request already in flight finishes independently under its transport timeout.
+        with self._queue_lock:
+            while True:
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._dropped_count += 1
+                self._finish()
+        global _default_instance
+        if _default_instance is self:
+            _default_instance = None
         return drained
 
     @property
@@ -319,11 +350,16 @@ class Kairon:
                         pass
                 with self._delivery:
                     self._outstanding += 1
-                self._queue.put_nowait(item)
+                try:
+                    self._queue.put_nowait(item)
+                except Exception:
+                    self._dropped_count += 1
+                    self._finish()
+                    return False
             return True
         except Exception:
-            # Enqueueing must never raise into the caller - a full/broken queue is a dropped
-            # telemetry item, not an application error.
+            # Even an unexpected queue fault remains visible without affecting the host.
+            self._dropped_count += 1
             return False
 
     # --- background send loop -----------------------------------------------------------
@@ -335,6 +371,10 @@ class Kairon:
             except queue.Empty:
                 continue
 
+            if self._sender_stop.is_set():
+                self._dropped_count += 1
+                self._finish()
+                continue
             delivered = False
             try:
                 delivered = self._send(path, payload)
@@ -383,14 +423,27 @@ class Kairon:
                 request.add_header("X-Kairon-API-Key", self.api_key)
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 if not 200 <= response.status < 300:
-                    return False
+                    return self._delivery_failure("HTTP " + str(response.status))
                 try:
-                    body = json.loads(response.read())
-                    return not (isinstance(body, dict) and body.get("success") is False)
+                    body = json.loads(response.read(65536))
+                    if isinstance(body, dict) and body.get("success") is False:
+                        return self._delivery_failure("Collector rejected telemetry")
+                    self.last_delivery_error = None
+                    return True
                 except (ValueError, UnicodeError):
-                    return True  # Legacy or informational response body.
+                    self.last_delivery_error = None
+                    return True  # HTTP acceptance; informational body is not database proof.
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            exc.close()
+            return self._delivery_failure("HTTP " + str(status) + (" (project authentication rejected)" if status in (401, 403) else ""))
         except Exception:
-            return False  # The background sender accounts for this failure.
+            return self._delivery_failure("Transport or serialization failure")
+
+    def _delivery_failure(self, message: str) -> bool:
+        # Only fixed categories/status codes; never URL, payload, credential or exception text.
+        self.last_delivery_error = message
+        return False
 
 
 def _process_memory_percent() -> Optional[float]:

@@ -55,4 +55,5 @@ def test_stop_is_bounded_without_sender():
     sdk = client()
     sdk._enqueue_telemetry({})
     assert not sdk.stop(0)
-    assert sdk.pending_count == 1
+    assert sdk.pending_count == 0
+    assert sdk.dropped_count == 1

@@ -86,3 +86,13 @@ def test_timeout_returns_none_not_an_exception():
 
     with patch("kairon.client.urllib.request.urlopen", side_effect=socket.timeout("timed out")):
         assert pair("http://localhost:8000", "pair_x") is None
+
+
+@pytest.mark.parametrize("body", [b"{}", b"[]", b"null", b'{"apiKey":"x","projectId":"not-a-uuid","endpoint":"http://localhost"}'])
+def test_valid_json_without_usable_credentials_is_rejected(pairing_server, body):
+    _PairingHandler.body_to_return = body
+    assert pair(pairing_server, "pair_x") is None
+
+
+def test_invalid_endpoint_is_contained_before_request_creation():
+    assert pair("http://[broken", "pair_x") is None

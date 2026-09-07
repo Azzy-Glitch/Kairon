@@ -321,3 +321,19 @@ def test_a_single_bad_send_does_not_kill_the_sender_thread(local_server):
         assert any(body.get("Endpoint") == "/should-still-arrive" for _, _, body in _RecordingHandler.received)
     finally:
         client.stop()
+
+
+def test_omitted_service_matches_application_in_both_payloads():
+    client = Kairon("http://localhost", "project", application="worker", enable_metrics=False)
+    client.capture_exception(ValueError("failure"))
+    client.record_metric()
+    assert client._queue.get_nowait()[1]["Service"] == "worker"
+    assert client._queue.get_nowait()[1]["Service"] == "worker"
+
+
+def test_authentication_failure_diagnostic_excludes_credentials(local_server):
+    _RecordingHandler.status_to_return = 401
+    client = _client(local_server, api_key="private-secret")
+    assert not client._send("api/telemetry/incidents", {})
+    assert client.last_delivery_error == "HTTP 401 (project authentication rejected)"
+    assert "private-secret" not in client.last_delivery_error

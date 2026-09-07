@@ -161,3 +161,42 @@ def test_response_body_is_left_intact():
     response = client.get("/api/orders")
 
     assert response.json() == {"ok": True}
+
+
+def test_streaming_duration_includes_body_and_preserves_contents():
+    import asyncio
+    from starlette.responses import StreamingResponse
+    collector = _kairon()
+    app = FastAPI()
+    app.add_middleware(KaironMiddleware, kairon=collector)
+    @app.get("/stream")
+    async def stream():
+        async def chunks():
+            yield b"one"
+            await asyncio.sleep(.1)
+            yield b"two"
+        return StreamingResponse(chunks())
+    with TestClient(app) as client:
+        assert client.get("/stream").content == b"onetwo"
+    payload = collector._queue.get_nowait()[1]
+    assert payload["Duration"] >= 90
+    assert payload["StatusCode"] == 200
+
+
+def test_late_stream_error_keeps_actual_status_and_records_exception():
+    from starlette.responses import StreamingResponse
+    collector = _kairon()
+    app = FastAPI()
+    app.add_middleware(KaironMiddleware, kairon=collector)
+    @app.get("/stream")
+    async def stream():
+        async def chunks():
+            yield b"one"
+            raise ValueError("late stream failure")
+        return StreamingResponse(chunks())
+    with TestClient(app) as client:
+        with pytest.raises(Exception):
+            client.get("/stream")
+    payload = collector._queue.get_nowait()[1]
+    assert payload["StatusCode"] == 200  # Headers already sent; do not invent a 500.
+    assert payload["ExceptionType"] and "late stream failure" in payload["StackTrace"]
