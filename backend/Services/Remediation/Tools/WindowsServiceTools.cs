@@ -15,7 +15,7 @@ public interface IScopedRemediationTool
     // Includes immutable target identity for approval binding. Null means not authorized.
     string? TargetFingerprint(SreIncident incident);
     Guid? TargetMachineId(SreIncident incident);
-    Task<bool> IsRunningAsync(SreIncident incident, string fingerprint, CancellationToken ct);
+    Task<bool> IsDesiredStateAsync(SreIncident incident, string fingerprint, CancellationToken ct);
 }
 
 public static class ServiceToolNames
@@ -119,10 +119,10 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
         return target;
     }
     public Guid? TargetMachineId(SreIncident incident) => TargetFingerprint(incident) is null ? null : IncidentMachineScope.GetMachineId(incident);
-    public async Task<bool> IsRunningAsync(SreIncident incident, string fingerprint, CancellationToken ct) {
+    public async Task<bool> IsDesiredStateAsync(SreIncident incident, string fingerprint, CancellationToken ct) {
         if (TargetFingerprint(incident) != fingerprint) return false;
         var target = Target(incident.ProjectId, incident.Environment, incident.Service)!;
-        return await _control.QueryAsync(target.ExpectedHostName, target.WindowsServiceName, ct) == 4;
+        return await _control.QueryAsync(target.ExpectedHostName, target.WindowsServiceName, ct) == (Name == ServiceToolNames.StopService ? 1 : 4);
     }
     public string? TargetFingerprint(SreIncident incident)
     {

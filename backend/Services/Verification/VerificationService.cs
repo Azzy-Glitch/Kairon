@@ -76,6 +76,9 @@ public class VerificationService : IVerificationService
         var scopeValid = scoped is null || (machineId.HasValue && bound is not null && scoped.TargetFingerprint(incident) == bound);
         var executedAt = action.CompletedAt ?? action.StartedAt ?? DateTime.UtcNow;
 
+        if (action.ActionType == ServiceToolNames.StopService)
+            return await VerifyStoppedAsync(incident, action, verification, scoped, machineId, bound, scopeValid, cancellationToken);
+
         // "Before" is the degraded period, ending the moment the remediation ran.
         var beforeWindowStart = incident.Timestamp.AddSeconds(-_detection.EvaluationWindowSeconds);
         var before = await SampleAsync(incident, beforeWindowStart, executedAt, machineId, cancellationToken);
@@ -91,7 +94,7 @@ public class VerificationService : IVerificationService
             try {
                 using var probeTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 probeTimeout.CancelAfter(TimeSpan.FromSeconds(5));
-                scopeValid = await scoped.IsRunningAsync(incident, bound!, probeTimeout.Token);
+                scopeValid = await scoped.IsDesiredStateAsync(incident, bound!, probeTimeout.Token);
             } catch { scopeValid = false; }
         }
         var comparisons = BuildComparisons(incident, before, after);
@@ -146,6 +149,49 @@ public class VerificationService : IVerificationService
         _logger.LogInformation("Verification for {IncidentKey} action {ActionKey}: {Status} (score {Score:P0})",
             incident.IncidentKey, action.ActionKey, verification.Status, verification.RecoveryScore);
 
+        return verification;
+    }
+
+    private async Task<VerificationResult> VerifyStoppedAsync(SreIncident incident, RemediationAction action,
+        VerificationResult verification, IScopedRemediationTool? scoped, Guid? machineId, string? bound,
+        bool scopeValid, CancellationToken ct)
+    {
+        // Stopping is intentional containment, not restoration of application availability.
+        // Fresh independent SCM probes plus a post-operation machine heartbeat replace workload metrics.
+        var confirmed = false;
+        var probes = 0;
+        var completed = action.CompletedAt;
+        if (scopeValid && scoped is not null && completed.HasValue && completed <= DateTime.UtcNow && action.Status == RemediationStatus.Executed)
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            deadline.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(_options.SettleSeconds, 0, 60) + 10));
+            try
+            {
+                probes++;
+                var first = await scoped.IsDesiredStateAsync(incident, bound!, deadline.Token);
+                await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(_options.SettleSeconds, 0, 60)), deadline.Token);
+                probes++;
+                var second = await scoped.IsDesiredStateAsync(incident, bound!, deadline.Token);
+                confirmed = first && second &&
+                    await _db.Machines.AsNoTracking().AnyAsync(m => m.Id == machineId && m.LastSeenAt >= completed && m.LastSeenAt <= DateTime.UtcNow.AddSeconds(5), deadline.Token);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch { confirmed = false; }
+        }
+        verification.CompletedAt = DateTime.UtcNow;
+        verification.Status = confirmed ? VerificationStatus.Passed : VerificationStatus.Inconclusive;
+        verification.RecoveryScore = confirmed ? 1 : 0;
+        verification.Summary = confirmed
+            ? "Intentional stop confirmed by fresh exact-target SCM probes and a post-operation machine heartbeat; application availability is not restored."
+            : "Intentional stop not confirmed; exact-target Stopped state and fresh independent machine evidence are required.";
+        verification.FailureReason = confirmed ? null : "desired-stopped-state-or-machine-evidence-unverified";
+        incident.VerificationState = verification.Status;
+        action.VerificationResultId = verification.Id;
+        _audit.Record(incident, IncidentEventTypes.Verified, "verification-service", actionId: action.ActionKey,
+            result: verification.Status.ToString(), message: verification.Summary,
+            data: new { incident.ProjectId, incident.Environment, incident.Service, machineId, targetFingerprint = bound,
+                desiredState = "Stopped", scmProbeAttempts = probes, scopeValid, confirmed, evidence = "SCM and post-operation machine heartbeat" });
+        await _db.SaveChangesAsync(ct);
         return verification;
     }
 

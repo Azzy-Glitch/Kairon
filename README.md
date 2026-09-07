@@ -362,6 +362,12 @@ Agent registration is a bootstrap endpoint; subsequent Agent and UserAgent heart
 their scoped machine credentials. A centralized deployment should place bootstrap registration
 behind a trusted provisioning/network boundary before exposing the backend.
 
+## Remediation deployment boundary
+
+Run one active backend/executor per database and Windows service target. See
+[remediation recovery and action-specific verification](docs/REMEDIATION_RECOVERY.md) for interruption handling,
+StopService evidence requirements, and SQL Server migration validation. Multi-replica remediation is not supported.
+
 ## Local development
 
 Use three terminals from the repository root. The values below are development-only transport

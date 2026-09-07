@@ -137,7 +137,9 @@ public static class ServiceExtensions
         services.AddScoped<IIncidentQueryService, IncidentQueryService>();
 
         // --- Background workers. This is what keeps AI off the ingestion path.
+        services.AddScoped<RemediationRecoveryService>();
         services.AddHostedService<IncidentProcessingWorker>();
+        services.AddHostedService<RemediationRecoveryWorker>();
         services.AddHostedService<DetectionSweepWorker>();
 
         return services;

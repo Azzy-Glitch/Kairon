@@ -528,10 +528,13 @@ public class IncidentOrchestrator : IIncidentOrchestrator
         string? note,
         CancellationToken cancellationToken = default)
     {
+        using var lease = await RemediationExecutionGate.EnterAsync(incidentId, cancellationToken);
         var incident = await LoadAsync(incidentId, cancellationToken);
         if (incident is null)
             return null;
 
+        await _db.Entry(incident).ReloadAsync(cancellationToken);
+        foreach (var tracked in incident.Actions) await _db.Entry(tracked).ReloadAsync(cancellationToken);
         var action = incident.Actions.FirstOrDefault(a => a.Id == actionId);
         if (action is null)
             return null;
@@ -584,9 +587,10 @@ public class IncidentOrchestrator : IIncidentOrchestrator
             // The queue only drops under sustained overload (PRD section 21's bounded-queue
             // requirement). Approval is still recorded - nothing unsafe happened - but the operator
             // needs to know execution did not start rather than watching a stalled "Remediating".
-            _logger.LogError(
-                "Remediation queue is full; {Key} action {Action} approved but not yet queued for execution",
-                incident.IncidentKey, action.ActionKey);
+            _audit.Record(incident, "RemediationDeferred", "orchestrator", actionId: action.ActionKey,
+                message: "Execution queue rejected work; persisted approval will be reconciled within the bounded recovery window.");
+            await _db.SaveChangesAsync(cancellationToken);
+            _logger.LogWarning("Persisted approval deferred for {Key} action {Action}", incident.IncidentKey, action.ActionKey);
         }
 
         return action;
@@ -599,6 +603,7 @@ public class IncidentOrchestrator : IIncidentOrchestrator
     /// </summary>
     public async Task ExecuteAndVerifyAsync(Guid incidentId, Guid actionId, CancellationToken cancellationToken = default)
     {
+        using var lease = await RemediationExecutionGate.EnterAsync(incidentId, cancellationToken);
         var incident = await LoadAsync(incidentId, cancellationToken);
         if (incident is null)
         {
@@ -606,16 +611,34 @@ public class IncidentOrchestrator : IIncidentOrchestrator
             return;
         }
 
+        await _db.Entry(incident).ReloadAsync(cancellationToken);
+        foreach (var tracked in incident.Actions) await _db.Entry(tracked).ReloadAsync(cancellationToken);
         var action = incident.Actions.FirstOrDefault(a => a.Id == actionId);
-        if (action is null || action.Status != RemediationStatus.Approved)
+        if (action is null || incident.Status is not (IncidentStatus.Remediating or IncidentStatus.Verifying)) return;
+        var currentAttempt = incident.Actions.Where(a => a.ApprovedAt.HasValue)
+            .OrderByDescending(a => a.ApprovedAt).ThenByDescending(a => a.CreatedAt).FirstOrDefault();
+        if (currentAttempt?.Id != action.Id) return; // A stale queue item cannot supersede a newer approval.
+        if (!action.ApprovedAt.HasValue || action.ApprovedAt > DateTime.UtcNow.AddSeconds(5) || DateTime.UtcNow - action.ApprovedAt.Value > RemediationRecoveryService.RecoveryWindow) return;
+        var resumeVerification = action.Status == RemediationStatus.Executed && action.CompletedAt.HasValue;
+        if (!resumeVerification && (action.Status != RemediationStatus.Approved || action.StartedAt.HasValue)) return;
+        if (resumeVerification)
         {
-            _logger.LogWarning(
-                "ExecuteAndVerifyAsync: action {ActionId} on {Key} is not in Approved state (found {Status}); skipping",
-                actionId, incident.IncidentKey, action?.Status.ToString() ?? "missing");
-            return;
+            if (await _db.IncidentEvents.AnyAsync(e => e.IncidentId == incident.Id && e.ActionId == action.ActionKey &&
+                e.EventType == RemediationRecoveryService.VerificationResumed, cancellationToken)) return;
+            _audit.Record(incident, RemediationRecoveryService.VerificationResumed, "remediation-recovery",
+                actionId: action.ActionKey, message: "Resuming verification only; the completed SCM operation will not be repeated.");
+            foreach (var pending in incident.Verifications.Where(v => v.Status == VerificationStatus.Pending))
+            {
+                pending.Status = VerificationStatus.Inconclusive;
+                pending.CompletedAt = DateTime.UtcNow;
+                pending.FailureReason = "verification-interrupted";
+                pending.Summary = "Verification interrupted; superseded by a bounded fresh evidence check.";
+            }
+            await _db.SaveChangesAsync(cancellationToken);
         }
-
-        var result = await _executor.ExecuteAsync(incident, action, cancellationToken);
+        var result = resumeVerification
+            ? RemediationToolResult.Ok("Execution was already durably recorded.")
+            : await _executor.ExecuteAsync(incident, action, cancellationToken);
 
         if (!result.Success)
         {
@@ -635,7 +658,8 @@ public class IncidentOrchestrator : IIncidentOrchestrator
 
         incident.RemediationState = RemediationStatus.Executed;
 
-        var beforeVerify = IncidentLifecycle.Transition(incident, IncidentStatus.Verifying);
+        var beforeVerify = incident.Status == IncidentStatus.Verifying
+            ? incident.Status : IncidentLifecycle.Transition(incident, IncidentStatus.Verifying);
         _audit.Record(incident, IncidentEventTypes.Verifying, "orchestrator",
             previousState: beforeVerify.ToString(),
             newState: incident.Status.ToString(),

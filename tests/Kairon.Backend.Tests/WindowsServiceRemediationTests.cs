@@ -95,8 +95,10 @@ public sealed class WindowsServiceRemediationTests
 
     private sealed class Scm : IWindowsServiceControl {
         public int State = 4;
+        public Queue<int> QueryStates = new();
+        public bool DenyQuery;
         public List<(string Host, string Service, bool Start)> Calls = [];
-        public Task<int> QueryAsync(string host, string service, CancellationToken ct) { ct.ThrowIfCancellationRequested(); return Task.FromResult(State); }
+        public Task<int> QueryAsync(string host, string service, CancellationToken ct) { ct.ThrowIfCancellationRequested(); if (DenyQuery) throw new UnauthorizedAccessException(); return Task.FromResult(QueryStates.Count > 0 ? QueryStates.Dequeue() : State); }
         public Task ChangeAsync(string host, string service, bool start, CancellationToken ct) {
             ct.ThrowIfCancellationRequested(); Calls.Add((host, service, start)); State = start ? 4 : 1; return Task.CompletedTask;
         }
@@ -186,5 +188,54 @@ public sealed class WindowsServiceRemediationTests
         Assert.Equal(expected, result.Status);
         var audit = h.Db.IncidentEvents.Single(e => e.EventType == IncidentEventTypes.Verified);
         Assert.Contains(machine.Id.ToString(), audit.DataJson);
+    }
+
+    [Theory]
+    [InlineData("stopped", VerificationStatus.Passed)]
+    [InlineData("running", VerificationStatus.Inconclusive)]
+    [InlineData("old-heartbeat", VerificationStatus.Inconclusive)]
+    [InlineData("changed-target", VerificationStatus.Inconclusive)]
+    [InlineData("restarted", VerificationStatus.Inconclusive)]
+    [InlineData("access-denied", VerificationStatus.Inconclusive)]
+    [InlineData("missing-binding", VerificationStatus.Inconclusive)]
+    [InlineData("missing-completion", VerificationStatus.Inconclusive)]
+    [InlineData("future-completion", VerificationStatus.Inconclusive)]
+    public async Task StopVerificationRequiresStableStoppedStateAndIndependentFreshMachineEvidence(string scenario, VerificationStatus expected)
+    {
+        using var h = new TestHarness();
+        var incident = h.SeedIncident(IncidentStatus.Verifying);
+        var machine = new Machine { Id = Guid.NewGuid(), HostName = "enrolled-host", OperatingSystem = "Windows", AgentCredentialHash = "enrollment", LastSeenAt = DateTime.UtcNow };
+        h.Db.Machines.Add(machine);
+        var credential = new ProjectApiCredential { ProjectId = incident.ProjectId, KeyHash = "test-hash" };
+        h.Db.ProjectApiCredentials.Add(credential);
+        var snapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
+        snapshots.ForEach(s => s.MachineId = machine.Id);
+        incident.CorrelatedMetricsJson = SreJson.Serialize(snapshots);
+        h.Db.SaveChanges();
+        var target = new WindowsServiceTarget { ProjectId = incident.ProjectId, Environment = incident.Environment, Service = incident.Service, MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = machine.HostName, WindowsServiceName = "ScopedService", AllowedOperations = [ServiceToolNames.StopService] };
+        var scm = new Scm { State = scenario == "running" ? 4 : 1 };
+        var tool = new StopServiceTool(h.Db, Options.Create(new WindowsRemediationOptions { Targets = [target] }), scm);
+        var action = new RemediationAction { IncidentId = incident.Id, ActionKey = "ACT-scope", ActionType = tool.Name, Status = RemediationStatus.Executed, CompletedAt = DateTime.UtcNow.AddSeconds(-20), ParametersJson = SreJson.Serialize(new Dictionary<string, string> { ["targetFingerprint"] = tool.TargetFingerprint(incident)! }) };
+        incident.Actions.Add(action); h.Db.RemediationActions.Add(action);
+
+        if (scenario == "old-heartbeat") machine.LastSeenAt = action.CompletedAt!.Value.AddSeconds(-1);
+        if (scenario == "changed-target") target.WindowsServiceName = "AnotherService";
+        if (scenario == "restarted") { scm.QueryStates.Enqueue(1); scm.QueryStates.Enqueue(4); }
+        if (scenario == "access-denied") scm.DenyQuery = true;
+        if (scenario == "missing-binding") action.ParametersJson = "{}";
+        if (scenario == "missing-completion") action.CompletedAt = null;
+        if (scenario == "future-completion") action.CompletedAt = DateTime.UtcNow.AddMinutes(1);
+        h.Db.SaveChanges();
+        var verifier = new Kairon.Backend.Services.Verification.VerificationService(h.Db, h.Audit,
+            new Kairon.Backend.Services.Verification.RemediationToolRegistryAccessor(new RemediationToolRegistry([tool])),
+            Options.Create(h.Verification), Options.Create(h.Detection), NullLogger<Kairon.Backend.Services.Verification.VerificationService>.Instance);
+        var result = await verifier.VerifyAsync(incident, action);
+        Assert.Equal(expected, result.Status);
+        Assert.Empty(h.Db.Metrics); // A deliberately stopped workload cannot emit recovery metrics.
+        Assert.Empty(scm.Calls); // Verification is read-only.
+        var audit = h.Db.IncidentEvents.Single(e => e.EventType == IncidentEventTypes.Verified);
+        Assert.Contains("Stopped", audit.DataJson);
+        Assert.Contains(machine.Id.ToString(), audit.DataJson);
+        if (expected == VerificationStatus.Passed) Assert.Contains("availability is not restored", result.Summary);
     }
 }
