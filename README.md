@@ -150,11 +150,26 @@ More packaging details are in [installer/README.md](installer/README.md).
 
 1. Open KAIRON.
 2. Go to **Connect an app** and create or select a project.
-3. Generate a project credential or one-time pairing code.
-4. Add the .NET or Python SDK to the application and use the shown project ID and key.
+3. Generate a one-time pairing code for the SDK you are connecting.
+4. Add the .NET or Python SDK and pass that pairing code on the application's first run.
 5. Start the application and send real requests.
 6. Confirm the service appears under **Live telemetry** and **Services**.
 7. In **Settings**, configure and test an AI provider if real AI analysis is required.
+
+### Pairing-code-only onboarding
+
+For a local desktop installation, the SDK can bootstrap from only the pairing code. It redeems the
+code for the KAIRON endpoint, project ID, and project API key, then stores that connection for the
+current operating-system user. Later runs load the stored connection automatically, so the pairing
+code should be omitted after it has been redeemed.
+
+The pairing code is single-use, expires after 10 minutes, and is not a telemetry API key. Keep it
+private and never commit it. Pairing defaults to `http://localhost:8000`; supply the constructor's
+`endpoint` argument explicitly when connecting to a non-local KAIRON backend.
+
+Pairing does **not** create or modify environment variables. Application name, service name, and
+environment remain application configuration. Explicit constructor values and
+`KAIRON_ENDPOINT`/`KAIRON_PROJECT_ID`/`KAIRON_API_KEY` take precedence over the stored connection.
 
 Until a valid provider connection is configured, KAIRON can use deterministic mock analysis. The
 Settings page labels a mock fallback as **not connected**; it is not proof that the selected
@@ -171,22 +186,32 @@ pip install -e ".\sdk-python[fastapi]"
 Minimal `main.py`:
 
 ```python
+from contextlib import asynccontextmanager
+import os
+
 from fastapi import FastAPI
 from kairon import Kairon
 from kairon.middleware import KaironMiddleware
 
-app = FastAPI()
-
 kairon = Kairon(
-    endpoint="http://127.0.0.1:8000",
-    project_id="your-project-id",
-    api_key="your-project-api-key",
+    pairing_code=os.environ.get("KAIRON_PAIRING_CODE"),
+    application="PaymentsApi",
     service="PaymentService",
     environment="Development",
 )
-kairon.start()
 
-app.add_middleware(KaironMiddleware)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    kairon.start()
+    try:
+        yield
+    finally:
+        kairon.stop(timeout_seconds=5)
+
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(KaironMiddleware, kairon=kairon)
 
 
 @app.get("/payments/{payment_id}")
@@ -197,8 +222,13 @@ async def get_payment(payment_id: str):
 Run it normally:
 
 ```powershell
+$env:KAIRON_PAIRING_CODE = Read-Host "KAIRON pairing code"
 uvicorn main:app --port 8088
 ```
+
+Set `KAIRON_PAIRING_CODE` only for the first successful run. The Python SDK stores the redeemed
+connection using Windows DPAPI; on later runs, leave the variable unset and the constructor loads
+the stored connection.
 
 The middleware records request status and latency. A lightweight background sampler reports
 process CPU and memory plus accumulated request/error counts every five seconds. It ignores health,
@@ -210,9 +240,38 @@ raise into the monitored application.
 
 See [sdk-python/README.md](sdk-python/README.md) for pairing, tuning, sampling, and manual metrics.
 
-## Connect an ASP.NET Core application
+## Connect a .NET application
 
 After adding a package or project reference to `Kairon.SDK`:
+
+```csharp
+using Kairon.SDK;
+
+using var kairon = new KaironClient(
+    pairingCode: Environment.GetEnvironmentVariable("KAIRON_PAIRING_CODE"),
+    applicationName: "PaymentsWorker",
+    serviceName: "PaymentService",
+    environment: "Development");
+
+kairon.Start();
+// Run the long-lived worker or application here.
+```
+
+For the first run, set the code without putting it in source control:
+
+```powershell
+$env:KAIRON_PAIRING_CODE = Read-Host "KAIRON pairing code"
+dotnet run
+```
+
+`KaironClient` stores the redeemed connection with ASP.NET Core Data Protection and Windows DPAPI.
+Leave `KAIRON_PAIRING_CODE` unset on later runs; the stored endpoint, project ID, and API key are
+reused automatically.
+
+### ASP.NET Core request middleware
+
+ASP.NET Core applications that need per-request status and latency collection can use the DI
+middleware with an explicit project credential:
 
 ```csharp
 builder.Services.AddKairon(options =>
