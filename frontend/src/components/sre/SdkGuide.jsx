@@ -8,6 +8,15 @@ import { IconServer, IconTerminal, IconShield, IconAlertTriangle, IconZap, IconC
 // ---- sdk/Kairon.SDK (AddKairon/UseKairon/KaironOptions/KaironPairingClient) and sdk-python
 // ---- (Kairon class, kairon.middleware.KaironMiddleware, kairon.pair()).
 
+// Primary, simplest path for a worker/console app: KaironClient redeems the pairing code itself
+// and persists the resulting project credential (KaironCredentialStore.cs) - projectId/apiKey/
+// endpoint are never typed in by hand. Automatic process metrics start immediately; report
+// anything else the host application knows through the KaironClient instance.
+const dotnetClientPairing = `using Kairon.SDK;
+
+var kairon = new KaironClient(pairingCode: "YOUR_PAIRING_CODE");
+kairon.Start();`;
+
 const dotnetProgram = `using Kairon.SDK;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -36,6 +45,38 @@ var paired = await KaironPairingClient.PairAsync(
 if (!paired.Success) throw new InvalidOperationException("Pairing failed");
 // Store paired.ProjectId and paired.ApiKey in your secret store. Do not log or serialize paired.`;
 
+// Primary, simplest path: the SDK redeems the pairing code itself and persists the resulting
+// project credential (kairon/_credential_store.py) - project_id/api_key/endpoint are never
+// typed in by hand.
+const pythonPairing = `from kairon import Kairon
+
+kairon = Kairon(pairing_code="YOUR_PAIRING_CODE")
+kairon.start()`;
+
+const pythonFastapiPaired = `from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from kairon import Kairon
+from kairon.middleware import KaironMiddleware
+
+collector = Kairon(pairing_code="YOUR_PAIRING_CODE")
+
+@asynccontextmanager
+async def lifespan(app):
+    collector.start()
+    try:
+        yield
+    finally:
+        collector.stop(timeout_seconds=5)
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(KaironMiddleware, kairon=collector)
+
+@app.get("/orders")
+def orders():
+    return {"status": "ok"}`;
+
+// Explicit configuration remains fully supported - CI/CD, containers, or anyone who prefers not
+// to rely on the SDK's local credential cache.
 const pythonFastapi = `import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -241,19 +282,29 @@ function PythonGuide({ CodeBlock, projectId, onTelemetry }) {
         <CodeBlock copyKey="python-install" code={'python -m pip install "./sdk-python[fastapi]"'} />
         <p className="sdk-hint">That installs the core SDK plus the FastAPI/Starlette middleware. Using a different framework or a plain script? Install just <code>./sdk-python</code> — see Advanced.</p>
       </SubStep>
-      <SubStep number="2" title="Configure">
-        <p>Set these values in your application's environment. Replace the placeholders with the credentials from Pairing.</p>
-        <CodeBlock copyKey="python-configuration" code={configuration} />
-        <ul className="sdk-config-explain">
-          <li><code>KAIRON_ENDPOINT</code> — the KAIRON backend.</li>
-          <li><code>KAIRON_PROJECT_ID</code> — the project UUID from Pairing.</li>
-          <li><code>KAIRON_API_KEY</code> — the project telemetry key.</li>
-          <li><code>KAIRON_ENVIRONMENT</code> — your application's environment.</li>
-        </ul>
-        <p className="sdk-hint">Keep your API key private. Never commit it to Git.</p>
+      <SubStep number="2" title="Connect with your pairing code">
+        <p>Paste the pairing code from Step 2 above. KAIRON looks up your project, its API key and its endpoint automatically — nothing else to configure.</p>
+        <CodeBlock copyKey="python-pairing" code={pythonPairing} />
+        <p className="sdk-hint">The SDK redeems the code once and remembers the connection, so later runs of this app don't need it again. Keep the pairing code private; never commit it to Git.</p>
+        <details className="sdk-guide-details">
+          <summary>Prefer explicit configuration? (CI/CD, containers)</summary>
+          <p>Set these values in your application's environment instead:</p>
+          <CodeBlock copyKey="python-configuration" code={configuration} />
+          <ul className="sdk-config-explain">
+            <li><code>KAIRON_ENDPOINT</code> — the KAIRON backend.</li>
+            <li><code>KAIRON_PROJECT_ID</code> — the project UUID from Pairing.</li>
+            <li><code>KAIRON_API_KEY</code> — the project telemetry key.</li>
+            <li><code>KAIRON_ENVIRONMENT</code> — your application's environment.</li>
+          </ul>
+          <p className="sdk-hint">Explicit values always take priority over a pairing code or a stored connection. Keep your API key private. Never commit it to Git.</p>
+        </details>
       </SubStep>
       <SubStep number="3" title="Add KAIRON to your application">
-        <CodeBlock copyKey="python-fastapi-usage" code={pythonFastapi} />
+        <CodeBlock copyKey="python-fastapi-paired" code={pythonFastapiPaired} />
+        <details className="sdk-guide-details">
+          <summary>Using explicit configuration instead?</summary>
+          <CodeBlock copyKey="python-fastapi-usage" code={pythonFastapi} />
+        </details>
       </SubStep>
       <SubStep number="4" title="Run">
         <CodeBlock copyKey="python-run" code={'uvicorn app:app --reload'} />
@@ -276,18 +327,25 @@ function DotNetGuide({ CodeBlock, projectId, onTelemetry }) {
         <CodeBlock copyKey="dotnet-install" code={'dotnet add package Kairon.SDK --version 1.0.1 --source "<package-feed-or-local-nupkg-folder>"'} />
         <p className="sdk-hint">There is no public NuGet feed for this release — use the package feed or local <code>.nupkg</code> folder your KAIRON release owner supplies. For local development from a source checkout instead, see Advanced.</p>
       </SubStep>
-      <SubStep number="2" title="Configure">
-        <p>Set these values in your application's environment. Replace the placeholders with the credentials from Pairing.</p>
-        <CodeBlock copyKey="dotnet-configuration" code={configuration} />
-        <ul className="sdk-config-explain">
-          <li><code>KAIRON_ENDPOINT</code> — the KAIRON backend.</li>
-          <li><code>KAIRON_PROJECT_ID</code> — the project UUID from Pairing.</li>
-          <li><code>KAIRON_API_KEY</code> — the project telemetry key.</li>
-          <li><code>KAIRON_ENVIRONMENT</code> — your application's environment.</li>
-        </ul>
-        <p className="sdk-hint">Keep your API key private. Never commit it to Git.</p>
+      <SubStep number="2" title="Connect with your pairing code">
+        <p>Paste the pairing code from Step 2 above. KAIRON looks up your project, its API key and its endpoint automatically — nothing else to configure.</p>
+        <CodeBlock copyKey="dotnet-pairing" code={dotnetClientPairing} />
+        <p className="sdk-hint"><code>KaironClient</code> redeems the code once and remembers the connection, so later runs of this app don't need it again. Keep the pairing code private; never commit it to Git. Works in any .NET app — a worker, a console app, or an ASP.NET Core host.</p>
+        <details className="sdk-guide-details">
+          <summary>Prefer explicit configuration? (CI/CD, containers)</summary>
+          <p>Set these values in your application's environment instead:</p>
+          <CodeBlock copyKey="dotnet-configuration" code={configuration} />
+          <ul className="sdk-config-explain">
+            <li><code>KAIRON_ENDPOINT</code> — the KAIRON backend.</li>
+            <li><code>KAIRON_PROJECT_ID</code> — the project UUID from Pairing.</li>
+            <li><code>KAIRON_API_KEY</code> — the project telemetry key.</li>
+            <li><code>KAIRON_ENVIRONMENT</code> — your application's environment.</li>
+          </ul>
+          <p className="sdk-hint">Explicit values always take priority over a pairing code or a stored connection. Keep your API key private. Never commit it to Git.</p>
+        </details>
       </SubStep>
       <SubStep number="3" title="Add KAIRON to ASP.NET Core">
+        <p>The pairing-code client above already reports process metrics automatically — enough for a worker or a quick connectivity check. For automatic per-request instrumentation in an ASP.NET Core app, register the DI-based integration instead, using the same values a pairing code resolves (shown above, or under Prefer explicit configuration):</p>
         <CodeBlock copyKey="dotnet-usage" code={dotnetProgram} />
         <p className="sdk-hint"><code>AddKairon()</code> configures telemetry. <code>UseKairon()</code> adds request monitoring.</p>
       </SubStep>
@@ -311,19 +369,20 @@ function PairingCard({ CodeBlock }) {
       <div className="section-header">
         <div className="section-title-group">
           <div className="section-icon-badge"><IconLink className="w-6 h-6 tone-neutral" /></div>
-          <div><h3>Pair once</h3><p className="section-desc">One-time setup that gives your application its Project ID and Project API Key.</p></div>
+          <div><h3>Pair once</h3><p className="section-desc">One-time setup that gives your application a pairing code. Give the SDK only that code — it handles the project, API key and endpoint itself.</p></div>
         </div>
       </div>
-      <FlowDiagram steps={['Choose project', 'Generate pairing code', 'Redeem code', 'Receive Project ID + API Key', 'Configure your application']} />
+      <FlowDiagram steps={['Choose project', 'Generate pairing code', 'Give the code to the SDK', 'SDK redeems it and stores the connection', 'Telemetry starts']} />
       <Checklist items={[
         'The pairing code expires after 10 minutes.',
         'The pairing code can only be used once.',
-        'The returned API key — not the pairing code — is what your application uses for telemetry.',
-        "Don't store the pairing code in your application.",
+        'The SDK redeems it for a Project ID and Project API Key, and remembers the connection — later runs do not need the code again.',
+        "Don't store the pairing code anywhere long-term.",
         "Don't log credentials."
       ]} />
       <details className="sdk-guide-details">
-        <summary>Show the pairing call for each SDK</summary>
+        <summary>Redeeming a pairing code manually</summary>
+        <p className="sdk-hint">Most applications should just pass <code>pairing_code</code>/<code>pairingCode</code> to the SDK constructor, as shown in Step 3. Call these directly only if you need the resulting credential without starting a collector — for example, a one-time setup script.</p>
         <CodeBlock copyKey="pair-python" code={pythonPairSnippet} />
         <CodeBlock copyKey="pair-dotnet" code={dotnetPairSnippet} />
       </details>
@@ -507,12 +566,12 @@ export default function SdkGuide({ CodeBlock, onPairing, onTelemetry, onRemediat
       </Step>
 
       <Step number="2" title="Pair your application">
-        <p>Create a project and generate a one-time pairing code.</p>
+        <p>Create a project and generate a one-time pairing code. Give that code to the SDK — it looks up the project, API key and endpoint for you.</p>
         <Checklist items={[
           'The pairing code expires after 10 minutes.',
           'The pairing code is single-use.',
-          'The pairing code is only used during setup.',
-          'Application telemetry uses the resulting Project ID + Project API Key.',
+          'The pairing code is only used during setup — the SDK stores what it needs and does not require it again.',
+          'Application telemetry uses the resulting Project ID + Project API Key, resolved automatically from the code.',
           'Never use the pairing code as the telemetry API key.'
         ]} />
         <button type="button" className="small-btn sdk-primary-action" onClick={onPairing}>Open Pairing</button>

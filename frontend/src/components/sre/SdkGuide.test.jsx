@@ -29,15 +29,26 @@ describe('SDK onboarding interactions', () => {
 
   it('shows the real .NET and Python integration examples with no extra click required', async () => {
     render(<SdkPage />);
-    expect(await screen.findByText(/app\.add_middleware\(KaironMiddleware/)).toBeInTheDocument();
+    expect(await screen.findByText(/collector = Kairon\(pairing_code="YOUR_PAIRING_CODE"\)/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('tab', { name: /\.NET/ }));
+    expect(await screen.findByText(/new KaironClient\(pairingCode: "YOUR_PAIRING_CODE"\)/)).toBeInTheDocument();
     expect(await screen.findByText(/builder\.Services\.AddKairon/)).toBeInTheDocument();
   });
 
-  it('copies the authenticated Python example', async () => {
+  it('copies the pairing-code Python example, the new primary onboarding path', async () => {
     const user = userEvent.setup();
     const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
     render(<SdkPage />);
+    await user.click(await screen.findByRole('button', { name: 'Copy python-fastapi-paired example' }));
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('Kairon(pairing_code="YOUR_PAIRING_CODE")'));
+    write.mockRestore();
+  });
+
+  it('still offers the explicit-configuration Python example for CI/CD and containers', async () => {
+    const user = userEvent.setup();
+    const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+    render(<SdkPage />);
+    await user.click(screen.getByText('Using explicit configuration instead?'));
     await user.click(await screen.findByRole('button', { name: 'Copy python-fastapi-usage example' }));
     expect(write).toHaveBeenCalledWith(expect.stringContaining('api_key=os.environ["KAIRON_API_KEY"]'));
     write.mockRestore();

@@ -26,14 +26,21 @@ import traceback
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 from uuid import UUID
 from urllib.parse import urlsplit
+
+from . import _credential_store
 
 _logger = logging.getLogger("kairon")
 _logger.addHandler(logging.NullHandler())
 
 DEFAULT_IGNORED_PATH_PREFIXES = ("/health", "/healthz", "/metrics", "/favicon.ico")
+
+# Matches the .NET SDK's KaironOptions.Endpoint default exactly - the same address the installed
+# desktop backend actually binds to (desktop/Kairon.Desktop/MainForm.cs).
+DEFAULT_ENDPOINT = "http://localhost:8000"
 
 # Module-level default instance, set by the most recent start() call. Lets
 # `app.add_middleware(KaironMiddleware)` work with no explicit instance, mirroring how the
@@ -95,15 +102,70 @@ def pair(endpoint: str, code: str, version: str = "1.0.1", timeout_seconds: floa
         return None
 
 
+def _resolve_configuration(
+    endpoint: Optional[str],
+    project_id: Optional[str],
+    api_key: Optional[str],
+    pairing_code: Optional[str],
+    config_path: Optional[str],
+) -> tuple:
+    """Implements the documented configuration precedence: explicit arguments, then
+    KAIRON_ENDPOINT/KAIRON_PROJECT_ID/KAIRON_API_KEY environment variables, then a previously
+    stored paired credential, then - only if a project and API key are still missing - redeeming
+    pairing_code through the existing pair() and persisting the result so later runs do not need
+    the code again. Raises ValueError/RuntimeError (no new exception hierarchy) rather than ever
+    continuing with an incomplete credential.
+    """
+    # project_id has always been required; api_key has always been optional (some deployments
+    # run with no authentication at all) - so only project_id being absent triggers the new
+    # stored-config/pairing fallback chain. An explicit project_id with no api_key is the
+    # existing, still-supported "unauthenticated" configuration, unrelated to pairing.
+    endpoint = endpoint or os.environ.get("KAIRON_ENDPOINT")
+    project_id = project_id or os.environ.get("KAIRON_PROJECT_ID")
+    api_key = api_key or os.environ.get("KAIRON_API_KEY")
+
+    path = Path(config_path) if config_path else None
+
+    if not project_id:
+        stored = _credential_store.load_stored_config(path)
+        if stored:
+            endpoint = endpoint or stored.get("endpoint")
+            project_id = project_id or stored.get("projectId")
+            api_key = api_key or stored.get("apiKey")
+
+    if not project_id and pairing_code:
+        paired = pair(endpoint or DEFAULT_ENDPOINT, pairing_code)
+        if paired is None:
+            raise RuntimeError(
+                "Kairon pairing failed: the pairing code is invalid, expired, already used, or "
+                "Kairon is unavailable. Generate a new pairing code from Kairon and try again."
+            )
+        # Persisted before being used - if this raises, __init__ never completes, so pairing is
+        # never reported as successful without a durable credential.
+        _credential_store.save_stored_config(paired["endpoint"], paired["projectId"], paired["apiKey"], path)
+        endpoint = paired["endpoint"]
+        project_id = paired["projectId"]
+        api_key = paired["apiKey"]
+
+    if not project_id:
+        raise ValueError(
+            "Kairon needs a project_id. Provide it directly, set KAIRON_PROJECT_ID, pass "
+            "pairing_code from a Kairon-generated pairing code, or pair once so the stored "
+            "configuration can be reused."
+        )
+
+    return endpoint or DEFAULT_ENDPOINT, project_id, api_key
+
 
 class Kairon:
     def __init__(
         self,
-        endpoint: str,
-        project_id: str,
+        endpoint: Optional[str] = None,
+        project_id: Optional[str] = None,
+        pairing_code: Optional[str] = None,
         service: Optional[str] = None,
         application: Optional[str] = None,
-        environment: str = "Production",
+        environment: Optional[str] = None,
         api_key: Optional[str] = None,
         enabled: bool = True,
         timeout_seconds: float = 5.0,
@@ -113,13 +175,17 @@ class Kairon:
         enable_metrics: bool = True,
         metrics_interval_seconds: float = 5.0,
         machine_id: Optional[str] = None,
+        config_path: Optional[str] = None,
     ) -> None:
+        endpoint, project_id, api_key = _resolve_configuration(
+            endpoint, project_id, api_key, pairing_code, config_path
+        )
         self.endpoint = endpoint.rstrip("/")
         self.project_id = project_id
         self.machine_id = machine_id
         self.application = application or service or "python-app"
         self.service = service or self.application
-        self.environment = environment
+        self.environment = environment or os.environ.get("KAIRON_ENVIRONMENT") or "Production"
         self.api_key = api_key
         self.enabled = enabled
         # Kept short on purpose: a slow collector must not hold the caller's thread, and a
