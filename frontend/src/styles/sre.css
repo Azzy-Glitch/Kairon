@@ -1634,6 +1634,115 @@
 .database-settings-grid input:not([type="checkbox"]), .database-settings-grid select { width: 100%; margin: 0; }
 .database-settings-grid label:has(input[type="checkbox"]) { flex-direction: row; align-items: center; }
 
+/* --- Database settings: status card, engine picker, callouts (visual polish only) -------- */
+
+.database-status-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 16px 18px;
+  margin: 14px 0 18px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+}
+
+.database-status-card-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted); }
+.database-status-card-value { font-size: 20px; font-weight: 700; color: var(--text); margin-top: 2px; }
+.database-status-card-pending { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
+.database-status-card-pending strong { color: var(--text); }
+
+.database-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--healthy-soft);
+  color: var(--healthy);
+  border: 1px solid color-mix(in srgb, var(--healthy) 30%, transparent);
+}
+
+.database-engine-section { margin-bottom: 4px; }
+
+.database-engine-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.database-engine-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  text-align: left;
+  min-width: 0;
+  padding: 16px 18px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.database-engine-card:hover:not(:disabled) { border-color: var(--accent); }
+.database-engine-card:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.database-engine-card:disabled { cursor: not-allowed; opacity: 0.7; }
+.database-engine-card.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+
+.database-engine-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 6px;
+  border-radius: var(--radius-button);
+  background: var(--accent-soft);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.database-engine-card h4 { margin: 0; font-size: 15px; font-weight: 700; color: var(--text); }
+.database-engine-card p { margin: 0; font-size: 12.5px; line-height: 1.4; color: var(--text-muted); max-width: 100%; overflow-wrap: anywhere; }
+.database-engine-card-check { position: absolute; top: 12px; right: 12px; color: var(--accent); }
+
+.database-callout {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  margin-top: 18px;
+  border-radius: var(--radius-card);
+}
+
+.database-callout-icon { flex-shrink: 0; margin-top: 1px; }
+.database-callout ul { margin: 0; padding-left: 18px; }
+.database-callout li { font-size: 12.5px; line-height: 1.5; margin-bottom: 4px; }
+.database-callout li:last-child { margin-bottom: 0; }
+.database-callout p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+
+.database-callout-info { background: color-mix(in srgb, var(--medium) 10%, transparent); border: 1px solid color-mix(in srgb, var(--medium) 28%, transparent); }
+.database-callout-info .database-callout-icon { color: var(--medium); }
+.database-callout-info li { color: var(--text); }
+
+.database-callout-security { align-items: center; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
+.database-callout-security .database-callout-icon { color: var(--accent); }
+
+@media (max-width: 640px) {
+  .database-status-card { flex-direction: column; align-items: flex-start; }
+  .database-engine-grid { grid-template-columns: 1fr; }
+}
+
 
 /* Application onboarding uses the existing surface, accent and typography tokens. */
 .sdk-onboarding { max-width: 960px; margin: 0 auto; gap: 24px; }

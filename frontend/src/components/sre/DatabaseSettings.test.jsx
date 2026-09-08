@@ -11,7 +11,8 @@ describe('Database settings', () => {
   it('keeps SQLite default and tests without SQL credentials', async () => {
     databaseConfigApi.testConnection.mockResolvedValue({ success: true, message: 'Local database available' });
     render(<DatabaseSettings />);
-    await waitFor(() => expect(screen.getByLabelText('Storage engine')).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'SQLite' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'SQLite' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.queryByLabelText('Database password')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Test database connection' }));
     expect(databaseConfigApi.testConnection).toHaveBeenCalledWith({ provider: 'SQLite' });
@@ -19,8 +20,8 @@ describe('Database settings', () => {
   it('masks and clears a SQL password after saving and explains restart', async () => {
     databaseConfigApi.saveConfig.mockResolvedValue({ activeProvider: 'SQLite', selected: { provider: 'SqlServer', authentication: 'SqlLogin', hasPassword: true }, requiresRestart: true });
     render(<DatabaseSettings />);
-    await waitFor(() => expect(screen.getByLabelText('Storage engine')).toBeEnabled());
-    await userEvent.selectOptions(screen.getByLabelText('Storage engine'), 'SqlServer');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'SQLite' })).toBeEnabled());
+    await userEvent.click(screen.getByRole('button', { name: 'SQL Server' }));
     await userEvent.selectOptions(screen.getByLabelText('Database authentication'), 'SqlLogin');
     const password = screen.getByLabelText('Database password'); expect(password).toHaveAttribute('type', 'password');
     await userEvent.type(password, 'test-private-password');
@@ -30,9 +31,19 @@ describe('Database settings', () => {
   });
   it('does not display raw transport errors containing credentials', async () => {
     databaseConfigApi.testConnection.mockRejectedValue(new Error('Password=private-value'));
-    render(<DatabaseSettings />); await waitFor(() => expect(screen.getByLabelText('Storage engine')).toBeEnabled());
+    render(<DatabaseSettings />); await waitFor(() => expect(screen.getByRole('button', { name: 'SQLite' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Test database connection' }));
     expect(await screen.findByRole('status')).toHaveTextContent('operation could not be completed');
     expect(screen.queryByText(/private-value/)).not.toBeInTheDocument();
+  });
+  it('shows the active database status and lets the SQL Server card be selected', async () => {
+    render(<DatabaseSettings />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'SQLite' })).toBeEnabled());
+    expect(screen.getByText('Active database')).toBeInTheDocument();
+    expect(screen.getAllByText('SQLite').length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByRole('button', { name: 'SQL Server' }));
+    expect(screen.getByRole('button', { name: 'SQL Server' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'SQLite' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByLabelText('SQL Server address')).toBeInTheDocument();
   });
 });

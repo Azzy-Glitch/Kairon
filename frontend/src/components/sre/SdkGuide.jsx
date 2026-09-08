@@ -120,6 +120,7 @@ if (!paired.Success) throw new InvalidOperationException("Pairing failed");
       <p>For a source checkout instead, reference the SDK project using its real path:</p>
       <CodeBlock copyKey="dotnet-source" code={'dotnet add reference "<KAIRON-repository>/sdk/Kairon.SDK/Kairon.SDK.csproj"'} />
       <p>Minimal ASP.NET Core <code>Program.cs</code>; merge the registration and middleware into your existing application rather than replacing its routes.</p>
+      <CodeBlock copyKey="dotnet-advanced-usage" code={dotnet} />
     </section>
     <section className="section-card">
       <h3>Python SDK</h3>
@@ -127,7 +128,12 @@ if (!paired.Success) throw new InvalidOperationException("Pairing failed");
       <CodeBlock copyKey="python-install" code={'python -m pip install "<path-to-kairon-sdk-wheel.whl>"'} />
       <p>For a source checkout, these commands run from the KAIRON repository root. Choose the core or middleware variant; editable installs are for SDK development, not a required production setup.</p>
       <CodeBlock copyKey="python-source" code={'python -m pip install ./sdk-python\n# Or, for FastAPI/Starlette middleware:\npython -m pip install "./sdk-python[fastapi]"'} />
-
+      <p>Minimal worker/script usage; merge the collector startup and shutdown into your existing application rather than replacing its routes.</p>
+      <CodeBlock copyKey="python-advanced-usage" code={python} />
+      <details className="sdk-guide-details"><summary>FastAPI: startup, middleware and shutdown</summary>
+        <p className="sdk-hint">The SDK extra supplies Starlette; install FastAPI and your ASGI server separately if the application does not already include them. Save this example as <code>app.py</code> and run it with your normal ASGI server. Initialize a collector in each worker process, not in a parent process before forking.</p>
+        <CodeBlock copyKey="python-fastapi-advanced" code={fastapi} />
+      </details>
     </section>
     <section className="section-card">
       <h3>Verify delivery before troubleshooting detection</h3>
