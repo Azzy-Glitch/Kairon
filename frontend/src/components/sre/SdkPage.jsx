@@ -11,15 +11,27 @@ const VIEWS = [
 ];
 
 // SDK guide content is checked against the shipped SDK APIs. Pairing remains live.
-export default function SdkPage({ onTelemetry }) {
+export default function SdkPage({ onTelemetry, onRemediation }) {
   const [view, setView] = useState('start');
+  // Lets the Get Started guide's Verify step poll real telemetry for the project the operator is
+  // actually working with in Pairing, without inventing a new API - it just reuses whichever
+  // project was last selected there.
+  const [pairedProjectId, setPairedProjectId] = useState(null);
 
   return (
     <div className="animate-fade-in">
       <Tabs items={VIEWS} activeId={view} onChange={setView} className="dev-tools-subnav" />
 
-      {view === 'start' && <SdkGuide CodeBlock={CodeBlock} onPairing={() => setView('pairing')} onTelemetry={onTelemetry} />}
-      {view === 'pairing' && <Pairing />}
+      {view === 'start' && (
+        <SdkGuide
+          CodeBlock={CodeBlock}
+          onPairing={() => setView('pairing')}
+          onTelemetry={onTelemetry}
+          onRemediation={onRemediation}
+          projectId={pairedProjectId}
+        />
+      )}
+      {view === 'pairing' && <Pairing onProjectSelected={setPairedProjectId} />}
     </div>
   );
 }
@@ -55,10 +67,12 @@ function CodeBlock({ code, copyKey }) {
   );
 }
 
-function Pairing() {
+function Pairing({ onProjectSelected }) {
   const toast = useToast();
   const [projects, setProjects] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
+
+  useEffect(() => { onProjectSelected?.(selectedId); }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
   const [credentials, setCredentials] = useState(null);

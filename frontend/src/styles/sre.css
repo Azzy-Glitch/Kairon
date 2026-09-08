@@ -1769,3 +1769,64 @@
   .sdk-step-number { flex-basis: 28px; height: 28px; font-size: 14px; }
   .sdk-primary-action { width: 100%; }
 }
+
+/* --- Connect an app: 4-step overview, per-SDK sub-steps, diagrams, checklists ------------- */
+
+.sdk-flow-overview {
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+  gap: 2px; margin: 4px 0 28px; padding: 20px 16px;
+  background: var(--surface-sunken); border: 1px solid var(--border); border-radius: var(--radius-card);
+}
+.sdk-flow-node { display: flex; flex-direction: column; align-items: center; gap: 8px; width: 128px; text-align: center; }
+.sdk-flow-node-icon { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); flex-shrink: 0; }
+.sdk-flow-node-label { font-size: 12.5px; font-weight: 700; color: var(--text); line-height: 1.3; }
+.sdk-flow-arrow { color: var(--text-muted); font-size: 20px; padding: 0 4px; flex-shrink: 0; }
+@media (max-width: 760px) {
+  .sdk-flow-overview { flex-direction: column; }
+  .sdk-flow-arrow { transform: rotate(90deg); padding: 4px 0; }
+}
+
+.sdk-tab-panel { margin-top: 16px; }
+.sdk-tab-intro { color: var(--text-secondary); margin-bottom: 4px; }
+
+.sdk-substep { display: flex; gap: 14px; padding: 16px 0; border-top: 1px solid var(--border); }
+.sdk-substep:first-of-type { border-top: none; padding-top: 8px; }
+.sdk-substep-number { display: flex; align-items: center; justify-content: center; flex: 0 0 26px; height: 26px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 13px; font-weight: 700; }
+.sdk-substep-content { flex: 1; min-width: 0; }
+.sdk-substep-content h4 { margin: 2px 0 8px; font-size: 14.5px; }
+
+.sdk-config-explain { list-style: none; margin: 10px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.sdk-config-explain li { font-size: 12.8px; color: var(--text-secondary); }
+
+.sdk-flow-diagram { display: flex; flex-direction: column; align-items: center; gap: 0; margin: 14px 0; }
+.sdk-flow-diagram-node { padding: 8px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-button); font-size: 12.5px; font-weight: 600; text-align: center; color: var(--text); max-width: 100%; overflow-wrap: anywhere; }
+.sdk-flow-diagram-arrow { color: var(--text-muted); font-family: var(--font-mono); font-size: 14px; line-height: 1.6; }
+
+.sdk-checklist { list-style: none; margin: 10px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sdk-checklist li { display: flex; align-items: flex-start; gap: 8px; font-size: 12.8px; color: var(--text-secondary); }
+.sdk-checklist li::before { content: ''; flex: 0 0 14px; width: 14px; height: 14px; margin-top: 2px; border: 1.5px solid var(--border-strong); border-radius: 3px; }
+
+.sdk-trouble-list { display: flex; flex-direction: column; gap: 12px; }
+.sdk-trouble-card { padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); }
+.sdk-trouble-card h4 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+.sdk-trouble-fix { margin: 8px 0 0; font-size: 12.8px; color: var(--text-secondary); }
+.sdk-trouble-fix strong { color: var(--text); }
+
+.sdk-callout { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: var(--radius-card); margin: 16px 0 0; font-size: 13px; }
+.sdk-callout-icon { flex-shrink: 0; margin-top: 1px; }
+.sdk-callout p, .sdk-callout ul { margin: 0; }
+.sdk-callout ul { padding-left: 18px; margin-top: 6px; }
+.sdk-callout li { font-size: 12.8px; line-height: 1.6; }
+.sdk-callout-title { font-weight: 700; margin-bottom: 2px; }
+.sdk-callout-security { background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
+.sdk-callout-security .sdk-callout-icon { color: var(--accent); }
+
+.sdk-verify-card { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.sdk-verify-card .sdk-verify-title { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; }
+.sdk-verify-card ul { margin: 4px 0 0; padding-left: 18px; }
+.sdk-verify-card li { font-size: 12.8px; }
+.sdk-verify-meta { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+
+.sdk-connection-status { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+.sdk-connection-status.online { color: var(--healthy); }
+.sdk-connection-status.offline { color: var(--critical); }

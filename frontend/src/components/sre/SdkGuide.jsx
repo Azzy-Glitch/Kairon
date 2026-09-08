@@ -1,8 +1,14 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Tabs from '../ui/Tabs';
-import { healthApi } from '../../api';
+import Badge from '../ui/Badge';
+import { healthApi, telemetryApi } from '../../api';
+import { IconServer, IconTerminal, IconShield, IconAlertTriangle, IconZap, IconCheck, IconLink } from '../Icons';
 
-const dotnet = `using Kairon.SDK;
+// ---- Code examples. Every API used here is verified against the real SDK source, not invented:
+// ---- sdk/Kairon.SDK (AddKairon/UseKairon/KaironOptions/KaironPairingClient) and sdk-python
+// ---- (Kairon class, kairon.middleware.KaironMiddleware, kairon.pair()).
+
+const dotnetProgram = `using Kairon.SDK;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddKairon(options =>
@@ -23,39 +29,27 @@ app.UseKairon(); // Before the endpoints you want to observe.
 app.MapGet("/orders", () => Results.Ok(new { status = "ok" }));
 app.Run();`;
 
-const python = `import os
-from kairon import Kairon
+const dotnetPairSnippet = `using Kairon.SDK;
+var paired = await KaironPairingClient.PairAsync(
+    Environment.GetEnvironmentVariable("KAIRON_ENDPOINT")!,
+    Environment.GetEnvironmentVariable("KAIRON_PAIRING_CODE")!);
+if (!paired.Success) throw new InvalidOperationException("Pairing failed");
+// Store paired.ProjectId and paired.ApiKey in your secret store. Do not log or serialize paired.`;
 
-def create_collector():
-    return Kairon(
-        endpoint=os.environ["KAIRON_ENDPOINT"],
-        project_id=os.environ["KAIRON_PROJECT_ID"],  # Real project UUID
-        api_key=os.environ["KAIRON_API_KEY"],       # Project key, not Groq key
-        application="OrdersApp",
-        service="OrdersService",
-        environment=os.environ["KAIRON_ENVIRONMENT"],
-    )
-
-# For a worker, create one collector per process after the worker starts.
-if __name__ == "__main__":
-    collector = create_collector()
-    collector.start()
-    try:
-        # Run your application's work here.
-        pass
-    finally:
-        if not collector.stop(timeout_seconds=5):
-            # Report a delivery warning through your application's diagnostics.
-            # Never include credentials or the collector configuration.
-            print("KAIRON telemetry drain incomplete")`;
-
-const fastapi = `# Save create_collector() from the Python example in telemetry.py.
+const pythonFastapi = `import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from kairon import Kairon
 from kairon.middleware import KaironMiddleware
-from telemetry import create_collector
 
-collector = create_collector()
+collector = Kairon(
+    endpoint=os.environ["KAIRON_ENDPOINT"],
+    project_id=os.environ["KAIRON_PROJECT_ID"],  # Project UUID from Pairing
+    api_key=os.environ["KAIRON_API_KEY"],        # Project API key, not the pairing code
+    application="OrdersApp",
+    service="OrdersService",
+    environment=os.environ["KAIRON_ENVIRONMENT"],
+)
 
 @asynccontextmanager
 async def lifespan(app):
@@ -63,8 +57,7 @@ async def lifespan(app):
     try:
         yield
     finally:
-        if not collector.stop(timeout_seconds=5):
-            print("KAIRON telemetry drain incomplete")
+        collector.stop(timeout_seconds=5)
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(KaironMiddleware, kairon=collector)
@@ -73,171 +66,470 @@ app.add_middleware(KaironMiddleware, kairon=collector)
 def orders():
     return {"status": "ok"}`;
 
-function AdvancedGuide({ CodeBlock }) {
-  return <div className="sdk-get-started">
-    <section className="section-card">
-      <h3>Networking and prerequisites</h3>
-      <p>The SDK sends application telemetry to KAIRON. It does not need a Groq key, database connection, or permission to restart services.</p>
-      <ol>
-        <li>Keep KAIRON running and choose a backend address reachable from your application.</li>
-        <li>Create or select a project in Pairing, then redeem a code for a project credential.</li>
-        <li>Install the matching SDK and configure the endpoint, project UUID and project API key.</li>
-        <li>Send normal application traffic and confirm fresh telemetry before enabling any remediation.</li>
-      </ol>
-      <h4>Choose the right address</h4>
-      <p>For an application on the same Windows host, the installed backend uses <code>http://127.0.0.1:8000</code>. Use its base URL, without <code>/api</code>. Port 8001 is the AI service; port 5173 is a development frontend.</p>
-      <p>Inside a container or on another machine, localhost refers to that application’s own host. The desktop backend binds to loopback by default. Remote collection needs an explicitly configured, reachable backend with HTTPS and appropriate network access; changing the SDK URL alone does not expose the desktop backend.</p>
-      <p>Prerequisites: .NET SDK integration targets ASP.NET Core on .NET 10; Python requires 3.9 or newer. The Python core has no third-party runtime dependencies. FastAPI examples also need FastAPI and an ASGI server in the host application.</p>
-    </section>
-    <section className="section-card">
-      <h3>Pair once; keep the project key private</h3>
-      <ol>
-        <li>In Pairing, choose a project and the correct SDK type. Generate a code; it expires after 10 minutes and can be used once.</li>
-        <li>Redeem it from a trusted setup process using the matching SDK call below. Check the result before configuring the app.</li>
-        <li>Store the returned project ID and API key in your deployment’s protected configuration. The pairing call does not persist them for you. Do not print or commit the returned object.</li>
-        <li>Configure the SDK from that protected configuration at every startup. Do not redeem the same code on each application restart.</li>
-      </ol>
-      <CodeBlock copyKey="pair-python" code={`from kairon import pair
+const pythonWorker = `import os
+from kairon import Kairon
+
+collector = Kairon(
+    endpoint=os.environ["KAIRON_ENDPOINT"],
+    project_id=os.environ["KAIRON_PROJECT_ID"],
+    api_key=os.environ["KAIRON_API_KEY"],
+    application="OrdersApp",
+    service="OrdersService",
+    environment=os.environ["KAIRON_ENVIRONMENT"],
+)
+
+if __name__ == "__main__":
+    collector.start()
+    try:
+        pass  # Run your application's work here.
+    finally:
+        collector.stop(timeout_seconds=5)`;
+
+const pythonPairSnippet = `from kairon import pair
 import os
 paired = pair(os.environ["KAIRON_ENDPOINT"], os.environ["KAIRON_PAIRING_CODE"])
 if paired is None:
     raise RuntimeError("Pairing failed; check connectivity, SDK type and code expiry")
-# Securely store paired["projectId"] and paired["apiKey"] using your secret store.
-# Keep the endpoint reachable from the application; a returned loopback URL may be local-only.`} />
-      <CodeBlock copyKey="pair-dotnet" code={`using Kairon.SDK;
-var paired = await KaironPairingClient.PairAsync(
-    Environment.GetEnvironmentVariable("KAIRON_ENDPOINT")!,
-    Environment.GetEnvironmentVariable("KAIRON_PAIRING_CODE")!);
-if (!paired.Success) throw new InvalidOperationException("Pairing failed");
-// Securely store paired.ProjectId and paired.ApiKey using your secret store.
-// Do not log or serialize paired.`} />
-      <p>Examples below read environment variables supplied by your deployment. They are explicit example wiring, not automatic SDK discovery. Use the real project UUID, not a project name. Never put a Groq key or operator key in <code>KAIRON_API_KEY</code>. Revoke a compromised project credential in Pairing and pair again to replace it.</p>
-    </section>
-    <section className="section-card">
-      <h3>.NET SDK</h3>
-      <p>From your application project directory, install the release package from the package feed supplied by your KAIRON release owner. Public registry availability is not assumed.</p>
-      <CodeBlock copyKey="dotnet-install" code={'dotnet add package Kairon.SDK --version 1.0.1 --source "<package-feed-or-local-nupkg-folder>"'} />
-      <p>For a source checkout instead, reference the SDK project using its real path:</p>
-      <CodeBlock copyKey="dotnet-source" code={'dotnet add reference "<KAIRON-repository>/sdk/Kairon.SDK/Kairon.SDK.csproj"'} />
-      <p>Minimal ASP.NET Core <code>Program.cs</code>; merge the registration and middleware into your existing application rather than replacing its routes.</p>
-      <CodeBlock copyKey="dotnet-advanced-usage" code={dotnet} />
-    </section>
-    <section className="section-card">
-      <h3>Python SDK</h3>
-      <p>Activate your application’s virtual environment. Install the wheel supplied with your SDK release, replacing the placeholder with its actual path:</p>
-      <CodeBlock copyKey="python-install" code={'python -m pip install "<path-to-kairon-sdk-wheel.whl>"'} />
-      <p>For a source checkout, these commands run from the KAIRON repository root. Choose the core or middleware variant; editable installs are for SDK development, not a required production setup.</p>
-      <CodeBlock copyKey="python-source" code={'python -m pip install ./sdk-python\n# Or, for FastAPI/Starlette middleware:\npython -m pip install "./sdk-python[fastapi]"'} />
-      <p>Minimal worker/script usage; merge the collector startup and shutdown into your existing application rather than replacing its routes.</p>
-      <CodeBlock copyKey="python-advanced-usage" code={python} />
-      <details className="sdk-guide-details"><summary>FastAPI: startup, middleware and shutdown</summary>
-        <p className="sdk-hint">The SDK extra supplies Starlette; install FastAPI and your ASGI server separately if the application does not already include them. Save this example as <code>app.py</code> and run it with your normal ASGI server. Initialize a collector in each worker process, not in a parent process before forking.</p>
-        <CodeBlock copyKey="python-fastapi-advanced" code={fastapi} />
-      </details>
-    </section>
-    <section className="section-card">
-      <h3>Verify delivery before troubleshooting detection</h3>
-      <ol>
-        <li>Send a few successful requests to your app’s <code>/orders</code> route or another real route. The default exclusions include <code>/health</code>, <code>/healthz</code>, <code>/metrics</code> and <code>/favicon.ico</code>.</li>
-        <li>Allow at least one metrics interval: .NET defaults to 10 seconds; Python defaults to 5 seconds. Allow additional time for the UI to refresh.</li>
-        <li>In Live telemetry and Services, check recent timestamps and the exact project, application, service and environment. An active credential or historical incident is not proof of current delivery.</li>
-        <li>Only investigate incident detection after confirming fresh telemetry. Normal traffic need not create an incident. Do not overload a production application merely to trigger a detector.</li>
-      </ol>
-      <h4>Delivery and shutdown guarantees</h4>
-      <p>Both SDKs use a bounded in-memory queue (default 1,000 items) and best-effort delivery, without a disk spool or automatic retries. Queue pressure drops the oldest items. Collector outages should not block application requests, but telemetry can be lost.</p>
-      <p>Python exposes <code>delivered_count</code>, <code>failed_count</code>, <code>dropped_count</code> and <code>pending_count</code>; .NET exposes corresponding PascalCase members on <code>IKaironTelemetryQueue</code>. Pending counts exclude in-flight sends. Stop producers before a final drain. Python <code>stop(timeout_seconds=5)</code> and .NET <code>FlushAsync(token)</code> return false after a lifetime failure/drop or incomplete drain. The .NET hosted sender also attempts a bounded shutdown drain. Queue emptiness alone is not delivery confirmation.</p>
-    </section>
-    <section className="section-card">
-      <h3>Troubleshooting</h3>
-      <dl>
-        <dt>Connection refused or timeout</dt><dd>Check that KAIRON is running, the base URL points to the backend, and the application can reach it from its own host/container. Check DNS, firewall and TLS configuration. Do not disable certificate validation to hide a failure.</dd>
-        <dt>401 or 403 / no authenticated telemetry</dt><dd>Check the project API key, its revocation status and the project UUID. Pairing codes are not telemetry keys. Remediation-scoped telemetry also requires a matching enrolled machine and credential association.</dd>
-        <dt>Pairing rejected</dt><dd>Check SDK type, expiry and whether the code was already used. Generate a new code; never paste secrets into logs or support screenshots.</dd>
-        <dt>No requests or metrics appear</dt><dd>Check middleware placement, Python startup, telemetry/metrics toggles, ignored paths, service filters and timestamps. Inspect delivery counters. Installing the package alone does not start collection.</dd>
-        <dt>Package not found / import fails</dt><dd>Confirm the release package source and version, Python virtual environment, and actual SDK path. FastAPI middleware is a separate import. The desktop installer is not a Python wheel or NuGet SDK package.</dd>
-        <dt>Connected app, but no remediation</dt><dd>Telemetry collection does not authorize execution. Inspect the incident, recommendation, policy decision, approval state and audit trail; see the requirements below.</dd>
-      </dl>
-    </section>
-    <section className="section-card">
-      <h3>Windows-service remediation is a separate setup</h3>
-      <p>Use Development, Staging or Production for KAIRON product/runtime environments. External application telemetry labels describe the monitored workload; they do not enable a product execution mode or grant permission.</p>
-      <p>Windows-service remediation requires an explicitly enrolled machine, its project association, exact service allowlist, enabled action, executor permissions and deterministic policy authorization. Configure <code>MachineId</code> (.NET) or <code>machine_id</code> (Python) to the real enrolled machine UUID for scoped evidence. Never invent a machine ID or assume an SDK service label grants SCM access.</p>
-      <p>The lifecycle remains detection → incident → AI recommendation → deterministic policy and authorization → typed execution → fresh evidence for the exact machine/service → verification → resolution and audit. AI configuration belongs in Settings. Successful execution alone is not verified recovery. The supported boundary is one backend and one executor; multi-replica remediation is not supported.</p>
-      <p>Before sharing diagnostics, remove credentials, pairing codes and sensitive application payloads. Keep request/response body capture disabled unless explicitly required and reviewed.</p>
-    </section>
-  </div>;
-}
-
+# Store paired["projectId"] and paired["apiKey"] in your secret store. Do not print or log paired.`;
 
 const configuration = `$env:KAIRON_ENDPOINT="http://127.0.0.1:8000"
 $env:KAIRON_PROJECT_ID="<your-project-id>"
 $env:KAIRON_API_KEY="<your-project-api-key>"
 $env:KAIRON_ENVIRONMENT="Development"`;
 
-function Step({ number, title, children }) {
-  return <section className="section-card sdk-onboarding-step" aria-labelledby={`sdk-step-${number}`}>
-    <span className="sdk-step-number" aria-hidden="true">{number}</span>
-    <div className="sdk-step-content"><h3 id={`sdk-step-${number}`}>{title}</h3>{children}</div>
-  </section>;
+// ---- Small shared building blocks ----------------------------------------------------------
+
+function FlowOverview() {
+  const nodes = [
+    { icon: <IconServer className="w-5 h-5" />, label: 'Start KAIRON' },
+    { icon: <IconLink className="w-5 h-5" />, label: 'Pair your app' },
+    { icon: <IconTerminal className="w-5 h-5" />, label: 'Choose your SDK' },
+    { icon: <IconCheck className="w-5 h-5" />, label: 'Run & verify' }
+  ];
+  return (
+    <div className="sdk-flow-overview" role="img" aria-label="Start KAIRON, then pair your app, then choose your SDK, then run and verify">
+      {nodes.map((n, i) => (
+        <React.Fragment key={n.label}>
+          {i > 0 && <span className="sdk-flow-arrow" aria-hidden="true">→</span>}
+          <div className="sdk-flow-node">
+            <span className="sdk-flow-node-icon" aria-hidden="true">{n.icon}</span>
+            <span className="sdk-flow-node-label">{n.label}</span>
+          </div>
+        </React.Fragment>
+      ))}
+    </div>
+  );
 }
 
-export default function SdkGuide({ CodeBlock, onPairing, onTelemetry }) {
-  const [platform, setPlatform] = useState('python');
-  const [checking, setChecking] = useState(false);
-  const [connection, setConnection] = useState('');
-  async function checkConnection() {
-    setChecking(true); setConnection('');
-    try {
-      await healthApi.getHealth();
-      setConnection('KAIRON backend is reachable from this page.');
-    } catch {
-      setConnection('Cannot reach KAIRON. Open the app and try again.');
-    } finally { setChecking(false); }
+function FlowDiagram({ steps }) {
+  return (
+    <div className="sdk-flow-diagram">
+      {steps.map((step, i) => (
+        <React.Fragment key={step}>
+          {i > 0 && <span className="sdk-flow-diagram-arrow" aria-hidden="true">↓</span>}
+          <div className="sdk-flow-diagram-node">{step}</div>
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
+function Checklist({ items }) {
+  return (
+    <ul className="sdk-checklist">
+      {items.map((item) => <li key={item}>{item}</li>)}
+    </ul>
+  );
+}
+
+function Step({ number, title, children }) {
+  return (
+    <section className="section-card sdk-onboarding-step" aria-labelledby={`sdk-step-${number}`}>
+      <span className="sdk-step-number" aria-hidden="true">{number}</span>
+      <div className="sdk-step-content"><h3 id={`sdk-step-${number}`}>{title}</h3>{children}</div>
+    </section>
+  );
+}
+
+function SubStep({ number, title, children }) {
+  return (
+    <div className="sdk-substep">
+      <span className="sdk-substep-number" aria-hidden="true">{number}</span>
+      <div className="sdk-substep-content"><h4>{title}</h4>{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Real verification, not a claim: polls the project's own telemetry (the same
+ * api/telemetry/incidents and api/telemetry/metrics routes Live Telemetry uses) and only shows
+ * "Connected" once a record has actually arrived in the last minute. An active credential alone
+ * never produces this state.
+ */
+function VerifyCard({ projectId, onTelemetry }) {
+  const [state, setState] = useState(projectId ? 'checking' : 'unknown');
+  const [detail, setDetail] = useState(null);
+
+  useEffect(() => {
+    if (!projectId) { setState('unknown'); return; }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const [incidents, metrics] = await Promise.all([
+          telemetryApi.getTelemetryIncidents(projectId).catch(() => []),
+          telemetryApi.getMetrics(projectId).catch(() => [])
+        ]);
+        if (cancelled) return;
+        const freshest = [...(incidents || []), ...(metrics || [])]
+          .map((r) => ({ r, t: new Date(r.timestamp).getTime() }))
+          .sort((a, b) => b.t - a.t)[0];
+        if (freshest && Date.now() - freshest.t < 60_000) {
+          setState('connected');
+          setDetail(freshest.r);
+        } else {
+          setState('waiting');
+        }
+      } catch {
+        if (!cancelled) setState('waiting');
+      }
+    };
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [projectId]);
+
+  if (state === 'connected') {
+    return (
+      <div className="resolution-banner resolution-good sdk-verify-card" role="status">
+        <span className="sdk-verify-title"><IconCheck className="w-4 h-4" aria-hidden="true" /> Connected</span>
+        <p>Your application is sending telemetry to KAIRON.</p>
+        <ul>
+          <li>Application: <strong>{detail?.application || '—'}</strong></li>
+          <li>Service: <strong>{detail?.service || '—'}</strong></li>
+          <li>Environment: <strong>{detail?.environment || '—'}</strong></li>
+          <li>Recent timestamp: <span className="sdk-verify-meta">{detail ? new Date(detail.timestamp).toLocaleTimeString() : '—'}</span></li>
+        </ul>
+      </div>
+    );
   }
-  return <div className="sdk-get-started sdk-onboarding">
-    <header className="sdk-onboarding-intro">
-      <h3>Connect your application</h3>
-      <p>Pair once, add the SDK, and see your application’s telemetry.</p>
-      <p className="sdk-hint">Your application does not need direct database access.</p>
-    </header>
-    <Step number="1" title="Start KAIRON">
-      <p>Keep KAIRON running while your application sends telemetry.</p>
-      <p className="sdk-backend-address">Local backend <code>http://127.0.0.1:8000</code></p>
-      <button type="button" className="small-btn sdk-primary-action" disabled={checking} onClick={checkConnection}>{checking ? 'Checking…' : 'Check Connection'}</button>
-      {connection && <p role="status" className="sdk-hint">{connection}</p>}
-    </Step>
-    <Step number="2" title="Connect a project">
-      <p>Pairing is a one-time setup step that gives your application its Project ID and Project API Key.</p>
-      <p className="sdk-hint">Create or select a project in Pairing. The code is single-use and expires in 10 minutes. Use the resulting API key—not the pairing code—for telemetry.</p>
-      <button type="button" className="small-btn sdk-primary-action" onClick={onPairing}>Open Pairing</button>
-      <p className="sdk-hint">Need help redeeming the code? Expand Advanced / Troubleshooting below.</p>
-    </Step>
-    <Step number="3" title="Install the SDK">
-      <Tabs items={[{id:'python',label:'Python'},{id:'dotnet',label:'.NET'}]} activeId={platform} onChange={setPlatform} />
-      <p>{platform === 'python' ? 'From the KAIRON repository root, with your application’s virtual environment active:' : 'From your ASP.NET Core application directory, using your release package source:'}</p>
-      <CodeBlock copyKey={`${platform}-quick-install`} code={platform === 'python' ? 'python -m pip install "./sdk-python[fastapi]"' : 'dotnet add package Kairon.SDK --version 1.0.1 --source "<package-feed-or-local-nupkg-folder>"'} />
-      <p className="sdk-hint">{platform === 'python' ? 'Python 3.9+. A FastAPI application also needs FastAPI and its ASGI server.' : 'Requires an ASP.NET Core application targeting .NET 10.'} Release-wheel and source-reference alternatives are available below.</p>
-    </Step>
-    <Step number="4" title="Configure and run">
-      <p>Set these values in your application’s environment. Replace the placeholders with the credentials from pairing.</p>
-      <CodeBlock copyKey="configuration" code={configuration} />
-      <p className="sdk-hint">PowerShell example. Keep your API key private; never commit it. For a remote application, use a backend address it can reach.</p>
-      <details className="sdk-guide-details" key={platform}>
-        <summary>{platform === 'python' ? 'Show Python integration example' : 'Show .NET integration example'}</summary>
-        <CodeBlock copyKey={`${platform}-usage`} code={platform === 'python' ? python : dotnet} />
-        {platform === 'python' && <details className="sdk-guide-details"><summary>FastAPI startup and middleware</summary><CodeBlock copyKey="python-fastapi" code={fastapi} /></details>}
-      </details>
-      <p>Add the integration shown above, then run your application normally.</p>
-    </Step>
-    <Step number="5" title="Verify telemetry">
-      <p>Send a few requests to a normal application route, such as <code>/orders</code>. Wait 5–10 seconds plus the page refresh, then look for fresh timestamps and your service name.</p>
+  if (state === 'waiting') {
+    return (
+      <div className="resolution-banner resolution-neutral sdk-verify-card" role="status">
+        <span className="sdk-verify-title">Waiting for telemetry…</span>
+        <p>Run your application and send a normal request, such as <code>/orders</code>. This updates automatically.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="resolution-banner resolution-neutral sdk-verify-card" role="status">
+      <span className="sdk-verify-title">Waiting for telemetry…</span>
+      <p>Send a few requests to a normal application route, then check <strong>Live Telemetry</strong> for fresh timestamps and your service name.</p>
       <button type="button" className="small-btn sdk-primary-action" onClick={onTelemetry}>View Live Telemetry</button>
       <p className="sdk-hint">Health routes are excluded by default. An active API key alone does not prove telemetry is arriving.</p>
-    </Step>
-    <details className="section-card sdk-guide-details sdk-advanced">
-      <summary>Advanced / Troubleshooting</summary>
-      <p className="sdk-hint">Pairing code examples, remote networking, alternative installs, delivery behavior, troubleshooting and remediation requirements.</p>
-      <AdvancedGuide CodeBlock={CodeBlock} />
+    </div>
+  );
+}
+
+// ---- Per-SDK guides (identical structure: Install → Configure → Add SDK → Run → Verify) --------
+
+function PythonGuide({ CodeBlock, projectId, onTelemetry }) {
+  return (
+    <div className="sdk-tab-panel">
+      <p className="sdk-tab-intro">Connect a Python or FastAPI application to KAIRON.</p>
+      <SubStep number="1" title="Install">
+        <p>From the KAIRON repository root, with your application's virtual environment active:</p>
+        <CodeBlock copyKey="python-install" code={'python -m pip install "./sdk-python[fastapi]"'} />
+        <p className="sdk-hint">That installs the core SDK plus the FastAPI/Starlette middleware. Using a different framework or a plain script? Install just <code>./sdk-python</code> — see Advanced.</p>
+      </SubStep>
+      <SubStep number="2" title="Configure">
+        <p>Set these values in your application's environment. Replace the placeholders with the credentials from Pairing.</p>
+        <CodeBlock copyKey="python-configuration" code={configuration} />
+        <ul className="sdk-config-explain">
+          <li><code>KAIRON_ENDPOINT</code> — the KAIRON backend.</li>
+          <li><code>KAIRON_PROJECT_ID</code> — the project UUID from Pairing.</li>
+          <li><code>KAIRON_API_KEY</code> — the project telemetry key.</li>
+          <li><code>KAIRON_ENVIRONMENT</code> — your application's environment.</li>
+        </ul>
+        <p className="sdk-hint">Keep your API key private. Never commit it to Git.</p>
+      </SubStep>
+      <SubStep number="3" title="Add KAIRON to your application">
+        <CodeBlock copyKey="python-fastapi-usage" code={pythonFastapi} />
+      </SubStep>
+      <SubStep number="4" title="Run">
+        <CodeBlock copyKey="python-run" code={'uvicorn app:app --reload'} />
+        <p className="sdk-hint">Assumes the example above is saved as <code>app.py</code>. Then call a normal route, such as <code>/orders</code> — not <code>/health</code>, which KAIRON excludes from telemetry by default.</p>
+      </SubStep>
+      <SubStep number="5" title="Verify">
+        <VerifyCard projectId={projectId} onTelemetry={onTelemetry} />
+        <p className="sdk-hint">Telemetry can take a few seconds to arrive and for the page to refresh.</p>
+      </SubStep>
+    </div>
+  );
+}
+
+function DotNetGuide({ CodeBlock, projectId, onTelemetry }) {
+  return (
+    <div className="sdk-tab-panel">
+      <p className="sdk-tab-intro">Connect an ASP.NET Core .NET 10 application to KAIRON.</p>
+      <SubStep number="1" title="Install">
+        <p>From your application's release package source:</p>
+        <CodeBlock copyKey="dotnet-install" code={'dotnet add package Kairon.SDK --version 1.0.1 --source "<package-feed-or-local-nupkg-folder>"'} />
+        <p className="sdk-hint">There is no public NuGet feed for this release — use the package feed or local <code>.nupkg</code> folder your KAIRON release owner supplies. For local development from a source checkout instead, see Advanced.</p>
+      </SubStep>
+      <SubStep number="2" title="Configure">
+        <p>Set these values in your application's environment. Replace the placeholders with the credentials from Pairing.</p>
+        <CodeBlock copyKey="dotnet-configuration" code={configuration} />
+        <ul className="sdk-config-explain">
+          <li><code>KAIRON_ENDPOINT</code> — the KAIRON backend.</li>
+          <li><code>KAIRON_PROJECT_ID</code> — the project UUID from Pairing.</li>
+          <li><code>KAIRON_API_KEY</code> — the project telemetry key.</li>
+          <li><code>KAIRON_ENVIRONMENT</code> — your application's environment.</li>
+        </ul>
+        <p className="sdk-hint">Keep your API key private. Never commit it to Git.</p>
+      </SubStep>
+      <SubStep number="3" title="Add KAIRON to ASP.NET Core">
+        <CodeBlock copyKey="dotnet-usage" code={dotnetProgram} />
+        <p className="sdk-hint"><code>AddKairon()</code> configures telemetry. <code>UseKairon()</code> adds request monitoring.</p>
+      </SubStep>
+      <SubStep number="4" title="Run">
+        <CodeBlock copyKey="dotnet-run" code={'dotnet run'} />
+        <p className="sdk-hint">Then call a normal route, such as <code>/orders</code> — not <code>/health</code>, which KAIRON excludes from telemetry by default.</p>
+      </SubStep>
+      <SubStep number="5" title="Verify">
+        <VerifyCard projectId={projectId} onTelemetry={onTelemetry} />
+        <p className="sdk-hint">Telemetry can take a few seconds to arrive and for the page to refresh.</p>
+      </SubStep>
+    </div>
+  );
+}
+
+// ---- Supplementary cards: pairing detail, remediation warning, security -----------------------
+
+function PairingCard({ CodeBlock }) {
+  return (
+    <section className="section-card">
+      <div className="section-header">
+        <div className="section-title-group">
+          <div className="section-icon-badge"><IconLink className="w-6 h-6 tone-neutral" /></div>
+          <div><h3>Pair once</h3><p className="section-desc">One-time setup that gives your application its Project ID and Project API Key.</p></div>
+        </div>
+      </div>
+      <FlowDiagram steps={['Choose project', 'Generate pairing code', 'Redeem code', 'Receive Project ID + API Key', 'Configure your application']} />
+      <Checklist items={[
+        'The pairing code expires after 10 minutes.',
+        'The pairing code can only be used once.',
+        'The returned API key — not the pairing code — is what your application uses for telemetry.',
+        "Don't store the pairing code in your application.",
+        "Don't log credentials."
+      ]} />
+      <details className="sdk-guide-details">
+        <summary>Show the pairing call for each SDK</summary>
+        <CodeBlock copyKey="pair-python" code={pythonPairSnippet} />
+        <CodeBlock copyKey="pair-dotnet" code={dotnetPairSnippet} />
+      </details>
+    </section>
+  );
+}
+
+function RemediationCard({ onRemediation }) {
+  return (
+    <section className="section-card">
+      <div className="section-header">
+        <div className="section-title-group">
+          <div className="section-icon-badge"><IconAlertTriangle className="w-6 h-6 tone-medium" /></div>
+          <div><h3>Want KAIRON to fix incidents automatically?</h3></div>
+        </div>
+      </div>
+      <p>Connecting an SDK enables telemetry. It does not automatically give KAIRON permission to modify your machine.</p>
+      <FlowDiagram steps={['Telemetry', 'Detection', 'Incident', 'AI recommendation', 'Policy authorization', 'Approval', 'Remediation', 'Verification', 'Incident resolved']} />
+      <p className="sdk-hint">Windows-service remediation requires these to already be set up:</p>
+      <Checklist items={[
+        'An enrolled machine',
+        'That machine’s project association',
+        'An exact service allowlist',
+        'An enabled action',
+        'Executor permissions',
+        'Deterministic policy authorization',
+        'A configured Machine ID',
+        'Audit trail',
+        'Verification'
+      ]} />
+      {onRemediation && (
+        <button type="button" className="small-btn" onClick={onRemediation}>Configure remediation →</button>
+      )}
+    </section>
+  );
+}
+
+function SecurityCard() {
+  return (
+    <div className="sdk-callout sdk-callout-security">
+      <IconShield className="w-5 h-5 sdk-callout-icon" aria-hidden="true" />
+      <div>
+        <p className="sdk-callout-title">Keep credentials private</p>
+        <ul>
+          <li>Never commit API keys.</li>
+          <li>Never print API keys.</li>
+          <li>Never put pairing codes into source code.</li>
+          <li>Never use a Groq key as an application telemetry key.</li>
+          <li>Never expose project credentials in screenshots or logs.</li>
+        </ul>
+        <p>Use environment variables or your deployment's secret manager.</p>
+      </div>
+    </div>
+  );
+}
+
+// ---- Troubleshooting (collapsible, checklist-based) --------------------------------------------
+
+function TroubleshootingSection() {
+  return (
+    <details className="section-card sdk-guide-details">
+      <summary>Troubleshooting</summary>
+      <div className="sdk-trouble-list">
+        <div className="sdk-trouble-card">
+          <h4><IconAlertTriangle className="w-4 h-4 tone-critical" aria-hidden="true" /> KAIRON isn't reachable</h4>
+          <Checklist items={['KAIRON is running', 'The endpoint is correct', "You're using the backend address"]} />
+          <p className="sdk-trouble-fix">Expected local backend: <code>http://127.0.0.1:8000</code></p>
+        </div>
+        <div className="sdk-trouble-card">
+          <h4><IconAlertTriangle className="w-4 h-4 tone-critical" aria-hidden="true" /> 401 / 403</h4>
+          <Checklist items={['The project ID is correct', "The project API key is correct", "The API key hasn't been revoked", "You didn't use the pairing code as the API key"]} />
+          <p className="sdk-trouble-fix"><strong>Fix:</strong> generate or retrieve the correct project credential through Pairing.</p>
+        </div>
+        <div className="sdk-trouble-card">
+          <h4><IconAlertTriangle className="w-4 h-4 tone-critical" aria-hidden="true" /> No telemetry appears</h4>
+          <Checklist items={['The application is running', 'The SDK is initialized', 'The middleware is registered', 'You sent requests to a normal route', 'You waited several seconds', 'Live Telemetry is refreshed']} />
+          <p className="sdk-trouble-fix">Health and metrics routes may be excluded by default.</p>
+        </div>
+        <div className="sdk-trouble-card">
+          <h4><IconAlertTriangle className="w-4 h-4 tone-critical" aria-hidden="true" /> Pairing failed</h4>
+          <Checklist items={["You chose the correct SDK type", "The code hasn't expired", "The code hasn't already been used"]} />
+          <p className="sdk-trouble-fix"><strong>Fix:</strong> generate a new pairing code.</p>
+        </div>
+        <div className="sdk-trouble-card">
+          <h4><IconAlertTriangle className="w-4 h-4 tone-critical" aria-hidden="true" /> SDK package/import not found</h4>
+          <p className="sdk-hint">Python:</p>
+          <Checklist items={['The correct virtual environment is active', 'The SDK is installed into that environment']} />
+          <p className="sdk-hint">.NET:</p>
+          <Checklist items={['The correct package source', 'The correct SDK version', 'The correct project reference']} />
+        </div>
+      </div>
     </details>
-  </div>;
+  );
+}
+
+// ---- Advanced (collapsible; deep material only — never required for the main path) ------------
+
+function AdvancedSection({ CodeBlock }) {
+  return (
+    <details className="section-card sdk-guide-details sdk-advanced">
+      <summary>Advanced</summary>
+      <div className="sdk-get-started">
+        <section className="section-card">
+          <h3>Networking</h3>
+          <FlowDiagram steps={['Your application', 'KAIRON backend — 127.0.0.1:8000']} />
+          <p>Port 8000 is the backend. Port 8001 is the AI service. Port 5173 is the frontend development server. Don't configure the SDK against 8001 or 5173.</p>
+          <p>For a remote application or one running in a container, <code>127.0.0.1</code> means that application's own host — not this machine. The desktop backend binds to loopback by default. Remote collection needs an explicitly configured, reachable backend with HTTPS and appropriate network access; changing the SDK URL alone does not expose KAIRON externally.</p>
+          <p className="sdk-hint">Prerequisites: .NET SDK integration targets ASP.NET Core on .NET 10; Python requires 3.9 or newer. The Python core has no third-party runtime dependencies; FastAPI examples also need FastAPI and an ASGI server.</p>
+        </section>
+        <section className="section-card">
+          <h3>Alternative installs</h3>
+          <p><strong>.NET</strong> — for a source checkout instead of a package feed, reference the SDK project using its real path:</p>
+          <CodeBlock copyKey="dotnet-source" code={'dotnet add reference "<KAIRON-repository>/sdk/Kairon.SDK/Kairon.SDK.csproj"'} />
+          <p><strong>Python</strong> — for a source checkout, run from the KAIRON repository root. Choose the core or middleware variant; editable installs are for SDK development, not production:</p>
+          <CodeBlock copyKey="python-source" code={'python -m pip install ./sdk-python\n# Or, for FastAPI/Starlette middleware:\npython -m pip install "./sdk-python[fastapi]"'} />
+          <p>A release wheel is also supplied with some SDK releases:</p>
+          <CodeBlock copyKey="python-wheel-install" code={'python -m pip install "<path-to-kairon-sdk-wheel.whl>"'} />
+          <p><strong>Plain Python, no FastAPI</strong> — for a worker or script, create one collector per process after it starts:</p>
+          <CodeBlock copyKey="python-worker" code={pythonWorker} />
+        </section>
+        <section className="section-card">
+          <h3>Delivery and shutdown</h3>
+          <p>Both SDKs use a bounded in-memory queue (default 1,000 items) and best-effort delivery, without a disk spool or automatic retries. Queue pressure drops the oldest items. A collector outage should not block application requests, but telemetry can be lost.</p>
+          <p>Python exposes <code>delivered_count</code>, <code>failed_count</code>, <code>dropped_count</code> and <code>pending_count</code>; .NET exposes corresponding PascalCase members on <code>IKaironTelemetryQueue</code>. Pending counts exclude in-flight sends. Stop producers before a final drain: Python <code>stop(timeout_seconds=5)</code> and .NET <code>FlushAsync(token)</code> return false after a lifetime failure/drop or an incomplete drain. The .NET hosted sender also attempts a bounded shutdown drain. Queue emptiness alone is not delivery confirmation.</p>
+          <p>Metrics intervals default to 10 seconds (.NET) and 5 seconds (Python).</p>
+        </section>
+        <section className="section-card">
+          <h3>Remediation requirements and Machine ID</h3>
+          <p>Configure <code>MachineId</code> (.NET) or <code>machine_id</code> (Python) to the real enrolled machine UUID for scoped evidence. Never invent a machine ID or assume an SDK service label grants Service Control Manager access.</p>
+          <p>Environments like Development, Staging and Production describe the monitored application's own workload; they don't enable a KAIRON execution mode or grant permission. The supported boundary is one backend and one executor; multi-replica remediation is not supported.</p>
+        </section>
+        <section className="section-card">
+          <h3>Production and diagnostics</h3>
+          <p>Before sharing diagnostics, remove credentials, pairing codes and sensitive application payloads. Keep request/response body capture disabled unless explicitly required and reviewed.</p>
+        </section>
+      </div>
+    </details>
+  );
+}
+
+// ---- Page ----------------------------------------------------------------------------------
+
+export default function SdkGuide({ CodeBlock, onPairing, onTelemetry, onRemediation, projectId }) {
+  const [platform, setPlatform] = useState('python');
+  const [checking, setChecking] = useState(false);
+  const [reachable, setReachable] = useState(null); // null = unknown, true/false once checked
+
+  async function checkConnection() {
+    setChecking(true);
+    try {
+      await healthApi.getHealth();
+      setReachable(true);
+    } catch {
+      setReachable(false);
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  useEffect(() => { checkConnection(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="sdk-get-started sdk-onboarding">
+      <header className="sdk-onboarding-intro">
+        <h3>Connect your application</h3>
+        <p>Connect your app to KAIRON in a few minutes.</p>
+      </header>
+
+      <FlowOverview />
+
+      <Step number="1" title="Start KAIRON">
+        <p>Make sure KAIRON is running.</p>
+        <p className="sdk-backend-address">Backend: <code>http://127.0.0.1:8000</code></p>
+        <p role="status" className={`sdk-connection-status ${reachable === true ? 'online' : reachable === false ? 'offline' : ''}`}>
+          <span className={`status-dot ${reachable === true ? 'online' : reachable === false ? 'offline' : ''}`} aria-hidden="true" />
+          {reachable === true && 'KAIRON is running'}
+          {reachable === false && 'KAIRON is not reachable — start KAIRON and try again.'}
+          {reachable === null && (checking ? 'Checking…' : 'Not checked yet.')}
+        </p>
+        <button type="button" className="small-btn sdk-primary-action" disabled={checking} onClick={checkConnection}>{checking ? 'Checking…' : 'Check Connection'}</button>
+      </Step>
+
+      <Step number="2" title="Pair your application">
+        <p>Create a project and generate a one-time pairing code.</p>
+        <Checklist items={[
+          'The pairing code expires after 10 minutes.',
+          'The pairing code is single-use.',
+          'The pairing code is only used during setup.',
+          'Application telemetry uses the resulting Project ID + Project API Key.',
+          'Never use the pairing code as the telemetry API key.'
+        ]} />
+        <button type="button" className="small-btn sdk-primary-action" onClick={onPairing}>Open Pairing</button>
+      </Step>
+
+      <Step number="3" title="Choose your SDK">
+        <Tabs items={[{ id: 'python', label: '🐍 Python' }, { id: 'dotnet', label: '🔷 .NET' }]} activeId={platform} onChange={setPlatform} />
+        {platform === 'python'
+          ? <PythonGuide CodeBlock={CodeBlock} projectId={projectId} onTelemetry={onTelemetry} />
+          : <DotNetGuide CodeBlock={CodeBlock} projectId={projectId} onTelemetry={onTelemetry} />}
+      </Step>
+
+      <PairingCard CodeBlock={CodeBlock} />
+      <RemediationCard onRemediation={onRemediation} />
+      <SecurityCard />
+      <TroubleshootingSection />
+      <AdvancedSection CodeBlock={CodeBlock} />
+    </div>
+  );
 }
