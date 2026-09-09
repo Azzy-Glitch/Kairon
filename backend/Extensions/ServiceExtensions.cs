@@ -93,6 +93,11 @@ public static class ServiceExtensions
         services.Configure<SreSecurityOptions>(configuration.GetSection(SreSecurityOptions.SectionName));
         services.Configure<WindowsRemediationOptions>(configuration.GetSection(WindowsRemediationOptions.SectionName));
 
+        // Database-backed replacement for WindowsRemediation:Targets - see
+        // Services/Remediation/RemediationTargetResolver.cs. Scoped: it takes AppDbContext
+        // directly, matching this codebase's convention for anything DB-backed.
+        services.AddScoped<IRemediationTargetResolver, RemediationTargetResolver>();
+
         // --- Detection. Every rule is registered explicitly; adding a rule is one line here and
         // one class, and nothing else in the pipeline changes.
         services.AddSingleton<IDetectionCooldownStore, InMemoryDetectionCooldownStore>();

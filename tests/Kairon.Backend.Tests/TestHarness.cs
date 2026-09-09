@@ -2,6 +2,7 @@ using Kairon.Backend.Configuration;
 using Kairon.Backend.DTOs.Sre;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models;
+using Kairon.Backend.Models.Platform;
 using Kairon.Backend.Models.Sre;
 using Kairon.Backend.Services;
 using Kairon.Backend.Services.Audit;
@@ -36,6 +37,7 @@ public sealed class TestHarness : IDisposable
     public DetectionOptions Detection { get; }
     public RemediationOptions Remediation { get; }
     public VerificationOptions Verification { get; }
+    public WindowsRemediationOptions WindowsRemediation { get; } = new();
     public AiOrchestrationOptions AiOptions { get; }
     public FakeAiService Ai { get; }
     public FakeDemoEnvironment Demo { get; }
@@ -43,6 +45,10 @@ public sealed class TestHarness : IDisposable
     public IIncidentProcessingQueue Queue { get; }
     public IRemediationToolRegistry Tools { get; }
     public IRemediationPolicy Policy { get; }
+
+    /// <summary>A fresh resolver over this harness's own Db/WindowsRemediation each access - cheap
+    /// to construct, and always reflects any mutation tests make to WindowsRemediation.</summary>
+    public IRemediationTargetResolver Targets => new RemediationTargetResolver(Db, Opt(WindowsRemediation));
 
     public TestHarness(Action<TestHarness>? configure = null)
     {
@@ -120,7 +126,7 @@ public sealed class TestHarness : IDisposable
 
     public DetectionEngine CreateDetectionEngine(IDetectionCooldownStore? cooldown = null) =>
         new(Db, AllRules(), cooldown ?? new InMemoryDetectionCooldownStore(),
-            Opt(Detection), NullLogger<DetectionEngine>.Instance);
+            Opt(Detection), NullLogger<DetectionEngine>.Instance, Targets);
 
     public CorrelationEngine CreateCorrelationEngine()
     {
@@ -271,6 +277,68 @@ public sealed class TestHarness : IDisposable
         Db.SreIncidents.Add(incident);
         Db.SaveChanges();
         return incident;
+    }
+
+    public Machine SeedMachine(
+        string hostName = "enrolled-host",
+        string operatingSystem = "Windows",
+        string agentCredentialHash = "enrollment",
+        DateTime? lastSeenAt = null)
+    {
+        var machine = new Machine
+        {
+            Id = Guid.NewGuid(),
+            HostName = hostName,
+            OperatingSystem = operatingSystem,
+            AgentCredentialHash = agentCredentialHash,
+            RegisteredAt = DateTime.UtcNow,
+            LastSeenAt = lastSeenAt ?? DateTime.UtcNow
+        };
+        Db.Machines.Add(machine);
+        Db.SaveChanges();
+        return machine;
+    }
+
+    public ProjectApiCredential SeedCredential(Guid? projectId = null, string keyHash = "test-hash")
+    {
+        EnsureProject();
+        var credential = new ProjectApiCredential { ProjectId = projectId ?? ProjectId, KeyHash = keyHash };
+        Db.ProjectApiCredentials.Add(credential);
+        Db.SaveChanges();
+        return credential;
+    }
+
+    /// <summary>Seeds a database-backed remediation target - the replacement for the old
+    /// WindowsRemediation:Targets in-memory list. Defaults line up with the fixed ProjectId/
+    /// Environment/Service constants above and grant every known operation, matching how the
+    /// prior inline WindowsServiceTarget literals in these tests were normally constructed.</summary>
+    public RemediationTarget SeedRemediationTarget(
+        Guid machineId,
+        Guid telemetryCredentialId,
+        string expectedHostName,
+        string windowsServiceName = "ScopedService",
+        Guid? projectId = null,
+        string? environment = null,
+        string? service = null,
+        IEnumerable<string>? allowedOperations = null,
+        bool enabled = true)
+    {
+        EnsureProject();
+        var target = new RemediationTarget
+        {
+            ProjectId = projectId ?? ProjectId,
+            Environment = environment ?? Environment,
+            Service = service ?? Service,
+            MachineId = machineId,
+            TelemetryCredentialId = telemetryCredentialId,
+            ExpectedHostName = expectedHostName,
+            WindowsServiceName = windowsServiceName,
+            AllowedOperationsJson = RemediationTargetOperations.Serialize(allowedOperations ?? RemediationTargetOperations.Known),
+            Enabled = enabled
+        };
+        Db.RemediationTargets.Add(target);
+        Db.SaveChanges();
+        return target;
     }
 
     public void EnsureProject()

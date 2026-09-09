@@ -24,22 +24,18 @@ public sealed class WindowsServiceRemediationTests
     {
         using var h = new TestHarness();
         var incident = h.SeedIncident(); incident.Environment = "Production";
-        var machine = new Machine { HostName = "enrolled-host", OperatingSystem = "Windows", AgentCredentialHash = "test", LastSeenAt = DateTime.UtcNow };
-        var credential = new ProjectApiCredential { ProjectId = incident.ProjectId, KeyHash = "test" };
-        h.Db.Machines.Add(machine); h.Db.ProjectApiCredentials.Add(credential);
+        var machine = h.SeedMachine(agentCredentialHash: "test");
+        var credential = h.SeedCredential(incident.ProjectId, "test");
         incident.CorrelatedMetricsJson = SreJson.Serialize(new[] { new CorrelatedSignalSnapshot { MetricName = "cpu", MachineId = machine.Id } });
         h.Db.SaveChanges();
-        var options = Options.Create(new WindowsRemediationOptions { Targets = [new WindowsServiceTarget {
-            ProjectId = incident.ProjectId, Environment = incident.Environment, Service = incident.Service,
-            MachineId = machine.Id, ExpectedHostName = machine.HostName, WindowsServiceName = "ScopedService",
-            TelemetryCredentialId = credential.Id, AllowedOperations = [operation]
-        }] });
+        h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName,
+            environment: incident.Environment, service: incident.Service, allowedOperations: [operation]);
         var scm = new Scm { State = initial };
         WindowsServiceTool tool = operation switch {
-            "StartService" => new StartServiceTool(h.Db, options, scm),
-            "StopService" => new StopServiceTool(h.Db, options, scm),
-            "RunHealthCheck" => new ServiceHealthCheckTool(h.Db, options, scm),
-            _ => new RestartServiceTool(h.Db, options, scm)
+            "StartService" => new StartServiceTool(h.Db, h.Targets, scm),
+            "StopService" => new StopServiceTool(h.Db, h.Targets, scm),
+            "RunHealthCheck" => new ServiceHealthCheckTool(h.Db, h.Targets, scm),
+            _ => new RestartServiceTool(h.Db, h.Targets, scm)
         };
         var result = await tool.ExecuteAsync(new RemediationToolContext {
             ProjectId = incident.ProjectId, IncidentId = incident.Id, IncidentKey = incident.IncidentKey,
@@ -73,15 +69,13 @@ public sealed class WindowsServiceRemediationTests
         using var h = new TestHarness();
         var incident = h.SeedIncident();
         var machine = Guid.NewGuid();
-        var target = new WindowsServiceTarget { ProjectId = h.ProjectId, Environment = h.Environment, Service = h.Service, MachineId = machine };
         for (var i = 0; i < 4; i++) {
             var metric = h.SeedMetric(DateTime.UtcNow.AddSeconds(-30 + i * 5), cpu: 96);
             metric.MachineId = Guid.NewGuid();
         }
         h.Db.SaveChanges();
-        var engine = new Kairon.Backend.Services.Detection.DetectionEngine(h.Db, h.AllRules(),
-            new Kairon.Backend.Services.Detection.InMemoryDetectionCooldownStore(), Options.Create(h.Detection),
-            NullLogger<Kairon.Backend.Services.Detection.DetectionEngine>.Instance, Options.Create(new WindowsRemediationOptions { Targets = [target] }));
+        h.SeedRemediationTarget(machine, Guid.NewGuid(), "any-host");
+        var engine = h.CreateDetectionEngine();
         Assert.Empty(await engine.EvaluateAsync(h.ProjectId, h.Environment, h.Service));
         foreach (var metric in h.Db.Metrics) metric.MachineId = machine;
         h.Db.SaveChanges();
@@ -110,18 +104,16 @@ public sealed class WindowsServiceRemediationTests
     public async Task ExactApprovedTargetCanRestartAndChangedTargetCannot(string environment) {
         using var h = new TestHarness();
         var incident = h.SeedIncident(); incident.Environment = environment;
-        var machine = new Machine { Id = Guid.NewGuid(), HostName = "enrolled-host", OperatingSystem = "Windows", AgentCredentialHash = "enrollment", LastSeenAt = DateTime.UtcNow };
-        h.Db.Machines.Add(machine);
-        var credential = new ProjectApiCredential { ProjectId = incident.ProjectId, KeyHash = "test-hash" };
-        h.Db.ProjectApiCredentials.Add(credential);
+        var machine = h.SeedMachine();
+        var credential = h.SeedCredential(incident.ProjectId);
         var snapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
         snapshots.ForEach(s => s.MachineId = machine.Id);
         incident.CorrelatedMetricsJson = SreJson.Serialize(snapshots);
         h.Db.SaveChanges();
-        var target = new WindowsServiceTarget { ProjectId = incident.ProjectId, Environment = environment, Service = incident.Service, MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = machine.HostName, WindowsServiceName = "ScopedService", AllowedOperations = [ServiceToolNames.RestartService] };
-        var options = Options.Create(new WindowsRemediationOptions { Targets = [target] });
+        var target = h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName,
+            environment: environment, service: incident.Service, allowedOperations: [ServiceToolNames.RestartService]);
         var scm = new Scm();
-        var tool = new RestartServiceTool(h.Db, options, scm);
+        var tool = new RestartServiceTool(h.Db, h.Targets, scm);
         var registry = new RemediationToolRegistry([tool]);
         var policy = new RemediationPolicy(registry, Options.Create(new RemediationOptions()), NullLogger<RemediationPolicy>.Instance);
         var parameters = new Dictionary<string, string> { ["targetFingerprint"] = tool.TargetFingerprint(incident)! };
@@ -133,6 +125,7 @@ public sealed class WindowsServiceRemediationTests
         Assert.True(result.Success);
         Assert.Equal(new[] { ("enrolled-host", "ScopedService", false), ("enrolled-host", "ScopedService", true) }, scm.Calls);
         target.WindowsServiceName = "AnotherService";
+        h.Db.SaveChanges();
         Assert.Equal("target-changed", policy.ValidateExecution(incident, action).Code);
         Assert.False((await tool.ExecuteAsync(new RemediationToolContext { ProjectId = incident.ProjectId, IncidentId = incident.Id, IncidentKey = incident.IncidentKey, ActionKey = "ACT-test", Service = incident.Service, Environment = environment, Parameters = parameters })).Success);
         Assert.Equal(2, scm.Calls.Count);
@@ -162,17 +155,16 @@ public sealed class WindowsServiceRemediationTests
     {
         using var h = new TestHarness();
         var incident = h.SeedIncident(IncidentStatus.Verifying);
-        var machine = new Machine { Id = Guid.NewGuid(), HostName = "enrolled-host", OperatingSystem = "Windows", AgentCredentialHash = "enrollment", LastSeenAt = DateTime.UtcNow };
-        h.Db.Machines.Add(machine);
-        var credential = new ProjectApiCredential { ProjectId = incident.ProjectId, KeyHash = "test-hash" };
-        h.Db.ProjectApiCredentials.Add(credential);
+        var machine = h.SeedMachine();
+        var credential = h.SeedCredential(incident.ProjectId);
         var snapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
         snapshots.ForEach(s => s.MachineId = machine.Id);
         incident.CorrelatedMetricsJson = SreJson.Serialize(snapshots);
         h.Db.SaveChanges();
-        var target = new WindowsServiceTarget { ProjectId = incident.ProjectId, Environment = incident.Environment, Service = incident.Service, MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = machine.HostName, WindowsServiceName = "ScopedService", AllowedOperations = [ServiceToolNames.RestartService] };
+        h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName,
+            environment: incident.Environment, service: incident.Service, allowedOperations: [ServiceToolNames.RestartService]);
         var scm = new Scm { State = scenario == "stopped" ? 1 : 4 };
-        var tool = new RestartServiceTool(h.Db, Options.Create(new WindowsRemediationOptions { Targets = [target] }), scm);
+        var tool = new RestartServiceTool(h.Db, h.Targets, scm);
         var action = new RemediationAction { IncidentId = incident.Id, ActionKey = "ACT-scope", ActionType = tool.Name, Status = RemediationStatus.Executed, CompletedAt = DateTime.UtcNow.AddSeconds(-20), ParametersJson = SreJson.Serialize(new Dictionary<string, string> { ["targetFingerprint"] = tool.TargetFingerprint(incident)! }) };
         incident.Actions.Add(action); h.Db.RemediationActions.Add(action);
         var before = h.SeedMetric(DateTime.UtcNow.AddSeconds(-30), cpu: 95, retries: 50);
@@ -204,17 +196,16 @@ public sealed class WindowsServiceRemediationTests
     {
         using var h = new TestHarness();
         var incident = h.SeedIncident(IncidentStatus.Verifying);
-        var machine = new Machine { Id = Guid.NewGuid(), HostName = "enrolled-host", OperatingSystem = "Windows", AgentCredentialHash = "enrollment", LastSeenAt = DateTime.UtcNow };
-        h.Db.Machines.Add(machine);
-        var credential = new ProjectApiCredential { ProjectId = incident.ProjectId, KeyHash = "test-hash" };
-        h.Db.ProjectApiCredentials.Add(credential);
+        var machine = h.SeedMachine();
+        var credential = h.SeedCredential(incident.ProjectId);
         var snapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
         snapshots.ForEach(s => s.MachineId = machine.Id);
         incident.CorrelatedMetricsJson = SreJson.Serialize(snapshots);
         h.Db.SaveChanges();
-        var target = new WindowsServiceTarget { ProjectId = incident.ProjectId, Environment = incident.Environment, Service = incident.Service, MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = machine.HostName, WindowsServiceName = "ScopedService", AllowedOperations = [ServiceToolNames.StopService] };
+        var target = h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName,
+            environment: incident.Environment, service: incident.Service, allowedOperations: [ServiceToolNames.StopService]);
         var scm = new Scm { State = scenario == "running" ? 4 : 1 };
-        var tool = new StopServiceTool(h.Db, Options.Create(new WindowsRemediationOptions { Targets = [target] }), scm);
+        var tool = new StopServiceTool(h.Db, h.Targets, scm);
         var action = new RemediationAction { IncidentId = incident.Id, ActionKey = "ACT-scope", ActionType = tool.Name, Status = RemediationStatus.Executed, CompletedAt = DateTime.UtcNow.AddSeconds(-20), ParametersJson = SreJson.Serialize(new Dictionary<string, string> { ["targetFingerprint"] = tool.TargetFingerprint(incident)! }) };
         incident.Actions.Add(action); h.Db.RemediationActions.Add(action);
 

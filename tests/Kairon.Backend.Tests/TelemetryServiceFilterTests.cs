@@ -19,7 +19,7 @@ public class TelemetryServiceFilterTests
         for (var i = 0; i < 60; i++)
             h.Db.Incidents.Add(new Incident { Id = Guid.NewGuid(), ProjectId = h.ProjectId, Service = "DotnetPayments", Timestamp = now.AddSeconds(-i) });
         await h.Db.SaveChangesAsync();
-        var controller = new TelemetryController(h.Db, null!, h.Queue, null!, Options.Create(new PlatformSecurityOptions()));
+        var controller = new TelemetryController(h.Db, null!, h.Queue, null!, Options.Create(new PlatformSecurityOptions()), h.Targets);
         var result = Assert.IsType<OkObjectResult>(await controller.GetIncidents(h.ProjectId.ToString(), default, "PythonOrders"));
         Assert.Equal("PythonOrders", Assert.Single(Assert.IsType<List<Incident>>(result.Value)).Service);
         var other = Assert.IsType<OkObjectResult>(await controller.GetIncidents(Guid.NewGuid().ToString(), default, "PythonOrders"));

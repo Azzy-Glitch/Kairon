@@ -26,10 +26,10 @@ public class MachineTelemetryAuthorizationTests
         var credentials = new ProjectCredentialService(h.Db, Options.Create(new PlatformSecurityOptions()), TimeProvider.System);
         var credential = (await credentials.CreateAsync(incident.ProjectId, "target", default))!;
         var other = (await credentials.CreateAsync(incident.ProjectId, "other", default))!;
-        var machine = new Machine { HostName = "enrolled", OperatingSystem = "Windows", AgentCredentialHash = "test" };
-        h.Db.Machines.Add(machine); h.Db.SaveChanges();
-        var target = new WindowsServiceTarget { ProjectId = incident.ProjectId, Environment = incident.Environment, Service = incident.Service, MachineId = machine.Id, TelemetryCredentialId = credential.Id };
-        var controller = new TelemetryController(h.Db, null!, h.Queue, credentials, Options.Create(new PlatformSecurityOptions()), Options.Create(new WindowsRemediationOptions { Targets = [target] })) {
+        var machine = h.SeedMachine(hostName: "enrolled", agentCredentialHash: "test");
+        h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName,
+            environment: incident.Environment, service: incident.Service);
+        var controller = new TelemetryController(h.Db, null!, h.Queue, credentials, Options.Create(new PlatformSecurityOptions()), h.Targets) {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
         };
         controller.Request.Headers["X-Kairon-API-Key"] = scenario == "other-key" ? other.ApiKey : credential.ApiKey;

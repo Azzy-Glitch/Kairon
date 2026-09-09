@@ -3,6 +3,7 @@ using Kairon.Backend.Configuration;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models;
 using Kairon.Backend.Models.Sre;
+using Kairon.Backend.Services.Remediation;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -75,7 +76,7 @@ public class DetectionEngine : IDetectionEngine
     private readonly IEnumerable<IDetectionRule> _rules;
     private readonly IDetectionCooldownStore _cooldown;
     private readonly DetectionOptions _options;
-    private readonly WindowsRemediationOptions _windows;
+    private readonly IRemediationTargetResolver _targets;
     private readonly ILogger<DetectionEngine> _logger;
 
     public DetectionEngine(
@@ -83,13 +84,13 @@ public class DetectionEngine : IDetectionEngine
         IEnumerable<IDetectionRule> rules,
         IDetectionCooldownStore cooldown,
         IOptions<DetectionOptions> options,
-        ILogger<DetectionEngine> logger, IOptions<WindowsRemediationOptions>? windows = null)
+        ILogger<DetectionEngine> logger, IRemediationTargetResolver targets)
     {
         _db = db;
         _rules = rules;
         _cooldown = cooldown;
         _options = options.Value;
-        _windows = windows?.Value ?? new WindowsRemediationOptions();
+        _targets = targets;
         _logger = logger;
     }
 
@@ -144,9 +145,13 @@ public class DetectionEngine : IDetectionEngine
             agentEventsQuery = agentEventsQuery.Where(e => e.Service == service);
         }
 
-        var configured = _windows.Targets.Where(t => t.ProjectId == projectId && t.Environment.Equals(environment, StringComparison.OrdinalIgnoreCase) && t.Service == service).ToList();
-        if (configured.Count > 1) return Array.Empty<DetectionSignal>();
-        Guid? machineId = configured.Count == 1 ? configured[0].MachineId : null;
+        // A null/blank service scope never matches a configured target (a real target always has
+        // a concrete service name), matching the prior in-memory comparison's behavior exactly.
+        var resolution = string.IsNullOrWhiteSpace(service)
+            ? DetectionTargetResolution.None
+            : await _targets.ResolveDetectionTargetAsync(projectId, environment, service, cancellationToken);
+        if (resolution.Outcome == DetectionTargetOutcome.Ambiguous) return Array.Empty<DetectionSignal>();
+        Guid? machineId = resolution.Outcome == DetectionTargetOutcome.Unique ? resolution.MachineId : null;
         var correlationKey = $"{projectId}|{environment}|{service}" + (machineId.HasValue ? $"|{machineId}" : "");
         var recoveredAt = await _db.SreIncidents.AsNoTracking()
             .Where(i => i.ProjectId == projectId && i.CorrelationKey == correlationKey &&

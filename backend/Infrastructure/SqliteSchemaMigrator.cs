@@ -19,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -111,6 +111,21 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                 version = 4;
             }
 
+            // Version 5: adds RemediationTargets, the database-backed replacement for
+            // WindowsRemediation:Targets (backend/Configuration/WindowsRemediationOptions.cs).
+            // Mirrors AppDbContext's Fluent API config exactly, including the filtered unique
+            // index (only Enabled targets need a unique ProjectId+Environment+Service identity -
+            // SQLite supports a WHERE-filtered unique index natively).
+            if (version == 4) {
+                await ExecuteAsync(connection, transaction, CreateRemediationTargetsTableSql, cancellationToken);
+                await ExecuteAsync(connection, transaction, CreateRemediationTargetsMachineIndexSql, cancellationToken);
+                await ExecuteAsync(connection, transaction, CreateRemediationTargetsCredentialIndexSql, cancellationToken);
+                await ExecuteAsync(connection, transaction, CreateRemediationTargetsUniqueIndexSql, cancellationToken);
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 5;", cancellationToken);
+                version = 5;
+                _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: RemediationTargets", version);
+            }
+
             if (version != CurrentVersion)
                 throw new InvalidOperationException($"No SQLite migration path exists from version {version}.");
 
@@ -146,6 +161,35 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 
     private const string AddAiProviderConfigsEndpointColumnSql =
         """ALTER TABLE "AiProviderConfigs" ADD COLUMN "Endpoint" TEXT NOT NULL DEFAULT '';""";
+
+    private const string CreateRemediationTargetsTableSql = """
+        CREATE TABLE IF NOT EXISTS "RemediationTargets" (
+            "Id" TEXT NOT NULL CONSTRAINT "PK_RemediationTargets" PRIMARY KEY,
+            "ProjectId" TEXT NOT NULL,
+            "Environment" TEXT NOT NULL,
+            "Service" TEXT NOT NULL,
+            "MachineId" TEXT NOT NULL,
+            "TelemetryCredentialId" TEXT NOT NULL,
+            "ExpectedHostName" TEXT NOT NULL,
+            "WindowsServiceName" TEXT NOT NULL,
+            "AllowedOperationsJson" TEXT NOT NULL,
+            "Enabled" INTEGER NOT NULL,
+            "CreatedAt" TEXT NOT NULL,
+            "UpdatedAt" TEXT NOT NULL,
+            CONSTRAINT "FK_RemediationTargets_Projects_ProjectId" FOREIGN KEY ("ProjectId") REFERENCES "Projects" ("Id") ON DELETE CASCADE
+        );
+        """;
+
+    private const string CreateRemediationTargetsMachineIndexSql =
+        """CREATE INDEX IF NOT EXISTS "IX_RemediationTargets_MachineId" ON "RemediationTargets" ("MachineId");""";
+
+    private const string CreateRemediationTargetsCredentialIndexSql =
+        """CREATE INDEX IF NOT EXISTS "IX_RemediationTargets_TelemetryCredentialId" ON "RemediationTargets" ("TelemetryCredentialId");""";
+
+    // Enabled-only uniqueness: a disabled target may coexist with its enabled replacement -
+    // see AppDbContext's matching HasFilter("Enabled = 1") configuration.
+    private const string CreateRemediationTargetsUniqueIndexSql =
+        """CREATE UNIQUE INDEX IF NOT EXISTS "IX_RemediationTargets_ProjectId_Environment_Service" ON "RemediationTargets" ("ProjectId", "Environment", "Service") WHERE "Enabled" = 1;""";
 
     private async Task ValidateModelAsync(
         DbConnection connection,

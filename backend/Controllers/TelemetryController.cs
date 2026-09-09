@@ -5,6 +5,7 @@ using Kairon.Backend.Models;
 using Kairon.Backend.Services;
 using Kairon.Backend.Services.Audit;
 using Kairon.Backend.Services.Orchestration;
+using Kairon.Backend.Services.Remediation;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
@@ -21,7 +22,7 @@ public class TelemetryController : ControllerBase
     private readonly IIncidentProcessingQueue _queue;
     private readonly IProjectCredentialService _credentials;
     private readonly PlatformSecurityOptions _security;
-    private readonly WindowsRemediationOptions _windows;
+    private readonly IRemediationTargetResolver _targets;
 
     public TelemetryController(
         AppDbContext db,
@@ -29,28 +30,29 @@ public class TelemetryController : ControllerBase
         IIncidentProcessingQueue queue,
         IProjectCredentialService credentials,
         IOptions<PlatformSecurityOptions> security,
-        IOptions<WindowsRemediationOptions>? windows = null)
+        IRemediationTargetResolver targets)
     {
         _db = db;
         _context = context;
         _queue = queue;
         _credentials = credentials;
         _security = security.Value;
-        _windows = windows?.Value ?? new WindowsRemediationOptions();
+        _targets = targets;
     }
 
     private async Task<bool> AuthorizeMachineScopeAsync(Guid projectId, Guid? machineId, string environment, string? service, CancellationToken ct)
     {
         if (!machineId.HasValue) return true; // Legacy telemetry is readable but cannot verify a machine target.
-        var targets = _windows.Targets.Where(t => t.ProjectId == projectId && t.MachineId == machineId &&
-            t.Environment.Equals(environment, StringComparison.OrdinalIgnoreCase) && t.Service == service).ToList();
-        if (targets.Count != 1 || !await _db.Machines.AnyAsync(m => m.Id == machineId, ct)) return false;
-        var credentialId = targets[0].TelemetryCredentialId;
-        var credential = await _db.ProjectApiCredentials.AsNoTracking().SingleOrDefaultAsync(c => c.Id == credentialId && c.ProjectId == projectId && c.RevokedAt == null, ct);
+        // A null/blank service scope never matches a configured target (a real target always has
+        // a concrete service name), matching the prior in-memory comparison's behavior exactly.
+        var resolution = string.IsNullOrWhiteSpace(service)
+            ? null
+            : await _targets.ResolveTelemetryTargetAsync(projectId, machineId.Value, environment, service, ct);
+        if (resolution is null) return false;
         var supplied = Request.Headers[_security.TelemetryKeyHeader].ToString();
-        if (credential is null || string.IsNullOrWhiteSpace(supplied)) return false;
+        if (string.IsNullOrWhiteSpace(supplied)) return false;
         var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(supplied)));
-        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(System.Text.Encoding.ASCII.GetBytes(hash), System.Text.Encoding.ASCII.GetBytes(credential.KeyHash));
+        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(System.Text.Encoding.ASCII.GetBytes(hash), System.Text.Encoding.ASCII.GetBytes(resolution.CredentialKeyHash));
     }
 
     /// <summary>

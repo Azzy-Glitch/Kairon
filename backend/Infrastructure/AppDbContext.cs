@@ -48,6 +48,10 @@ public class AppDbContext : DbContext
     public DbSet<SdkInstallation> SdkInstallations { get; set; }
     public DbSet<TelemetryReceipt> TelemetryReceipts { get; set; }
 
+    // Database-backed replacement for WindowsRemediation:Targets (Configuration/
+    // WindowsRemediationOptions.cs) - see Models/Platform/RemediationTarget.cs.
+    public DbSet<RemediationTarget> RemediationTargets { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<Incident>(entity =>
@@ -221,6 +225,13 @@ public class AppDbContext : DbContext
                   .WithOne()
                   .HasForeignKey(e => e.ProjectId)
                   .OnDelete(DeleteBehavior.Cascade);
+
+            // A remediation target has no meaning without its project - removing a project
+            // removes its targets too, matching the ProjectApiCredential cascade above.
+            entity.HasMany<RemediationTarget>()
+                  .WithOne()
+                  .HasForeignKey(e => e.ProjectId)
+                  .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<AiProviderConfig>(entity =>
@@ -292,6 +303,32 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Name).HasMaxLength(200);
             entity.Property(e => e.KeyPrefix).HasMaxLength(20).IsRequired();
             entity.Property(e => e.KeyHash).HasMaxLength(200).IsRequired();
+        });
+
+        modelBuilder.Entity<RemediationTarget>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            // Runtime resolution (WindowsServiceTool/DetectionEngine/TelemetryController) only
+            // ever matches Enabled targets, so only enabled targets need a unique logical
+            // identity - a disabled target can coexist with its enabled replacement without
+            // being deleted. SQLite supports a WHERE-filtered unique index natively; the
+            // SQL-Server-flavored EF migration generates the equivalent filtered index for that
+            // provider. See SqliteSchemaMigrator for the hand-written SQLite DDL this maps to.
+            entity.HasIndex(e => new { e.ProjectId, e.Environment, e.Service })
+                  .IsUnique()
+                  .HasFilter("Enabled = 1");
+            // Machine and TelemetryCredentialId are loose Guid references (indexed, not a real
+            // FK) - matching this codebase's dominant convention for cross-entity references
+            // that are validated at the application layer (active/revoked/heartbeat checks)
+            // rather than enforced by referential integrity (Incident.MachineId, Metric.MachineId
+            // follow the same pattern).
+            entity.HasIndex(e => e.MachineId);
+            entity.HasIndex(e => e.TelemetryCredentialId);
+            entity.Property(e => e.Environment).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.Service).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.ExpectedHostName).HasMaxLength(255).IsRequired();
+            entity.Property(e => e.WindowsServiceName).HasMaxLength(256).IsRequired();
+            entity.Property(e => e.AllowedOperationsJson).HasMaxLength(500).IsRequired();
         });
 
         modelBuilder.Entity<SdkPairingSession>(entity =>

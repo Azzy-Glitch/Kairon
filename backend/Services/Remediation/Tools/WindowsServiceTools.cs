@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Kairon.Backend.Configuration;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models.Sre;
+using Kairon.Backend.Services.Remediation;
 using Microsoft.Extensions.Options;
 using Microsoft.EntityFrameworkCore;
 
@@ -86,10 +87,10 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
     // Hash collisions only reduce concurrency; they cannot permit overlapping operations.
     private static readonly SemaphoreSlim[] TargetLocks = Enumerable.Range(0, 64).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
     private readonly AppDbContext _db;
-    private readonly WindowsRemediationOptions _targets;
+    private readonly IRemediationTargetResolver _targets;
     private readonly IWindowsServiceControl _control;
-    protected WindowsServiceTool(AppDbContext db, IOptions<WindowsRemediationOptions> targets, IWindowsServiceControl control)
-        => (_db, _targets, _control) = (db, targets.Value, control);
+    protected WindowsServiceTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control)
+        => (_db, _targets, _control) = (db, targets, control);
     public abstract string Name { get; }
     public virtual string Description => $"{Name} on the incident's explicitly enrolled, allowlisted Windows service target. No arbitrary commands.";
     public virtual RiskLevel RiskLevel => RiskLevel.Medium;
@@ -100,33 +101,23 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
         error = valid ? null : "A server-generated target binding is required; additional parameters are forbidden.";
         return valid;
     }
-    private WindowsServiceTarget? Target(Guid projectId, string environment, string service)
-    {
-        if (!ProductEnvironments.Contains(environment) || !_db.Projects.Any(p => p.Id == projectId && p.IsActive)) return null;
-        var matches = _targets.Targets.Where(t => t.ProjectId == projectId && t.Environment.Equals(environment, StringComparison.OrdinalIgnoreCase) && t.Service == service).ToList();
-        if (matches.Count != 1) return null;
-        var target = matches[0];
-        if (!_db.ProjectApiCredentials.Any(c => c.Id == target.TelemetryCredentialId && c.ProjectId == projectId && c.RevokedAt == null)) return null;
-        if (!target.AllowedOperations.Contains(Name, StringComparer.Ordinal) || target.MachineId == Guid.Empty ||
-            !Regex.IsMatch(target.ExpectedHostName, @"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$") ||
-            !Regex.IsMatch(target.WindowsServiceName, @"^[A-Za-z0-9_.-]{1,256}$")) return null;
-        var machine = _db.Machines.AsNoTracking().SingleOrDefault(m => m.Id == target.MachineId);
-        if (machine is null || string.IsNullOrWhiteSpace(machine.AgentCredentialHash) ||
-            !machine.HostName.Equals(target.ExpectedHostName, StringComparison.OrdinalIgnoreCase) ||
-            !machine.OperatingSystem.Contains("Windows", StringComparison.OrdinalIgnoreCase) ||
-            machine.LastSeenAt > DateTime.UtcNow.AddSeconds(5) ||
-            machine.LastSeenAt < DateTime.UtcNow.AddSeconds(-Math.Clamp(_targets.MachineHeartbeatMaxAgeSeconds, 10, 300))) return null;
-        return target;
-    }
+    // Centralized in RemediationTargetResolver.ResolveExecutionTargetAsync (the former inline body
+    // of this method) - the database-backed replacement for WindowsRemediation:Targets. Kept
+    // synchronous-callable via GetAwaiter().GetResult() in TargetFingerprint only, since that
+    // method is part of IScopedRemediationTool's synchronous contract used throughout
+    // RemediationPolicy/IncidentOrchestrator/VerificationService/EvidenceCollector; the two
+    // already-async callers (IsDesiredStateAsync, ExecuteAsync) await it directly.
+    private Task<WindowsServiceTarget?> Target(Guid projectId, string environment, string service) =>
+        _targets.ResolveExecutionTargetAsync(projectId, environment, service, Name);
     public Guid? TargetMachineId(SreIncident incident) => TargetFingerprint(incident) is null ? null : IncidentMachineScope.GetMachineId(incident);
     public async Task<bool> IsDesiredStateAsync(SreIncident incident, string fingerprint, CancellationToken ct) {
         if (TargetFingerprint(incident) != fingerprint) return false;
-        var target = Target(incident.ProjectId, incident.Environment, incident.Service)!;
+        var target = (await Target(incident.ProjectId, incident.Environment, incident.Service))!;
         return await _control.QueryAsync(target.ExpectedHostName, target.WindowsServiceName, ct) == (Name == ServiceToolNames.StopService ? 1 : 4);
     }
     public string? TargetFingerprint(SreIncident incident)
     {
-        var target = Target(incident.ProjectId, incident.Environment, incident.Service);
+        var target = Target(incident.ProjectId, incident.Environment, incident.Service).GetAwaiter().GetResult();
         if (target is null || IncidentMachineScope.GetMachineId(incident) != target.MachineId) return null;
         var machine = _db.Machines.AsNoTracking().Single(m => m.Id == target.MachineId);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(SreJson.Serialize(new {
@@ -145,7 +136,7 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
         var fingerprint = TargetFingerprint(incident);
         if (!ValidateParameters(context.Parameters, out var error) || fingerprint is null || context.Parameters["targetFingerprint"] != fingerprint)
             return RemediationToolResult.Fail(error ?? "Target changed, offline, unenrolled or not allowlisted; a new approval is required.");
-        var target = Target(context.ProjectId, context.Environment, context.Service)!;
+        var target = (await Target(context.ProjectId, context.Environment, context.Service))!;
         var lockKey = target.ExpectedHostName.ToUpperInvariant() + "\0" + target.WindowsServiceName.ToUpperInvariant();
         var targetLock = TargetLocks[(uint)StringComparer.Ordinal.GetHashCode(lockKey) % (uint)TargetLocks.Length];
         await targetLock.WaitAsync(ct);
@@ -182,7 +173,7 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
     });
 }
 
-public sealed class RestartServiceTool(AppDbContext db, IOptions<WindowsRemediationOptions> options, IWindowsServiceControl control) : WindowsServiceTool(db, options, control) { public override string Name => ServiceToolNames.RestartService; }
-public sealed class StartServiceTool(AppDbContext db, IOptions<WindowsRemediationOptions> options, IWindowsServiceControl control) : WindowsServiceTool(db, options, control) { public override string Name => ServiceToolNames.StartService; }
-public sealed class StopServiceTool(AppDbContext db, IOptions<WindowsRemediationOptions> options, IWindowsServiceControl control) : WindowsServiceTool(db, options, control) { public override string Name => ServiceToolNames.StopService; public override RiskLevel RiskLevel => RiskLevel.High; }
-public sealed class ServiceHealthCheckTool(AppDbContext db, IOptions<WindowsRemediationOptions> options, IWindowsServiceControl control) : WindowsServiceTool(db, options, control) { public override string Name => ServiceToolNames.RunHealthCheck; public override RiskLevel RiskLevel => RiskLevel.Low; }
+public sealed class RestartServiceTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control) : WindowsServiceTool(db, targets, control) { public override string Name => ServiceToolNames.RestartService; }
+public sealed class StartServiceTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control) : WindowsServiceTool(db, targets, control) { public override string Name => ServiceToolNames.StartService; }
+public sealed class StopServiceTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control) : WindowsServiceTool(db, targets, control) { public override string Name => ServiceToolNames.StopService; public override RiskLevel RiskLevel => RiskLevel.High; }
+public sealed class ServiceHealthCheckTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control) : WindowsServiceTool(db, targets, control) { public override string Name => ServiceToolNames.RunHealthCheck; public override RiskLevel RiskLevel => RiskLevel.Low; }

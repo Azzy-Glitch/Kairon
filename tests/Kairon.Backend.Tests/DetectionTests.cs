@@ -429,7 +429,8 @@ public class DetectionTests : IDisposable
             new IDetectionRule[] { new ThrowingRule(), new CpuThresholdRule() },
             new InMemoryDetectionCooldownStore(),
             TestHarness.Opt(_h.Detection),
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<DetectionEngine>.Instance);
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<DetectionEngine>.Instance,
+            _h.Targets);
 
         var metrics = Samples(4, i => Sample(i, cpu: 94));
         var signals = engine.Evaluate(_h.Context(_now, metrics));

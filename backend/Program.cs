@@ -1,6 +1,7 @@
 using Kairon.Backend.Extensions;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Services;
+using Kairon.Backend.Services.Remediation;
 using Kairon.Backend.Configuration;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
@@ -217,6 +218,12 @@ using (var scope = app.Services.CreateScope())
     {
         await dbContext.Database.MigrateAsync();
     }
+
+    // One-time, idempotent import of WindowsRemediation:Targets (appsettings.json) into the
+    // database-backed RemediationTarget table - see RemediationTargetResolver's remarks for the
+    // compatibility strategy. A no-op on every startup after the first successful import, and a
+    // no-op entirely when no legacy targets are configured (true of a fresh install today).
+    await scope.ServiceProvider.GetRequiredService<IRemediationTargetResolver>().ImportLegacyConfigurationAsync();
 }
 
 app.Run();
