@@ -3,7 +3,12 @@ import { sdkApi } from '../../api';
 import { useToast } from '../Toast';
 import Tabs from '../ui/Tabs';
 import SdkGuide from './SdkGuide';
-import { IconLink, IconCopy, IconCheck, IconTrash } from '../Icons';
+import { IconLink, IconCopy, IconCheck, IconTrash, IconRefresh, IconAlertTriangle } from '../Icons';
+
+// Bounded polling for an outstanding pairing/re-pair session: stops on redemption, expiration,
+// cancellation, or unmount - never runs forever. 3s keeps the UI responsive to a fast redemption
+// (a developer running the SDK right after copying the code) without hammering the backend.
+export const REPAIR_POLL_INTERVAL_MS = 3000;
 
 const VIEWS = [
   { id: 'start', label: 'Get Started' },
@@ -79,7 +84,83 @@ function Pairing({ onProjectSelected }) {
   const [sdkType, setSdkType] = useState('dotnet');
   const [pairing, setPairing] = useState(false);
   const [pairingResult, setPairingResult] = useState(null);
+  // A re-pair is just another pairing session, scoped to replacing one specific existing
+  // credential once the fresh code is redeemed - see handleStartRepair/pollRepairStatus below.
+  const [repair, setRepair] = useState(null); // { credentialId, credentialName, pairingId, code, expiresAt, status }
   const { copiedKey, copy } = useCopy();
+
+  const refreshCredentials = () => {
+    if (!selectedId) return;
+    sdkApi.listCredentials(selectedId).then(setCredentials).catch(() => {});
+  };
+
+  useEffect(() => {
+    if (!repair || repair.status !== 'Pending') return undefined;
+    if (Date.now() >= new Date(repair.expiresAt).getTime()) {
+      setRepair((prev) => (prev ? { ...prev, status: 'Expired' } : prev));
+      return undefined;
+    }
+
+    let cancelled = false;
+    const id = setInterval(async () => {
+      try {
+        const status = await sdkApi.getPairingStatus(repair.pairingId);
+        if (cancelled) return;
+        if (status.status === 'Redeemed') {
+          setRepair({ ...repair, status: 'Redeemed' });
+          try {
+            await sdkApi.revokeCredential(selectedId, repair.credentialId);
+          } catch {
+            // Best-effort: the new credential is already issued and working either way; the
+            // operator can still revoke the old one manually from this same table if this fails.
+          }
+          refreshCredentials();
+          toast.addToast(`Re-paired "${repair.credentialName}" - the old credential was revoked.`, 'success');
+        } else if (status.status === 'Expired' || status.status === 'Cancelled') {
+          setRepair({ ...repair, status: status.status });
+        } else if (Date.now() >= new Date(repair.expiresAt).getTime()) {
+          setRepair({ ...repair, status: 'Expired' });
+        }
+      } catch {
+        // A transient poll failure is not a terminal state - keep polling until expiry.
+      }
+    }, REPAIR_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repair?.pairingId, repair?.status]);
+
+  const handleStartRepair = async (credential) => {
+    if (!selectedId) return;
+    try {
+      const created = await sdkApi.createPairing(selectedId, sdkType);
+      setRepair({
+        credentialId: credential.id,
+        credentialName: credential.name,
+        pairingId: created.pairingId,
+        code: created.code,
+        expiresAt: created.expiresAt,
+        status: 'Pending'
+      });
+    } catch (err) {
+      toast.addToast(err?.message || 'Could not start re-pairing', 'error');
+    }
+  };
+
+  const handleCancelRepair = async () => {
+    if (!repair) return;
+    if (repair.status === 'Pending') {
+      try {
+        await sdkApi.revokePairing(repair.pairingId);
+      } catch {
+        // Best-effort: even if this fails, the code still expires in at most 10 minutes on its own.
+      }
+    }
+    setRepair(null);
+  };
 
   const loadProjects = async () => {
     try {
@@ -269,6 +350,15 @@ function Pairing({ onProjectSelected }) {
                     <td>{new Date(c.createdAt).toLocaleString()}</td>
                     <td>{c.revokedAt ? 'Revoked' : 'Active'}</td>
                     <td>
+                      <button
+                        type="button"
+                        className="small-btn"
+                        title="Re-pair (issue a fresh credential and revoke this one)"
+                        disabled={repair && repair.status === 'Pending'}
+                        onClick={() => handleStartRepair(c)}
+                      >
+                        <IconRefresh className="w-3 h-3" /> Re-pair
+                      </button>
                       {!c.revokedAt && (
                         <button type="button" className="small-btn" title="Revoke" onClick={() => handleRevoke(c.id)}>
                           <IconTrash className="w-3 h-3" />
@@ -279,6 +369,57 @@ function Pairing({ onProjectSelected }) {
                 ))}
               </tbody>
             </table>
+          </div>
+        </section>
+      )}
+
+      {repair && (
+        <section className="section-card">
+          <div className="section-header">
+            <div className="section-title-group">
+              <div className="section-icon-badge"><IconRefresh className="w-6 h-6 tone-neutral" /></div>
+              <div>
+                <h3>Re-pairing "{repair.credentialName}"</h3>
+                <p className="section-desc">
+                  {repair.status === 'Pending' && 'Waiting for the application to redeem this code. The old credential is revoked automatically once it does.'}
+                  {repair.status === 'Redeemed' && 'Redeemed - a fresh credential is active and the old one has been revoked.'}
+                  {repair.status === 'Expired' && 'This code expired before it was used. Start again to generate a new one.'}
+                  {repair.status === 'Cancelled' && 'Cancelled. The old credential was left untouched.'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {repair.status === 'Pending' && (
+            <>
+              <p className="sdk-step-label">Pairing code (expires {new Date(repair.expiresAt).toLocaleTimeString()})</p>
+              <div className="sdk-code-block sdk-pairing-code">
+                <button
+                  type="button"
+                  className="small-btn sdk-code-copy"
+                  aria-label="Copy re-pairing code"
+                  onClick={() => copy(repair.code, 'repair-code')}
+                >
+                  {copiedKey === 'repair-code' ? <IconCheck className="w-3 h-3" /> : <IconCopy className="w-3 h-3" />}
+                </button>
+                <pre><code>{repair.code}</code></pre>
+              </div>
+              <p className="sdk-hint">
+                Run the application with this code, e.g. <code>Kairon(pairing_code="{repair.code}")</code> (Python) or{' '}
+                <code>new KaironClient(pairingCode: "{repair.code}")</code> (.NET) - it always takes precedence over any
+                credential the application already has stored.
+              </p>
+            </>
+          )}
+
+          {(repair.status === 'Expired' || repair.status === 'Cancelled') && (
+            <p className="sdk-hint"><IconAlertTriangle className="w-3.5 h-3.5" /> {repair.status === 'Expired' ? 'Expired' : 'Cancelled'} - no credential was changed.</p>
+          )}
+
+          <div className="sdk-pairing-form">
+            <button type="button" className="small-btn" onClick={handleCancelRepair}>
+              {repair.status === 'Pending' ? 'Cancel' : 'Dismiss'}
+            </button>
           </div>
         </section>
       )}

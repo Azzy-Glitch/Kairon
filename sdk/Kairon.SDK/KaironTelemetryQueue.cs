@@ -26,6 +26,13 @@ public interface IKaironTelemetryQueue
     int PendingCount { get; }
     long DeliveredCount { get; }
     long FailedCount { get; }
+
+    /// <summary>The most recent delivery failure's message (e.g. "Kairon server returned 401.
+    /// (project authentication rejected)"), or null once a delivery has since succeeded. Never
+    /// contains the API key or any other secret. Mirrors sdk-python's `last_delivery_error` - a
+    /// safe diagnostic, not an action trigger: nothing reads this to decide whether to re-pair.</summary>
+    string? LastDeliveryError { get; }
+
     /// <summary>Includes queued and in-flight items; false on timeout or any lifetime loss.</summary>
     Task<bool> FlushAsync(CancellationToken cancellationToken = default);
 }
@@ -63,11 +70,13 @@ public class KaironTelemetryQueue : IKaironTelemetryQueue
     public int PendingCount => _channel.Reader.Count;
     public long DeliveredCount => Interlocked.Read(ref _delivered);
     public long FailedCount => Interlocked.Read(ref _failed);
+    public string? LastDeliveryError => Volatile.Read(ref _lastDeliveryError);
+    private string? _lastDeliveryError;
 
     internal void Complete() => _channel.Writer.TryComplete();
-    internal void RecordDelivery(bool delivered) {
-        if (delivered) Interlocked.Increment(ref _delivered);
-        else Interlocked.Increment(ref _failed);
+    internal void RecordDelivery(bool delivered, string? error = null) {
+        if (delivered) { Interlocked.Increment(ref _delivered); Volatile.Write(ref _lastDeliveryError, null); }
+        else { Interlocked.Increment(ref _failed); Volatile.Write(ref _lastDeliveryError, error); }
         Finish();
     }
     private void Finish() {
@@ -138,13 +147,15 @@ public class KaironTelemetrySender : BackgroundService
             await foreach (var item in _queue.ReadAllAsync(stoppingToken))
             {
                 var delivered = false;
+                string? error = null;
                 try {
                     var result = item.Telemetry is not null
                         ? await _client.SendAsync(item.Telemetry, stoppingToken)
                         : await _client.SendMetricAsync(item.Metric!, stoppingToken);
                     delivered = result?.Success == true;
-                } catch { /* Fail open; loss remains visible in FailedCount. */ }
-                finally { _queue.RecordDelivery(delivered); }
+                    if (!delivered) error = result?.Message;
+                } catch { error = "Transport or serialization failure"; /* Fail open; loss remains visible in FailedCount. */ }
+                finally { _queue.RecordDelivery(delivered, error); }
             }
         }
         catch (OperationCanceledException)

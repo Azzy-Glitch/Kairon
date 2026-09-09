@@ -14,7 +14,7 @@ const formatMemory = (bytes = 0) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
  * lives on the SDK page, not here; this page only answers "what machines and processes has the
  * Agent found".
  */
-export default function MachinesPage() {
+export default function MachinesPage({ onConfigureRemediation }) {
   const [state, setState] = useState({ loading: true, error: null, machines: [], applications: [] });
   const [search, setSearch] = useState('');
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -116,6 +116,7 @@ export default function MachinesPage() {
                   <th>User Session</th>
                   <th>Running Apps</th>
                   <th>Last Seen</th>
+                  {onConfigureRemediation && <th></th>}
                 </tr>
               </thead>
               <tbody>
@@ -129,6 +130,18 @@ export default function MachinesPage() {
                     <td><UserSessionBadge status={m.userSessionStatus} /></td>
                     <td>{m.runningApplications}</td>
                     <td>{new Date(m.lastSeenAt).toLocaleString()}</td>
+                    {onConfigureRemediation && (
+                      <td>
+                        <button
+                          type="button"
+                          className="small-btn"
+                          title="Configure remediation target"
+                          onClick={() => onConfigureRemediation(m.id)}
+                        >
+                          Configure Remediation Target
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

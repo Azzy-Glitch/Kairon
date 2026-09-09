@@ -15,18 +15,26 @@ namespace Kairon.SDK;
 /// KaironTelemetryClient, KaironTelemetrySender, KaironMetricsCollector - instead of duplicating
 /// them, just wires them up imperatively instead of through the DI container.
 ///
-/// Configuration precedence, matching the documented SDK behavior: explicit constructor
-/// arguments, then KAIRON_ENDPOINT/KAIRON_PROJECT_ID/KAIRON_API_KEY environment variables, then a
-/// previously stored paired credential (KaironCredentialStore), then - only if none of those
-/// resolved a project and API key - redeeming the supplied pairingCode through the existing
-/// KaironPairingClient.PairAsync, whose result is persisted for future runs. A pairing code is
-/// therefore an initial-onboarding bootstrap, not something a later run needs again once a
-/// credential is stored.
+/// Configuration precedence, matching the documented SDK behavior: an explicit pairingCode always
+/// wins - it (re)pairs immediately, before anything else is even consulted, so it can force a
+/// re-pair over an existing stored credential (e.g. after that credential was revoked from the
+/// KAIRON UI). Only when no pairingCode is given does resolution fall through to explicit
+/// constructor arguments, then KAIRON_ENDPOINT/KAIRON_PROJECT_ID/KAIRON_API_KEY environment
+/// variables, then a previously stored paired credential (KaironCredentialStore). Pairing is
+/// always explicit, never automatic: nothing in this SDK ever supplies pairingCode on the
+/// caller's behalf (not on HTTP 401, not on startup with a still-valid credential) - it is
+/// consulted here only because the caller passed it in this exact call.
 /// </summary>
 public sealed class KaironClient : IDisposable, IAsyncDisposable
 {
     public string Endpoint { get; }
     public Guid ProjectId { get; }
+
+    /// <summary>The most recent delivery failure's safe diagnostic message (e.g. "Kairon server
+    /// returned 401. (project authentication rejected)"), or null once delivery has since
+    /// succeeded. Never contains the API key. This is a diagnostic only - nothing reads it to
+    /// decide whether to re-pair; pairing is always explicit (see the KaironClient class remarks).</summary>
+    public string? LastDeliveryError => _queue.LastDeliveryError;
 
     private readonly KaironTelemetryQueue _queue;
     private readonly HttpClient _http;
@@ -113,18 +121,7 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
 
         var path = configPath ?? KaironCredentialStore.DefaultPath();
 
-        if (resolvedProjectId is null || string.IsNullOrWhiteSpace(apiKey))
-        {
-            var stored = KaironCredentialStore.Load(path);
-            if (stored is { } credential)
-            {
-                endpoint ??= credential.Endpoint;
-                resolvedProjectId ??= credential.ProjectId;
-                apiKey ??= credential.ApiKey;
-            }
-        }
-
-        if ((resolvedProjectId is null || string.IsNullOrWhiteSpace(apiKey)) && !string.IsNullOrWhiteSpace(pairingCode))
+        if (!string.IsNullOrWhiteSpace(pairingCode))
         {
             var paired = KaironPairingClient.PairAsync(endpoint ?? "http://localhost:8000", pairingCode)
                 .GetAwaiter().GetResult();
@@ -135,11 +132,23 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
 
             // Persisted before being used - a failure here throws and the constructor never
             // completes, so pairing is never reported as successful without a durable credential.
+            // The freshly redeemed values win outright, replacing whatever explicit args/env vars
+            // resolved above - an explicit pairingCode is a direct instruction to (re)pair now, not
+            // a fallback consulted only when everything else came up empty.
             KaironCredentialStore.Save(path, paired.Endpoint!, paired.ProjectId, paired.ApiKey!);
 
-            endpoint = paired.Endpoint;
-            resolvedProjectId = paired.ProjectId;
-            apiKey = paired.ApiKey;
+            return new KaironOptions { Endpoint = paired.Endpoint!, ProjectId = paired.ProjectId, ApiKey = paired.ApiKey! };
+        }
+
+        if (resolvedProjectId is null || string.IsNullOrWhiteSpace(apiKey))
+        {
+            var stored = KaironCredentialStore.Load(path);
+            if (stored is { } credential)
+            {
+                endpoint ??= credential.Endpoint;
+                resolvedProjectId ??= credential.ProjectId;
+                apiKey ??= credential.ApiKey;
+            }
         }
 
         if (resolvedProjectId is null || string.IsNullOrWhiteSpace(apiKey))

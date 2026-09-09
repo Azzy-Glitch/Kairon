@@ -1,0 +1,251 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
+using Kairon.SDK;
+using Kairon.SDK.Models;
+using Microsoft.Extensions.Options;
+using Xunit;
+
+namespace Kairon.SDK.Tests;
+
+/// <summary>
+/// Explicit SDK re-pairing: `new KaironClient(pairingCode: "...")` must always (re)pair
+/// immediately, even when a stored (or explicit) credential already resolves a project -
+/// overriding it with the freshly redeemed credential - while an HTTP 401 from telemetry must
+/// never trigger pairing on its own and must never delete/modify the stored credential file.
+/// Mirrors sdk-python/tests/test_repairing.py's required-semantics acceptance scenario: an
+/// existing app's credential is revoked, telemetry starts failing with 401, and only an explicit
+/// pairingCode (never automatic behavior) recovers it.
+///
+/// KaironCredentialStore is internal, so - unlike the Python SDK's test suite, which can reach
+/// its equivalent module directly - a "pre-existing stored credential" is always bootstrapped here
+/// via one real pairing redemption against the fake server, exactly like
+/// KaironTests.SecondRunReusesTheStoredCredentialWithoutRedeemingAgain already does.
+/// </summary>
+public sealed class RePairingTests : IDisposable
+{
+    private readonly string _tempDir = Path.Combine(Path.GetTempPath(), "kairon-sdk-repair-tests-" + Guid.NewGuid());
+    private string ConfigPath => Path.Combine(_tempDir, "credential.json");
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_tempDir)) Directory.Delete(_tempDir, recursive: true);
+    }
+
+    private void SeedStoredCredential(FakeRepairServer server, string projectId, string apiKey)
+    {
+        server.NextPairingBody = JsonSerializer.Serialize(new { apiKey, projectId, endpoint = server.Url });
+        using (new KaironClient(pairingCode: "pair_seed", endpoint: server.Url, configPath: ConfigPath)) { }
+    }
+
+    private static async Task<TelemetryResponse> SendWithKeyAsync(FakeRepairServer server, string apiKey)
+    {
+        var options = Options.Create(new KaironOptions { Endpoint = server.Url, ProjectId = Guid.NewGuid(), ApiKey = apiKey });
+        using var http = new HttpClient { BaseAddress = new Uri(server.Url.TrimEnd('/') + "/") };
+        return (await new KaironTelemetryClient(http, options)
+            .SendAsync(new TelemetryPayload { Endpoint = "/x", Method = "GET", StatusCode = 200 }))!;
+    }
+
+    [Fact]
+    public async Task ExplicitPairingCodeOverridesAnExistingStoredCredential()
+    {
+        using var server = new FakeRepairServer();
+        SeedStoredCredential(server, "11111111-1111-1111-1111-111111111111", "krn_old_key");
+        server.PairingCalls = 0; // only count what this test itself triggers
+
+        server.NextPairingBody = JsonSerializer.Serialize(new
+        {
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", endpoint = server.Url
+        });
+        await using var repaired = new KaironClient(pairingCode: "pair_repair", endpoint: server.Url, configPath: ConfigPath);
+
+        Assert.Equal(Guid.Parse("77777777-7777-7777-7777-777777777777"), repaired.ProjectId);
+        Assert.Equal(1, server.PairingCalls);
+
+        // A second construction with no pairingCode must now reuse the FRESH credential, not the
+        // stale one it replaced - proving the stored file was actually overwritten.
+        await using var again = new KaironClient(endpoint: "http://127.0.0.1:1", configPath: ConfigPath);
+        Assert.Equal(Guid.Parse("77777777-7777-7777-7777-777777777777"), again.ProjectId);
+    }
+
+    [Fact]
+    public async Task ExplicitPairingCodeOverridesExplicitProjectIdAndApiKeyArgumentsToo()
+    {
+        using var server = new FakeRepairServer();
+        server.NextPairingBody = JsonSerializer.Serialize(new
+        {
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", endpoint = server.Url
+        });
+
+        await using var repaired = new KaironClient(
+            pairingCode: "pair_repair", endpoint: server.Url,
+            projectId: Guid.Parse("11111111-1111-1111-1111-111111111111"), apiKey: "krn_explicit_ignored",
+            configPath: ConfigPath);
+
+        Assert.Equal(Guid.Parse("77777777-7777-7777-7777-777777777777"), repaired.ProjectId);
+    }
+
+    [Fact]
+    public async Task A401DoesNotDeleteOrModifyTheStoredCredentialFile()
+    {
+        using var server = new FakeRepairServer();
+        SeedStoredCredential(server, "11111111-1111-1111-1111-111111111111", "krn_stale_key");
+        server.PairingCalls = 0;
+        server.AcceptedApiKey = "krn_current_key"; // the stored key no longer matches what the backend accepts
+        var before = File.ReadAllBytes(ConfigPath);
+
+        var result = await SendWithKeyAsync(server, "krn_stale_key");
+
+        Assert.False(result.Success);
+        Assert.Contains("401", result.Message);
+        Assert.Contains("project authentication rejected", result.Message);
+        Assert.Equal(before, File.ReadAllBytes(ConfigPath));
+        Assert.Equal(0, server.PairingCalls);
+    }
+
+    [Fact]
+    public async Task RevokedCredentialThenExplicitPairingRecoversTelemetry()
+    {
+        using var server = new FakeRepairServer();
+        SeedStoredCredential(server, "11111111-1111-1111-1111-111111111111", "krn_old_key");
+        server.PairingCalls = 0;
+        server.AcceptedApiKey = "krn_new_key"; // simulate: backend already revoked the old credential
+
+        var staleResult = await SendWithKeyAsync(server, "krn_old_key");
+        Assert.False(staleResult.Success);
+        Assert.Contains("401", staleResult.Message);
+        Assert.Equal(0, server.PairingCalls); // no automatic re-pair happened
+
+        server.NextPairingBody = JsonSerializer.Serialize(new
+        {
+            apiKey = "krn_new_key", projectId = "11111111-1111-1111-1111-111111111111", endpoint = server.Url
+        });
+        await using var repaired = new KaironClient(pairingCode: "pair_recover", endpoint: server.Url, configPath: ConfigPath);
+
+        var freshResult = await SendWithKeyAsync(server, "krn_new_key");
+        Assert.True(freshResult.Success);
+    }
+
+    [Fact]
+    public void APairingCodeCannotBeRedeemedTwice()
+    {
+        using var server = new FakeRepairServer();
+        server.NextPairingBody = JsonSerializer.Serialize(new
+        {
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", endpoint = server.Url
+        });
+
+        using (new KaironClient(pairingCode: "pair_onceonly", endpoint: server.Url, configPath: ConfigPath)) { }
+        Assert.Equal(1, server.PairingCalls);
+
+        server.NextPairingStatus = HttpStatusCode.BadRequest;
+        server.NextPairingBody = """{"error":"Pairing code is invalid, expired, revoked, or already used."}""";
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => new KaironClient(pairingCode: "pair_onceonly", endpoint: server.Url, configPath: ConfigPath));
+
+        Assert.Contains("pairing failed", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, server.PairingCalls); // attempted once more, not retried in a loop
+    }
+
+    [Fact]
+    public void AnExpiredOrCancelledPairingCodeFailsCleanlyWithoutPersistingAnything()
+    {
+        using var server = new FakeRepairServer();
+        server.NextPairingStatus = HttpStatusCode.BadRequest;
+        server.NextPairingBody = """{"error":"Pairing code is invalid, expired, revoked, or already used."}""";
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => new KaironClient(pairingCode: "pair_expired", endpoint: server.Url, configPath: ConfigPath));
+
+        Assert.Contains("pairing failed", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(ConfigPath));
+    }
+
+    private sealed class FakeRepairServer : IDisposable
+    {
+        private readonly HttpListener _listener = new();
+        private readonly CancellationTokenSource _cts = new();
+        public string Url { get; }
+        public string AcceptedApiKey = "krn_old_key";
+        public int PairingCalls;
+        public HttpStatusCode NextPairingStatus = HttpStatusCode.OK;
+        public string NextPairingBody = """{"apiKey":"krn_old_key","projectId":"11111111-1111-1111-1111-111111111111","endpoint":"http://127.0.0.1:8000"}""";
+
+        public FakeRepairServer()
+        {
+            var port = GetFreePort();
+            Url = $"http://127.0.0.1:{port}";
+            _listener.Prefixes.Add(Url + "/");
+            _listener.Start();
+            _ = AcceptLoop(_cts.Token);
+        }
+
+        private async Task AcceptLoop(CancellationToken token)
+        {
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    var context = await _listener.GetContextAsync().WaitAsync(token);
+                    await HandleAsync(context, token);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) { }
+            catch (HttpListenerException) { }
+        }
+
+        private async Task HandleAsync(HttpListenerContext context, CancellationToken token)
+        {
+            using var reader = new StreamReader(context.Request.InputStream);
+            _ = await reader.ReadToEndAsync(token);
+
+            if (context.Request.Url!.AbsolutePath == "/api/v1/sdk/pair")
+            {
+                Interlocked.Increment(ref PairingCalls);
+                if (NextPairingStatus == HttpStatusCode.OK)
+                {
+                    using var doc = JsonDocument.Parse(NextPairingBody);
+                    AcceptedApiKey = doc.RootElement.GetProperty("apiKey").GetString()!;
+                }
+                await RespondAsync(context, NextPairingStatus, NextPairingBody, token);
+                return;
+            }
+
+            var supplied = context.Request.Headers["X-Kairon-API-Key"];
+            if (supplied != AcceptedApiKey)
+            {
+                await RespondAsync(context, HttpStatusCode.Unauthorized, "", token);
+                return;
+            }
+            await RespondAsync(context, HttpStatusCode.OK, """{"success":true,"message":"ok","telemetryId":"abc"}""", token);
+        }
+
+        private static async Task RespondAsync(HttpListenerContext context, HttpStatusCode status, string body, CancellationToken token)
+        {
+            var bytes = Encoding.UTF8.GetBytes(body);
+            context.Response.StatusCode = (int)status;
+            context.Response.ContentType = "application/json";
+            context.Response.ContentLength64 = bytes.Length;
+            if (bytes.Length > 0) await context.Response.OutputStream.WriteAsync(bytes, token);
+            context.Response.Close();
+        }
+
+        private static int GetFreePort()
+        {
+            var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+            return port;
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            _listener.Stop();
+            _listener.Close();
+        }
+    }
+}

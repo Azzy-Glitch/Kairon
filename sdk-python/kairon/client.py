@@ -109,31 +109,25 @@ def _resolve_configuration(
     pairing_code: Optional[str],
     config_path: Optional[str],
 ) -> tuple:
-    """Implements the documented configuration precedence: explicit arguments, then
-    KAIRON_ENDPOINT/KAIRON_PROJECT_ID/KAIRON_API_KEY environment variables, then a previously
-    stored paired credential, then - only if a project and API key are still missing - redeeming
-    pairing_code through the existing pair() and persisting the result so later runs do not need
-    the code again. Raises ValueError/RuntimeError (no new exception hierarchy) rather than ever
-    continuing with an incomplete credential.
+    """Implements the documented configuration precedence: an explicit pairing_code always wins -
+    it (re)pairs immediately, before anything else is even consulted, so it can force a re-pair
+    over an existing stored credential (e.g. after that credential was revoked from the KAIRON
+    UI). Only when no pairing_code is given does resolution fall through to explicit arguments,
+    then KAIRON_ENDPOINT/KAIRON_PROJECT_ID/KAIRON_API_KEY environment variables, then a previously
+    stored paired credential. Raises ValueError/RuntimeError (no new exception hierarchy) rather
+    than ever continuing with an incomplete credential.
+
+    Pairing is always explicit, never automatic: nothing in this SDK ever supplies pairing_code
+    on the caller's behalf (not on HTTP 401, not on startup with a still-valid credential) - it is
+    consulted here only because the caller passed it in this exact call.
     """
-    # project_id has always been required; api_key has always been optional (some deployments
-    # run with no authentication at all) - so only project_id being absent triggers the new
-    # stored-config/pairing fallback chain. An explicit project_id with no api_key is the
-    # existing, still-supported "unauthenticated" configuration, unrelated to pairing.
     endpoint = endpoint or os.environ.get("KAIRON_ENDPOINT")
     project_id = project_id or os.environ.get("KAIRON_PROJECT_ID")
     api_key = api_key or os.environ.get("KAIRON_API_KEY")
 
     path = Path(config_path) if config_path else None
 
-    if not project_id:
-        stored = _credential_store.load_stored_config(path)
-        if stored:
-            endpoint = endpoint or stored.get("endpoint")
-            project_id = project_id or stored.get("projectId")
-            api_key = api_key or stored.get("apiKey")
-
-    if not project_id and pairing_code:
+    if pairing_code:
         paired = pair(endpoint or DEFAULT_ENDPOINT, pairing_code)
         if paired is None:
             raise RuntimeError(
@@ -141,11 +135,22 @@ def _resolve_configuration(
                 "Kairon is unavailable. Generate a new pairing code from Kairon and try again."
             )
         # Persisted before being used - if this raises, __init__ never completes, so pairing is
-        # never reported as successful without a durable credential.
+        # never reported as successful without a durable credential. The freshly redeemed values
+        # win outright, replacing whatever explicit args/env vars/stored file resolved above -
+        # an explicit pairing_code is a direct instruction to (re)pair now, not a fallback.
         _credential_store.save_stored_config(paired["endpoint"], paired["projectId"], paired["apiKey"], path)
-        endpoint = paired["endpoint"]
-        project_id = paired["projectId"]
-        api_key = paired["apiKey"]
+        return paired["endpoint"], paired["projectId"], paired["apiKey"]
+
+    # project_id has always been required; api_key has always been optional (some deployments
+    # run with no authentication at all) - so only project_id being absent triggers the
+    # stored-config fallback. An explicit project_id with no api_key is the existing,
+    # still-supported "unauthenticated" configuration, unrelated to pairing.
+    if not project_id:
+        stored = _credential_store.load_stored_config(path)
+        if stored:
+            endpoint = endpoint or stored.get("endpoint")
+            project_id = project_id or stored.get("projectId")
+            api_key = api_key or stored.get("apiKey")
 
     if not project_id:
         raise ValueError(

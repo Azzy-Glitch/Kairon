@@ -10,6 +10,7 @@ import AnalyticsPage from './components/sre/AnalyticsPage';
 import AuditHistory from './components/AuditHistory';
 import DeveloperTools from './components/sre/DeveloperTools';
 import MachinesPage from './components/sre/MachinesPage';
+import RemediationTargetsPage from './components/sre/RemediationTargetsPage';
 import SdkPage from './components/sre/SdkPage';
 import SettingsPage from './components/sre/SettingsPage';
 import { ToastProvider } from './components/Toast';
@@ -81,6 +82,7 @@ const NAV_GROUPS = [
     label: 'Build',
     items: [
       { id: 'sdk', label: 'Connect an app', subtitle: 'Install, configure and pair a .NET or Python app', icon: <IconLink className="w-4 h-4" /> },
+      { id: 'remediation-targets', label: 'Remediation Targets', subtitle: 'Machines and Windows services KAIRON is authorized to remediate', icon: <IconZap className="w-4 h-4" /> },
       { id: 'devtools', label: 'Diagnostics', subtitle: 'API validation, error analysis and prediction utilities', icon: <IconTerminal className="w-4 h-4" /> },
       { id: 'settings', label: 'Settings', subtitle: 'Provider, policy and environment configuration', icon: <IconSettings className="w-4 h-4" /> }
     ]
@@ -101,6 +103,14 @@ function deriveHealthState(severityDistribution) {
 function AppShell() {
   const [tab, setTab] = React.useState('overview');
   const [collapsed, setCollapsed] = React.useState(false);
+  // Set by MachinesPage's "Configure remediation target" shortcut - a UX convenience only, so
+  // Remediation Targets can open its create form with that machine already selected rather than
+  // making the operator look its hostname up again.
+  const [remediationPreselectMachineId, setRemediationPreselectMachineId] = React.useState(null);
+  const goToRemediationTargets = (machineId) => {
+    setRemediationPreselectMachineId(machineId);
+    setTab('remediation-targets');
+  };
 
   // Component-level health, so the sidebar status block can say *which* subsystem is down.
   const { health } = useHealth();
@@ -240,8 +250,9 @@ function AppShell() {
           {tab === 'incidents' && <IncidentsPage />}
           {tab === 'services' && <ServicesPage />}
           {tab === 'telemetry' && <TelemetryMonitor />}
-          {tab === 'machines' && <MachinesPage />}
+          {tab === 'machines' && <MachinesPage onConfigureRemediation={goToRemediationTargets} />}
           {tab === 'actions' && <RemediationCenterPage />}
+          {tab === 'remediation-targets' && <RemediationTargetsPage preselectMachineId={remediationPreselectMachineId} />}
           {tab === 'audit' && <AuditHistory onOpenDiagnostics={() => setTab('devtools')} />}
           {tab === 'insights' && <AiInsightsPage />}
           {tab === 'analytics' && <AnalyticsPage />}

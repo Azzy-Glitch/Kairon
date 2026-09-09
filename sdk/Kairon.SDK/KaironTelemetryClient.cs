@@ -73,10 +73,16 @@ public class KaironTelemetryClient
 
             if (!response.IsSuccessStatusCode)
             {
+                var status = (int)response.StatusCode;
+                // 401/403 is never treated as "delete the stored credential and re-pair" - it is
+                // only ever reported, exactly like every other delivery failure. The clarifying
+                // suffix mirrors the Python SDK's diagnostic wording (last_delivery_error) so an
+                // operator sees the same message regardless of which SDK reported it.
+                var suffix = status is 401 or 403 ? " (project authentication rejected)" : "";
                 return new TelemetryResponse
                 {
                     Success = false,
-                    Message = $"Kairon server returned {(int)response.StatusCode}."
+                    Message = $"Kairon server returned {status}.{suffix}"
                 };
             }
 

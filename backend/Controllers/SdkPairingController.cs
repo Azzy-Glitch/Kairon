@@ -70,6 +70,17 @@ public sealed class SdkPairingController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>Lets the operator UI poll a pairing session (including a re-pair session, which is
+    /// just another pairing session for an already-connected project) until it is Redeemed, Expired
+    /// or Cancelled - never returns the code, its hash, or any issued credential secret.</summary>
+    [HttpGet("api/v1/platform/pairing/{pairingId:guid}")]
+    [RequiresOperator]
+    public async Task<IActionResult> GetStatus(Guid pairingId, CancellationToken cancellationToken)
+    {
+        var status = await _pairing.GetStatusAsync(pairingId, cancellationToken);
+        return status is null ? NotFound() : Ok(status);
+    }
+
     private string Actor() => Request.Headers["X-Kairon-Operator"].ToString() is { Length: > 0 } value
         ? value
         : "local-operator";

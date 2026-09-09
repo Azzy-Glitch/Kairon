@@ -98,6 +98,10 @@ public static class ServiceExtensions
         // directly, matching this codebase's convention for anything DB-backed.
         services.AddScoped<IRemediationTargetResolver, RemediationTargetResolver>();
 
+        // Phase 2: the operator-authorized management API's CRUD/validation layer -
+        // RemediationTargetsController. Separate from the resolver above, which only ever reads.
+        services.AddScoped<IRemediationTargetManagementService, RemediationTargetManagementService>();
+
         // --- Detection. Every rule is registered explicitly; adding a rule is one line here and
         // one class, and nothing else in the pipeline changes.
         services.AddSingleton<IDetectionCooldownStore, InMemoryDetectionCooldownStore>();

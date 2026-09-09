@@ -62,4 +62,27 @@ public class DeliveryTests
         Assert.False(await queue.FlushAsync());
         sender.Dispose();
     }
+
+    [Fact]
+    public async Task LastDeliveryErrorCapturesA401AndClearsOnTheNextSuccess() {
+        var responses = new Queue<HttpResponseMessage>(new[] {
+            new HttpResponseMessage(HttpStatusCode.Unauthorized), Ok()
+        });
+        var (queue, sender) = Create(new Handler(_ => Task.FromResult(responses.Dequeue())));
+
+        Assert.Null(queue.LastDeliveryError);
+        queue.TryEnqueue(new TelemetryPayload());
+        await sender.StartAsync(default);
+        await queue.FlushAsync();
+        Assert.NotNull(queue.LastDeliveryError);
+        Assert.Contains("401", queue.LastDeliveryError);
+        Assert.Contains("project authentication rejected", queue.LastDeliveryError);
+
+        queue.TryEnqueue(new TelemetryPayload());
+        await queue.FlushAsync();
+        Assert.Null(queue.LastDeliveryError); // a later success clears the diagnostic
+
+        await sender.StopAsync(default);
+        sender.Dispose();
+    }
 }

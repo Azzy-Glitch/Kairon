@@ -11,6 +11,13 @@ public sealed record CreatedPairing(Guid PairingId, string Code, DateTime Expire
 
 public sealed record PairedSdk(string ApiKey, Guid ProjectId, string Endpoint);
 
+/// <summary>Safe, secret-free status projection of an SdkPairingSession - never includes the
+/// pairing code or its hash. Status is computed, not stored, matching the entity's own
+/// three-nullable-datetime convention (no persisted state enum).</summary>
+public sealed record PairingStatus(
+    Guid PairingId, Guid ProjectId, string SdkType, DateTime CreatedAt, DateTime ExpiresAt,
+    DateTime? RedeemedAt, DateTime? RevokedAt, string Status);
+
 /// <summary>
 /// Adapted from Azzy's productization branch: a temporary, hashed pairing code (10-minute expiry)
 /// redeemed exactly once for a real ProjectApiCredential (minted via IProjectCredentialService,
@@ -24,6 +31,11 @@ public interface ISdkPairingService
     Task<CreatedPairing?> CreateAsync(Guid projectId, string sdkType, CancellationToken cancellationToken);
     Task<PairedSdk?> RedeemAsync(string code, string sdkType, string version, CancellationToken cancellationToken);
     Task<bool> RevokePairingAsync(Guid pairingId, CancellationToken cancellationToken);
+
+    /// <summary>Lets an operator UI poll whether a pairing session (re-pairing included - a
+    /// re-pair is just another pairing session for the same, already-connected, project) has been
+    /// redeemed yet, without ever exposing the code/hash. Returns null if the session doesn't exist.</summary>
+    Task<PairingStatus?> GetStatusAsync(Guid pairingId, CancellationToken cancellationToken);
 }
 
 public sealed class SdkPairingService : ISdkPairingService
@@ -100,6 +112,22 @@ public sealed class SdkPairingService : ISdkPairingService
         session.RevokedAt = _time.GetUtcNow().UtcDateTime;
         await _db.SaveChangesAsync(cancellationToken);
         return true;
+    }
+
+    public async Task<PairingStatus?> GetStatusAsync(Guid pairingId, CancellationToken cancellationToken)
+    {
+        var session = await _db.SdkPairingSessions.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == pairingId, cancellationToken);
+        if (session is null) return null;
+
+        var now = _time.GetUtcNow().UtcDateTime;
+        var status = session.RedeemedAt is not null ? "Redeemed"
+            : session.RevokedAt is not null ? "Cancelled"
+            : session.ExpiresAt <= now ? "Expired"
+            : "Pending";
+
+        return new PairingStatus(session.Id, session.ProjectId, session.SdkType, session.CreatedAt,
+            session.ExpiresAt, session.RedeemedAt, session.RevokedAt, status);
     }
 
     private static string? NormalizeSdk(string value) => value.Trim().ToLowerInvariant() switch

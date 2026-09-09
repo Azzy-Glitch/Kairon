@@ -32,3 +32,10 @@ export function createPairing(projectId, sdkType) {
 export function revokePairing(pairingId) {
   return request(client.delete(`/v1/platform/pairing/${pairingId}`));
 }
+
+/** Polled while a pairing code (including a re-pair code) is outstanding. Returns
+ * { pairingId, projectId, sdkType, createdAt, expiresAt, redeemedAt, revokedAt, status } where
+ * status is 'Pending' | 'Redeemed' | 'Expired' | 'Cancelled'. Never includes the code or a secret. */
+export function getPairingStatus(pairingId) {
+  return request(client.get(`/v1/platform/pairing/${pairingId}`));
+}
