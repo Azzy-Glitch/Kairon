@@ -117,12 +117,20 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
     }
     public string? TargetFingerprint(SreIncident incident)
     {
+        // The one unavoidable sync-over-async bridge: IScopedRemediationTool.TargetFingerprint is
+        // a synchronous contract shared by RemediationPolicy/IncidentOrchestrator/
+        // VerificationService/EvidenceCollector (all four already call it synchronously
+        // throughout the codebase), so making just this one method async would require converting
+        // that whole call chain - out of scope for a fingerprint-correctness fix. What IS fixed
+        // here: this used to be two blocking-adjacent reads (this resolve, then a second
+        // unguarded _db.Machines.Single(...) below) where the second could throw on a genuine
+        // deletion race; ResolveExecutionTargetAsync now returns AgentCredentialHash directly, so
+        // there is exactly one blocking call and no second query that can fail out-of-band.
         var target = Target(incident.ProjectId, incident.Environment, incident.Service).GetAwaiter().GetResult();
         if (target is null || IncidentMachineScope.GetMachineId(incident) != target.MachineId) return null;
-        var machine = _db.Machines.AsNoTracking().Single(m => m.Id == target.MachineId);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(SreJson.Serialize(new {
             target.ProjectId, target.Environment, target.Service, target.MachineId, target.TelemetryCredentialId,
-            target.ExpectedHostName, target.WindowsServiceName, Operation = Name, machine.AgentCredentialHash
+            target.ExpectedHostName, target.WindowsServiceName, Operation = Name, target.AgentCredentialHash
         }))));
     }
     public async Task<RemediationToolResult> ExecuteAsync(RemediationToolContext context, CancellationToken cancellationToken = default)

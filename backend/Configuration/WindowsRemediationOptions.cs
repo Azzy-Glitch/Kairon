@@ -25,4 +25,11 @@ public sealed class WindowsServiceTarget
     public string ExpectedHostName { get; set; } = "";
     public string WindowsServiceName { get; set; } = "";
     public List<string> AllowedOperations { get; set; } = [];
+
+    /// <summary>Populated only by RemediationTargetResolver.ResolveExecutionTargetAsync, from the
+    /// Machine row it already fetched to validate the target - never set for a legacy
+    /// appsettings.json-sourced target (WindowsRemediationOptions.Targets), which has no live
+    /// Machine to read this from. Lets WindowsServiceTool.TargetFingerprint use the value this
+    /// resolve call already read instead of re-querying the same Machine a second time.</summary>
+    public string AgentCredentialHash { get; set; } = "";
 }

@@ -692,6 +692,104 @@ public sealed class RemediationTargetManagementTests : IDisposable
         Assert.Empty(_h.Db.RemediationTargets); // still never persisted
     }
 
+    // --- Phase 8: genuine, database-enforced optimistic concurrency (not just an in-memory check) ---
+
+    [Fact]
+    public async Task TwoGenuinelyConcurrentUpdatesResolveToExactlyOneWinnerAndOneCleanConflict()
+    {
+        var machine = _h.SeedMachine();
+        var credential = _h.SeedCredential(_h.ProjectId);
+        var target = _h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName);
+
+        using var dbA = _h.CreateAdditionalDbContext();
+        using var dbB = _h.CreateAdditionalDbContext();
+        // Force both contexts to load and track the SAME row - with the SAME original UpdatedAt -
+        // before either write commits. This reproduces "two requests both read before either
+        // commits" (the actual race), not merely two updates run one after the other: EF's
+        // identity-map behavior means UpdateAsync's own internal fetch below reuses this already-
+        // tracked instance rather than resetting its recorded original value.
+        await dbA.RemediationTargets.SingleAsync(t => t.Id == target.Id);
+        await dbB.RemediationTargets.SingleAsync(t => t.Id == target.Id);
+
+        var serviceA = new RemediationTargetManagementService(dbA,
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+        var serviceB = new RemediationTargetManagementService(dbB,
+            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+
+        UpdateRemediationTargetRequest Request(string windowsServiceName) => new()
+        {
+            ProjectId = target.ProjectId, Environment = target.Environment, Service = target.Service,
+            MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = machine.HostName,
+            WindowsServiceName = windowsServiceName, AllowedOperations = [ServiceToolNames.RestartService], Enabled = true
+            // Deliberately no ExpectedUpdatedAt - proving the database-level concurrency token
+            // protects even when the caller didn't supply the optimistic-concurrency guard itself.
+        };
+
+        var resultA = await serviceA.UpdateAsync(target.Id, Request("FromA"), "operator-a", default);
+        var resultB = await serviceB.UpdateAsync(target.Id, Request("FromB"), "operator-b", default);
+
+        Assert.Equal(RemediationTargetOperationOutcome.Success, resultA.Outcome);
+        Assert.Equal(RemediationTargetOperationOutcome.Conflict, resultB.Outcome);
+        Assert.Equal("stale-update", resultB.ErrorCode);
+        Assert.Equal("FromA", _h.Db.RemediationTargets.AsNoTracking().Single(t => t.Id == target.Id).WindowsServiceName);
+    }
+
+    [Fact]
+    public async Task TwoConcurrentEnableDisableCallsOnTheSameTargetNeverLoseAnUpdate()
+    {
+        var machine = _h.SeedMachine();
+        var credential = _h.SeedCredential(_h.ProjectId);
+        var target = _h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName);
+
+        using var dbA = _h.CreateAdditionalDbContext();
+        using var dbB = _h.CreateAdditionalDbContext();
+        await dbA.RemediationTargets.SingleAsync(t => t.Id == target.Id);
+        await dbB.RemediationTargets.SingleAsync(t => t.Id == target.Id);
+
+        var serviceA = new RemediationTargetManagementService(dbA,
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+        var serviceB = new RemediationTargetManagementService(dbB,
+            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+
+        var resultA = await serviceA.SetEnabledAsync(target.Id, false, "operator-a", default);
+        var resultB = await serviceB.SetEnabledAsync(target.Id, false, "operator-b", default);
+
+        Assert.Equal(RemediationTargetOperationOutcome.Success, resultA.Outcome);
+        Assert.Equal(RemediationTargetOperationOutcome.Conflict, resultB.Outcome);
+    }
+
+    // --- Phase 9: a genuinely concurrent duplicate create/enable never surfaces as a raw 500 ---
+
+    [Fact]
+    public async Task ConcurrentCreatesForTheSameLogicalTargetNeverBothSucceedAndNeverThrowUnhandled()
+    {
+        var machine = _h.SeedMachine();
+        var machine2 = _h.SeedMachine(hostName: "second-host");
+        var credential = _h.SeedCredential(_h.ProjectId);
+
+        using var dbA = _h.CreateAdditionalDbContext();
+        using var dbB = _h.CreateAdditionalDbContext();
+        var serviceA = new RemediationTargetManagementService(dbA,
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+        var serviceB = new RemediationTargetManagementService(dbB,
+            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+
+        // Real concurrency (not called one after the other): the database's own filtered unique
+        // index - not the in-memory pre-check, which a genuine race can outrun - is what must
+        // guarantee only one of these ever commits. Whichever code path catches it, the outcome
+        // invariant below must hold and neither call may throw an unhandled exception.
+        var taskA = serviceA.CreateAsync(ValidRequest(machine, credential), "operator-a", default);
+        var taskB = serviceB.CreateAsync(ValidRequest(machine2, credential), "operator-b", default);
+        var results = await Task.WhenAll(taskA, taskB);
+
+        Assert.Contains(results, r => r.Outcome == RemediationTargetOperationOutcome.Success);
+        Assert.Contains(results, r => r.Outcome == RemediationTargetOperationOutcome.Conflict);
+        Assert.Single(_h.Db.RemediationTargets); // exactly one row ever committed
+    }
+
+    // --- Phase 10 (via the resolver/tool, not this service): see WindowsServiceRemediationTests
+    // for the fingerprint deletion-race and sync-over-async coverage.
+
     private sealed class Scm : IWindowsServiceControl
     {
         public int State = 4;

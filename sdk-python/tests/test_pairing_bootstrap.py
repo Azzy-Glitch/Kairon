@@ -22,7 +22,7 @@ from kairon import Kairon
 
 class _PairingHandler(BaseHTTPRequestHandler):
     status_to_return = 200
-    body_to_return = b'{"apiKey": "krn_real_key", "projectId": "66666666-6666-6666-6666-666666666666", "endpoint": "http://127.0.0.1:8000"}'
+    body_to_return = b'{"apiKey": "krn_real_key", "projectId": "66666666-6666-6666-6666-666666666666", "pairingId": "88888888-8888-8888-8888-888888888888", "endpoint": "http://127.0.0.1:8000"}'
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -39,7 +39,7 @@ class _PairingHandler(BaseHTTPRequestHandler):
 @pytest.fixture()
 def pairing_server():
     _PairingHandler.status_to_return = 200
-    _PairingHandler.body_to_return = b'{"apiKey": "krn_real_key", "projectId": "66666666-6666-6666-6666-666666666666", "endpoint": "http://127.0.0.1:8000"}'
+    _PairingHandler.body_to_return = b'{"apiKey": "krn_real_key", "projectId": "66666666-6666-6666-6666-666666666666", "pairingId": "88888888-8888-8888-8888-888888888888", "endpoint": "http://127.0.0.1:8000"}'
     server = HTTPServer(("127.0.0.1", 0), _PairingHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

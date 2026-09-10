@@ -34,7 +34,7 @@ public sealed class RePairingTests : IDisposable
 
     private void SeedStoredCredential(FakeRepairServer server, string projectId, string apiKey)
     {
-        server.NextPairingBody = JsonSerializer.Serialize(new { apiKey, projectId, endpoint = server.Url });
+        server.NextPairingBody = JsonSerializer.Serialize(new { apiKey, projectId, pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url });
         using (new KaironClient(pairingCode: "pair_seed", endpoint: server.Url, configPath: ConfigPath)) { }
     }
 
@@ -55,7 +55,7 @@ public sealed class RePairingTests : IDisposable
 
         server.NextPairingBody = JsonSerializer.Serialize(new
         {
-            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", endpoint = server.Url
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
         });
         await using var repaired = new KaironClient(pairingCode: "pair_repair", endpoint: server.Url, configPath: ConfigPath);
 
@@ -74,7 +74,7 @@ public sealed class RePairingTests : IDisposable
         using var server = new FakeRepairServer();
         server.NextPairingBody = JsonSerializer.Serialize(new
         {
-            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", endpoint = server.Url
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
         });
 
         await using var repaired = new KaironClient(
@@ -83,6 +83,63 @@ public sealed class RePairingTests : IDisposable
             configPath: ConfigPath);
 
         Assert.Equal(Guid.Parse("77777777-7777-7777-7777-777777777777"), repaired.ProjectId);
+    }
+
+    [Fact]
+    public async Task PairingConfirmsWithTheBackendAfterRedemption()
+    {
+        using var server = new FakeRepairServer();
+        // The redeemed "endpoint" must point back at THIS server, not the default fixture body's
+        // fixed placeholder - the confirm call is sent to whatever endpoint redemption returned.
+        server.NextPairingBody = JsonSerializer.Serialize(new
+        {
+            apiKey = "krn_old_key", projectId = "11111111-1111-1111-1111-111111111111", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
+        });
+
+        await using var kairon = new KaironClient(pairingCode: "pair_confirmme", endpoint: server.Url, configPath: ConfigPath);
+
+        Assert.Equal(1, server.ConfirmCalls);
+        Assert.Equal("krn_old_key", server.LastConfirmApiKey);
+    }
+
+    // --- Required precedence: pairingCode > stored credential > ordinary configuration --------
+
+    [Fact]
+    public async Task StoredCredentialOverridesEnvironmentConfiguration()
+    {
+        using var server = new FakeRepairServer();
+        SeedStoredCredential(server, "11111111-1111-1111-1111-111111111111", "krn_stored_key");
+
+        Environment.SetEnvironmentVariable("KAIRON_PROJECT_ID", "22222222-2222-2222-2222-222222222222");
+        Environment.SetEnvironmentVariable("KAIRON_API_KEY", "krn_env_key");
+        try
+        {
+            await using var kairon = new KaironClient(endpoint: server.Url, configPath: ConfigPath);
+            Assert.Equal(Guid.Parse("11111111-1111-1111-1111-111111111111"), kairon.ProjectId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("KAIRON_PROJECT_ID", null);
+            Environment.SetEnvironmentVariable("KAIRON_API_KEY", null);
+        }
+    }
+
+    [Fact]
+    public async Task StoredCredentialOverridesExplicitConfigurationAndIsNeverMixed()
+    {
+        using var server = new FakeRepairServer();
+        SeedStoredCredential(server, "11111111-1111-1111-1111-111111111111", "krn_stored_key");
+
+        // An explicit projectId for a DIFFERENT project, alongside a stored credential for this
+        // one - the required precedence is that storage wins wholesale, so the result must be
+        // exactly the stored identity, never a hybrid of the two sources.
+        await using var kairon = new KaironClient(
+            endpoint: server.Url,
+            projectId: Guid.Parse("22222222-2222-2222-2222-222222222222"),
+            apiKey: "krn_explicit_key",
+            configPath: ConfigPath);
+
+        Assert.Equal(Guid.Parse("11111111-1111-1111-1111-111111111111"), kairon.ProjectId);
     }
 
     [Fact]
@@ -118,7 +175,7 @@ public sealed class RePairingTests : IDisposable
 
         server.NextPairingBody = JsonSerializer.Serialize(new
         {
-            apiKey = "krn_new_key", projectId = "11111111-1111-1111-1111-111111111111", endpoint = server.Url
+            apiKey = "krn_new_key", projectId = "11111111-1111-1111-1111-111111111111", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
         });
         await using var repaired = new KaironClient(pairingCode: "pair_recover", endpoint: server.Url, configPath: ConfigPath);
 
@@ -132,7 +189,7 @@ public sealed class RePairingTests : IDisposable
         using var server = new FakeRepairServer();
         server.NextPairingBody = JsonSerializer.Serialize(new
         {
-            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", endpoint = server.Url
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
         });
 
         using (new KaironClient(pairingCode: "pair_onceonly", endpoint: server.Url, configPath: ConfigPath)) { }
@@ -169,8 +226,10 @@ public sealed class RePairingTests : IDisposable
         public string Url { get; }
         public string AcceptedApiKey = "krn_old_key";
         public int PairingCalls;
+        public int ConfirmCalls;
+        public string? LastConfirmApiKey;
         public HttpStatusCode NextPairingStatus = HttpStatusCode.OK;
-        public string NextPairingBody = """{"apiKey":"krn_old_key","projectId":"11111111-1111-1111-1111-111111111111","endpoint":"http://127.0.0.1:8000"}""";
+        public string NextPairingBody = """{"apiKey":"krn_old_key","projectId":"11111111-1111-1111-1111-111111111111","pairingId":"99999999-9999-9999-9999-999999999999","endpoint":"http://127.0.0.1:8000"}""";
 
         public FakeRepairServer()
         {
@@ -199,7 +258,7 @@ public sealed class RePairingTests : IDisposable
         private async Task HandleAsync(HttpListenerContext context, CancellationToken token)
         {
             using var reader = new StreamReader(context.Request.InputStream);
-            _ = await reader.ReadToEndAsync(token);
+            var raw = await reader.ReadToEndAsync(token);
 
             if (context.Request.Url!.AbsolutePath == "/api/v1/sdk/pair")
             {
@@ -210,6 +269,15 @@ public sealed class RePairingTests : IDisposable
                     AcceptedApiKey = doc.RootElement.GetProperty("apiKey").GetString()!;
                 }
                 await RespondAsync(context, NextPairingStatus, NextPairingBody, token);
+                return;
+            }
+
+            if (context.Request.Url.AbsolutePath.StartsWith("/api/v1/sdk/pair/") && context.Request.Url.AbsolutePath.EndsWith("/confirm"))
+            {
+                Interlocked.Increment(ref ConfirmCalls);
+                using var doc = JsonDocument.Parse(raw);
+                LastConfirmApiKey = doc.RootElement.TryGetProperty("apiKey", out var apiKeyProp) ? apiKeyProp.GetString() : null;
+                await RespondAsync(context, HttpStatusCode.NoContent, "", token);
                 return;
             }
 

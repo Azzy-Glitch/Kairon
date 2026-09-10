@@ -28,7 +28,7 @@ public class KaironTests : IDisposable
     public async Task PairingCodeAloneRedeemsPersistsAndConfiguresTheClient()
     {
         using var server = new FakePairingServer(HttpStatusCode.OK,
-            """{"apiKey":"krn_real_key","projectId":"22222222-2222-2222-2222-222222222222","endpoint":"http://127.0.0.1:8000"}""");
+            """{"apiKey":"krn_real_key","projectId":"22222222-2222-2222-2222-222222222222","pairingId":"44444444-4444-4444-4444-444444444444","endpoint":"http://127.0.0.1:8000"}""");
 
         await using var kairon = new KaironClient(pairingCode: "pair_realcode", endpoint: server.Url, configPath: ConfigPath);
 
@@ -43,7 +43,7 @@ public class KaironTests : IDisposable
     public async Task SecondRunReusesTheStoredCredentialWithoutRedeemingAgain()
     {
         var server = new FakePairingServer(HttpStatusCode.OK,
-            """{"apiKey":"krn_real_key","projectId":"33333333-3333-3333-3333-333333333333","endpoint":"http://127.0.0.1:8000"}""");
+            """{"apiKey":"krn_real_key","projectId":"33333333-3333-3333-3333-333333333333","pairingId":"55555555-5555-5555-5555-555555555555","endpoint":"http://127.0.0.1:8000"}""");
 
         await using (var first = new KaironClient(pairingCode: "pair_onceonly", endpoint: server.Url, configPath: ConfigPath))
         {

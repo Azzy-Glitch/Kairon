@@ -134,7 +134,18 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         };
         _db.RemediationTargets.Add(entity);
         _audit.Record("remediation-target.created", actor, "remediation-target", entity.Id.ToString(), entity.ProjectId, data: Snapshot(entity));
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
+        {
+            // The pre-check above closes the common case; this is the backstop for two genuinely
+            // concurrent creates that both pass it before either commits - the database's own
+            // filtered unique index is what actually decides which one wins.
+            return RemediationTargetOperationResult.ConflictResult(
+                "An enabled remediation target already exists for this project, environment and service.", "duplicate-target");
+        }
 
         return RemediationTargetOperationResult.Ok((await ToResponsesAsync([entity], ct)).Single());
     }
@@ -181,7 +192,27 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         // service ever needing to know that fingerprints exist.
         _audit.Record("remediation-target.updated", actor, "remediation-target", entity.Id.ToString(), entity.ProjectId,
             data: new { Before = before, After = Snapshot(entity) });
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // The ExpectedUpdatedAt pre-check above only catches a stale form (the operator's read
+            // predates a since-committed change). This is the genuine, database-enforced backstop
+            // for two requests that both read the same row before either commits: RemediationTarget
+            // .UpdatedAt is mapped as an EF concurrency token (AppDbContext), so the UPDATE this
+            // SaveChangesAsync issued matched zero rows because the other request already changed
+            // UpdatedAt first - exactly the atomic "exactly one wins" guarantee an in-memory
+            // timestamp comparison alone cannot provide.
+            return RemediationTargetOperationResult.ConflictResult(
+                "The target was modified by someone else since it was last read. Reload and try again.", "stale-update");
+        }
+        catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
+        {
+            return RemediationTargetOperationResult.ConflictResult(
+                "An enabled remediation target already exists for this project, environment and service.", "duplicate-target");
+        }
 
         return RemediationTargetOperationResult.Ok((await ToResponsesAsync([entity], ct)).Single());
     }
@@ -214,7 +245,23 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             entity.UpdatedAt = _time.GetUtcNow().UtcDateTime;
             _audit.Record(enabled ? "remediation-target.enabled" : "remediation-target.disabled", actor,
                 "remediation-target", entity.Id.ToString(), entity.ProjectId, data: Snapshot(entity));
-            await _db.SaveChangesAsync(ct);
+            try
+            {
+                await _db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Two concurrent enable/disable calls on the same target (e.g. one operator
+                // enabling while another disables) - UpdatedAt's concurrency token means only the
+                // first to commit wins; the second gets a clean conflict instead of a lost update.
+                return RemediationTargetOperationResult.ConflictResult(
+                    "The target was modified by someone else since it was last read. Reload and try again.", "stale-update");
+            }
+            catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
+            {
+                return RemediationTargetOperationResult.ConflictResult(
+                    "An enabled remediation target already exists for this project, environment and service.", "duplicate-target");
+            }
         }
 
         return RemediationTargetOperationResult.Ok((await ToResponsesAsync([entity], ct)).Single());
@@ -258,6 +305,18 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
 
         return errors;
     }
+
+    /// <summary>Narrowly detects the one unique constraint a RemediationTarget write could
+    /// plausibly violate (the filtered ProjectId+Environment+Service index - the primary key is a
+    /// client-generated Guid, effectively never colliding) so only that expected violation is ever
+    /// translated into a clean 409. Any other DbUpdateException is deliberately left to propagate
+    /// rather than being blindly swallowed.</summary>
+    private static bool IsUniqueConstraintViolation(DbUpdateException ex) => ex.InnerException switch
+    {
+        Microsoft.Data.Sqlite.SqliteException sqlite => sqlite.SqliteErrorCode == 19, // SQLITE_CONSTRAINT
+        Microsoft.Data.SqlClient.SqlException sql => sql.Number is 2601 or 2627, // unique index / unique constraint
+        _ => false
+    };
 
     private async Task ValidateRelationshipsAsync(Guid projectId, Guid machineId, Guid telemetryCredentialId,
         string expectedHostName, List<string> errors, CancellationToken ct)

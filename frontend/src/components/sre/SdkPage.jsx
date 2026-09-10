@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { sdkApi } from '../../api';
 import { useToast } from '../Toast';
 import Tabs from '../ui/Tabs';
@@ -85,17 +85,54 @@ function Pairing({ onProjectSelected }) {
   const [pairing, setPairing] = useState(false);
   const [pairingResult, setPairingResult] = useState(null);
   // A re-pair is just another pairing session, scoped to replacing one specific existing
-  // credential once the fresh code is redeemed - see handleStartRepair/pollRepairStatus below.
-  const [repair, setRepair] = useState(null); // { credentialId, credentialName, pairingId, code, expiresAt, status }
+  // credential once the fresh code is redeemed AND confirmed - see the polling effect and
+  // completeRepairOnce below. Status values: Pending -> AwaitingConfirmation (redeemed, but the
+  // application has not yet proven it received/persisted the new credential) -> Completing ->
+  // Completed | CompletionFailed, or Expired | Cancelled at any point before those.
+  const [repair, setRepair] = useState(null); // { credentialId, credentialName, pairingId, code, expiresAt, status, rebindCount?, completionError? }
   const { copiedKey, copy } = useCopy();
+  // Guards against a re-pair completion running more than once: JavaScript callbacks already
+  // queued by a prior interval tick can still execute even after clearInterval, so relying on
+  // clearInterval alone is not enough to make "observed Confirmed -> complete the repair" happen
+  // exactly once (audit Phase 7).
+  const completionInFlightRef = useRef(new Set());
 
   const refreshCredentials = () => {
     if (!selectedId) return;
     sdkApi.listCredentials(selectedId).then(setCredentials).catch(() => {});
   };
 
+  const completeRepairOnce = async (current) => {
+    if (completionInFlightRef.current.has(current.pairingId)) return;
+    completionInFlightRef.current.add(current.pairingId);
+    setRepair((prev) => (prev && prev.pairingId === current.pairingId ? { ...prev, status: 'Completing' } : prev));
+    try {
+      const result = await sdkApi.completeRepair(current.pairingId, current.credentialId);
+      setRepair((prev) => (prev && prev.pairingId === current.pairingId
+        ? { ...prev, status: 'Completed', rebindCount: result.rebindCount }
+        : prev));
+      refreshCredentials();
+      const rebindNote = result.rebindCount > 0
+        ? ` ${result.rebindCount} remediation target${result.rebindCount === 1 ? '' : 's'} now use it too.`
+        : '';
+      toast.addToast(`Re-paired "${current.credentialName}" - the old credential was revoked.${rebindNote}`, 'success');
+    } catch (err) {
+      // Never claim the old credential was revoked when this call did not actually succeed - the
+      // backend only revokes it as part of this same request completing successfully.
+      setRepair((prev) => (prev && prev.pairingId === current.pairingId
+        ? { ...prev, status: 'CompletionFailed', completionError: err?.message }
+        : prev));
+      toast.addToast(
+        err?.message || 'The new credential is active, but completing the re-pair failed - the old credential was left untouched. Try again.',
+        'error'
+      );
+    } finally {
+      completionInFlightRef.current.delete(current.pairingId);
+    }
+  };
+
   useEffect(() => {
-    if (!repair || repair.status !== 'Pending') return undefined;
+    if (!repair || (repair.status !== 'Pending' && repair.status !== 'AwaitingConfirmation')) return undefined;
     if (Date.now() >= new Date(repair.expiresAt).getTime()) {
       setRepair((prev) => (prev ? { ...prev, status: 'Expired' } : prev));
       return undefined;
@@ -103,23 +140,23 @@ function Pairing({ onProjectSelected }) {
 
     let cancelled = false;
     const id = setInterval(async () => {
+      if (cancelled) return;
       try {
         const status = await sdkApi.getPairingStatus(repair.pairingId);
         if (cancelled) return;
-        if (status.status === 'Redeemed') {
-          setRepair({ ...repair, status: 'Redeemed' });
-          try {
-            await sdkApi.revokeCredential(selectedId, repair.credentialId);
-          } catch {
-            // Best-effort: the new credential is already issued and working either way; the
-            // operator can still revoke the old one manually from this same table if this fails.
-          }
-          refreshCredentials();
-          toast.addToast(`Re-paired "${repair.credentialName}" - the old credential was revoked.`, 'success');
-        } else if (status.status === 'Expired' || status.status === 'Cancelled') {
-          setRepair({ ...repair, status: status.status });
+        if (status.status === 'Expired' || status.status === 'Cancelled') {
+          setRepair((prev) => (prev && prev.pairingId === repair.pairingId ? { ...prev, status: status.status } : prev));
+        } else if (status.confirmedAt) {
+          // Redeemed proves the backend issued a credential; confirmedAt proves the application
+          // itself received and is using it. Only confirmedAt makes it safe to complete the
+          // repair (which revokes the credential being replaced) - see completeRepairOnce.
+          await completeRepairOnce(repair);
+        } else if (status.redeemedAt) {
+          setRepair((prev) => (prev && prev.pairingId === repair.pairingId && prev.status === 'Pending'
+            ? { ...prev, status: 'AwaitingConfirmation' }
+            : prev));
         } else if (Date.now() >= new Date(repair.expiresAt).getTime()) {
-          setRepair({ ...repair, status: 'Expired' });
+          setRepair((prev) => (prev ? { ...prev, status: 'Expired' } : prev));
         }
       } catch {
         // A transient poll failure is not a terminal state - keep polling until expiry.
@@ -152,7 +189,7 @@ function Pairing({ onProjectSelected }) {
 
   const handleCancelRepair = async () => {
     if (!repair) return;
-    if (repair.status === 'Pending') {
+    if (repair.status === 'Pending' || repair.status === 'AwaitingConfirmation') {
       try {
         await sdkApi.revokePairing(repair.pairingId);
       } catch {
@@ -381,8 +418,11 @@ function Pairing({ onProjectSelected }) {
               <div>
                 <h3>Re-pairing "{repair.credentialName}"</h3>
                 <p className="section-desc">
-                  {repair.status === 'Pending' && 'Waiting for the application to redeem this code. The old credential is revoked automatically once it does.'}
-                  {repair.status === 'Redeemed' && 'Redeemed - a fresh credential is active and the old one has been revoked.'}
+                  {repair.status === 'Pending' && 'Waiting for the application to redeem this code.'}
+                  {repair.status === 'AwaitingConfirmation' && 'Redeemed - waiting for the application to confirm it received and is using the new credential before the old one is touched.'}
+                  {repair.status === 'Completing' && 'Confirmed - completing the re-pair...'}
+                  {repair.status === 'Completed' && 'Complete - a fresh credential is active and the old one has been revoked.'}
+                  {repair.status === 'CompletionFailed' && 'The application confirmed the new credential, but completing the re-pair failed.'}
                   {repair.status === 'Expired' && 'This code expired before it was used. Start again to generate a new one.'}
                   {repair.status === 'Cancelled' && 'Cancelled. The old credential was left untouched.'}
                 </p>
@@ -390,7 +430,7 @@ function Pairing({ onProjectSelected }) {
             </div>
           </div>
 
-          {repair.status === 'Pending' && (
+          {(repair.status === 'Pending' || repair.status === 'AwaitingConfirmation') && (
             <>
               <p className="sdk-step-label">Pairing code (expires {new Date(repair.expiresAt).toLocaleTimeString()})</p>
               <div className="sdk-code-block sdk-pairing-code">
@@ -407,8 +447,24 @@ function Pairing({ onProjectSelected }) {
               <p className="sdk-hint">
                 Run the application with this code, e.g. <code>Kairon(pairing_code="{repair.code}")</code> (Python) or{' '}
                 <code>new KaironClient(pairingCode: "{repair.code}")</code> (.NET) - it always takes precedence over any
-                credential the application already has stored.
+                credential the application already has stored. The old credential stays active until the application
+                itself confirms the new one is working.
               </p>
+              {repair.status === 'AwaitingConfirmation' && (
+                <p className="sdk-hint">Redeemed. Waiting for the application's own confirmation...</p>
+              )}
+            </>
+          )}
+
+          {repair.status === 'CompletionFailed' && (
+            <>
+              <p className="sdk-hint">
+                <IconAlertTriangle className="w-3.5 h-3.5" /> {repair.completionError || 'The re-pair could not be completed.'} The
+                old credential was NOT revoked - safe to try again.
+              </p>
+              <div className="sdk-pairing-form">
+                <button type="button" className="small-btn" onClick={() => completeRepairOnce(repair)}>Retry</button>
+              </div>
             </>
           )}
 
@@ -417,8 +473,8 @@ function Pairing({ onProjectSelected }) {
           )}
 
           <div className="sdk-pairing-form">
-            <button type="button" className="small-btn" onClick={handleCancelRepair}>
-              {repair.status === 'Pending' ? 'Cancel' : 'Dismiss'}
+            <button type="button" className="small-btn" disabled={repair.status === 'Completing'} onClick={handleCancelRepair}>
+              {repair.status === 'Pending' || repair.status === 'AwaitingConfirmation' ? 'Cancel' : 'Dismiss'}
             </button>
           </div>
         </section>

@@ -5,9 +5,10 @@ namespace Kairon.SDK;
 
 /// <summary>Result of redeeming a pairing code for an API key (docs/DESKTOP_SHELL.md). On
 /// success, <see cref="ApiKey"/> and <see cref="ProjectId"/> are ready to drop straight into
-/// <see cref="KaironOptions.ApiKey"/>/<see cref="KaironOptions.ProjectId"/>.</summary>
+/// <see cref="KaironOptions.ApiKey"/>/<see cref="KaironOptions.ProjectId"/>. <see cref="PairingId"/>
+/// lets the caller confirm receipt/persistence afterward via <see cref="KaironPairingClient.ConfirmAsync"/>.</summary>
 public sealed record KaironPairingResult(bool Success, string? Error, Guid ProjectId = default,
-    string? ApiKey = null, string? Endpoint = null);
+    string? ApiKey = null, string? Endpoint = null, Guid PairingId = default);
 
 /// <summary>
 /// Exchanges a temporary, single-use pairing code (minted by an operator in the Kairon UI) for a
@@ -42,14 +43,41 @@ public static class KaironPairingClient
 
             var paired = await response.Content.ReadFromJsonAsync<PairingWireResponse>(cancellationToken);
             return paired is null || paired.ProjectId == Guid.Empty || string.IsNullOrWhiteSpace(paired.ApiKey) ||
+                paired.PairingId == Guid.Empty ||
                 !Uri.TryCreate(paired.Endpoint, UriKind.Absolute, out var address) ||
                 (address.Scheme != Uri.UriSchemeHttp && address.Scheme != Uri.UriSchemeHttps) || !string.IsNullOrEmpty(address.UserInfo)
                 ? new KaironPairingResult(false, "Pairing response was invalid.")
-                : new KaironPairingResult(true, null, paired.ProjectId, paired.ApiKey, paired.Endpoint);
+                : new KaironPairingResult(true, null, paired.ProjectId, paired.ApiKey, paired.Endpoint, paired.PairingId);
         }
         catch
         {
             return new KaironPairingResult(false, "Kairon is unavailable.");
+        }
+    }
+
+    /// <summary>Called right after the caller durably persists the newly redeemed credential -
+    /// proves to the backend that this SDK actually received and is using it, the only
+    /// trustworthy signal distinct from the backend merely having issued it (a redeem response can
+    /// be lost in transit, or the process can crash before the credential is saved to disk).
+    /// Best-effort and silent: the credential is already valid and usable regardless of whether
+    /// this call succeeds, so a failure here must never fault construction - it only means an
+    /// operator-triggered re-pair completion (which revokes the credential being replaced) keeps
+    /// waiting until a retry, or a later successful telemetry send, lets this catch up.</summary>
+    public static async Task ConfirmAsync(string backendEndpoint, Guid pairingId, string apiKey,
+        CancellationToken cancellationToken = default, HttpMessageHandler? handler = null)
+    {
+        try
+        {
+            using var client = new HttpClient(handler ?? new HttpClientHandler(), disposeHandler: true)
+            {
+                BaseAddress = new Uri(backendEndpoint.TrimEnd('/') + "/"),
+                Timeout = TimeSpan.FromSeconds(10)
+            };
+            await client.PostAsJsonAsync($"api/v1/sdk/pair/{pairingId}/confirm", new { apiKey }, cancellationToken);
+        }
+        catch
+        {
+            // Best-effort - see remarks above.
         }
     }
 
@@ -58,5 +86,6 @@ public static class KaironPairingClient
         public string ApiKey { get; set; } = string.Empty;
         public Guid ProjectId { get; set; }
         public string Endpoint { get; set; } = string.Empty;
+        public Guid PairingId { get; set; }
     }
 }

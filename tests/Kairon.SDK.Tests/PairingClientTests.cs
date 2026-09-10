@@ -15,13 +15,14 @@ public class PairingClientTests
     public async Task SuccessfulPairingReturnsTheIssuedCredential()
     {
         var handler = new StubHandler(HttpStatusCode.OK,
-            """{"apiKey":"krn_abc123","projectId":"11111111-1111-1111-1111-111111111111","endpoint":"http://127.0.0.1:8000"}""");
+            """{"apiKey":"krn_abc123","projectId":"11111111-1111-1111-1111-111111111111","pairingId":"22222222-2222-2222-2222-222222222222","endpoint":"http://127.0.0.1:8000"}""");
 
         var result = await KaironPairingClient.PairAsync("http://localhost:8000", "pair_validcode", handler: handler);
 
         Assert.True(result.Success);
         Assert.Equal("krn_abc123", result.ApiKey);
         Assert.Equal(Guid.Parse("11111111-1111-1111-1111-111111111111"), result.ProjectId);
+        Assert.Equal(Guid.Parse("22222222-2222-2222-2222-222222222222"), result.PairingId);
         Assert.Equal("http://127.0.0.1:8000", result.Endpoint);
     }
 
@@ -43,6 +44,20 @@ public class PairingClientTests
         var handler = new StubHandler(HttpStatusCode.OK, "not json");
 
         var result = await KaironPairingClient.PairAsync("http://localhost:8000", "pair_x", handler: handler);
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public async Task ResponseMissingPairingIdReturnsFailureNotAnException()
+    {
+        // pairingId is what lets this SDK later confirm it received/persisted the credential
+        // (SdkPairingService.ConfirmAsync) - a response without one is just as unusable as one
+        // missing projectId.
+        var handler = new StubHandler(HttpStatusCode.OK,
+            """{"apiKey":"krn_abc123","projectId":"11111111-1111-1111-1111-111111111111","endpoint":"http://127.0.0.1:8000"}""");
+
+        var result = await KaironPairingClient.PairAsync("http://localhost:8000", "pair_validcode", handler: handler);
 
         Assert.False(result.Success);
     }

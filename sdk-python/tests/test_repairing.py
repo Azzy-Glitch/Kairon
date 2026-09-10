@@ -29,8 +29,13 @@ class _RepairHandler(BaseHTTPRequestHandler):
 
     accepted_api_key = "krn_old_key"
     pairing_calls = 0
+    confirm_calls = 0
+    last_confirm_api_key = None
     telemetry_calls = 0
-    next_pairing_body = b'{"apiKey": "krn_new_key", "projectId": "77777777-7777-7777-7777-777777777777", "endpoint": "http://127.0.0.1:8000"}'
+    next_pairing_body = (
+        b'{"apiKey": "krn_new_key", "projectId": "77777777-7777-7777-7777-777777777777", '
+        b'"pairingId": "99999999-9999-9999-9999-999999999999", "endpoint": "http://127.0.0.1:8000"}'
+    )
     next_pairing_status = 200
 
     def do_POST(self):
@@ -44,6 +49,13 @@ class _RepairHandler(BaseHTTPRequestHandler):
             self.wfile.write(_RepairHandler.next_pairing_body)
             if _RepairHandler.next_pairing_status == 200:
                 _RepairHandler.accepted_api_key = json.loads(_RepairHandler.next_pairing_body)["apiKey"]
+            return
+
+        if self.path.startswith("/api/v1/sdk/pair/") and self.path.endswith("/confirm"):
+            _RepairHandler.confirm_calls += 1
+            _RepairHandler.last_confirm_api_key = json.loads(raw).get("apiKey")
+            self.send_response(204)
+            self.end_headers()
             return
 
         _RepairHandler.telemetry_calls += 1
@@ -66,6 +78,8 @@ class _RepairHandler(BaseHTTPRequestHandler):
 def repair_server():
     _RepairHandler.accepted_api_key = "krn_old_key"
     _RepairHandler.pairing_calls = 0
+    _RepairHandler.confirm_calls = 0
+    _RepairHandler.last_confirm_api_key = None
     _RepairHandler.telemetry_calls = 0
     _RepairHandler.next_pairing_status = 200
     server = HTTPServer(("127.0.0.1", 0), _RepairHandler)
@@ -78,6 +92,7 @@ def repair_server():
     _RepairHandler.next_pairing_body = json.dumps({
         "apiKey": "krn_new_key",
         "projectId": "77777777-7777-7777-7777-777777777777",
+        "pairingId": "99999999-9999-9999-9999-999999999999",
         "endpoint": address,
     }).encode("utf-8")
     try:
@@ -140,6 +155,50 @@ def test_explicit_pairing_code_overrides_explicit_project_id_and_api_key_argumen
     try:
         assert kairon.project_id == "77777777-7777-7777-7777-777777777777"
         assert kairon.api_key == "krn_new_key"
+    finally:
+        kairon.stop(timeout_seconds=1)
+
+
+def test_pairing_confirms_with_the_backend_after_redemption(repair_server, config_path):
+    kairon = Kairon(pairing_code="pair_confirmme", endpoint=repair_server, config_path=config_path)
+    try:
+        assert _RepairHandler.confirm_calls == 1
+        assert _RepairHandler.last_confirm_api_key == kairon.api_key
+    finally:
+        kairon.stop(timeout_seconds=1)
+
+
+# --- Required precedence: pairing_code > stored credential > ordinary configuration --------
+
+
+def test_stored_credential_overrides_environment_configuration(repair_server, config_path, monkeypatch):
+    _seed_stored_credential(config_path, repair_server, "11111111-1111-1111-1111-111111111111", "krn_stored_key")
+    monkeypatch.setenv("KAIRON_PROJECT_ID", "22222222-2222-2222-2222-222222222222")
+    monkeypatch.setenv("KAIRON_API_KEY", "krn_env_key")
+
+    kairon = Kairon(endpoint=repair_server, config_path=config_path)
+    try:
+        assert kairon.project_id == "11111111-1111-1111-1111-111111111111"
+        assert kairon.api_key == "krn_stored_key"
+    finally:
+        kairon.stop(timeout_seconds=1)
+
+
+def test_stored_credential_overrides_explicit_configuration_and_is_never_mixed(repair_server, config_path):
+    _seed_stored_credential(config_path, repair_server, "11111111-1111-1111-1111-111111111111", "krn_stored_key")
+
+    # An explicit project_id/api_key for a DIFFERENT project, alongside a stored credential for
+    # this one - the required precedence is that storage wins wholesale, so the result must be
+    # exactly the stored pair, never project_id from one source mixed with api_key from the other.
+    kairon = Kairon(
+        endpoint=repair_server,
+        project_id="22222222-2222-2222-2222-222222222222",
+        api_key="krn_explicit_key",
+        config_path=config_path,
+    )
+    try:
+        assert kairon.project_id == "11111111-1111-1111-1111-111111111111"
+        assert kairon.api_key == "krn_stored_key"
     finally:
         kairon.stop(timeout_seconds=1)
 

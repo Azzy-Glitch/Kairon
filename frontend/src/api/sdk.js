@@ -34,8 +34,20 @@ export function revokePairing(pairingId) {
 }
 
 /** Polled while a pairing code (including a re-pair code) is outstanding. Returns
- * { pairingId, projectId, sdkType, createdAt, expiresAt, redeemedAt, revokedAt, status } where
- * status is 'Pending' | 'Redeemed' | 'Expired' | 'Cancelled'. Never includes the code or a secret. */
+ * { pairingId, projectId, sdkType, createdAt, expiresAt, redeemedAt, confirmedAt, revokedAt, status }
+ * where status is 'Pending' | 'Redeemed' | 'Expired' | 'Cancelled'. redeemedAt means the backend
+ * issued a fresh credential; confirmedAt (set later, by the SDK itself) is the only trustworthy
+ * proof that the application actually received and is using it - re-pairing must wait for
+ * confirmedAt, not redeemedAt, before it is safe to revoke the credential being replaced. Never
+ * includes the code, its hash, or any credential secret. */
 export function getPairingStatus(pairingId) {
   return request(client.get(`/v1/platform/pairing/${pairingId}`));
+}
+
+/** Completes a re-pair: atomically rebinds every enabled remediation target bound to
+ * oldCredentialId onto the newly issued credential, then revokes oldCredentialId. The backend
+ * refuses (409) unless the pairing session has been confirmed by the application itself. Returns
+ * { rebindCount }. */
+export function completeRepair(pairingId, oldCredentialId) {
+  return request(client.post(`/v1/platform/pairing/${pairingId}/complete-repair`, { oldCredentialId }));
 }

@@ -81,6 +81,46 @@ public sealed class SdkPairingController : ControllerBase
         return status is null ? NotFound() : Ok(status);
     }
 
+    /// <summary>Called by the SDK itself, unattended, immediately after it durably persists the
+    /// credential redemption just issued - the only trustworthy proof that the redeem response was
+    /// actually received and saved, not merely that the backend issued it. Authenticates by
+    /// requiring the exact api key this session issued; never accepts a bare claim.</summary>
+    [HttpPost("api/v1/sdk/pair/{pairingId:guid}/confirm")]
+    public async Task<IActionResult> Confirm(Guid pairingId, [FromBody] ConfirmPairingRequest request, CancellationToken cancellationToken)
+    {
+        if (!await _pairing.ConfirmAsync(pairingId, request.ApiKey, cancellationToken))
+            return BadRequest(new { error = "Pairing session not found, not yet redeemed, or the supplied API key does not match." });
+
+        return NoContent();
+    }
+
+    /// <summary>Operator-driven re-pair completion: only proceeds once the SDK has itself Confirmed
+    /// the new credential (never on Redeemed alone - see SdkPairingService's remarks). Atomically
+    /// rebinds every enabled RemediationTarget bound to oldCredentialId - scoped to this session's
+    /// own project - onto the newly issued credential, then revokes oldCredentialId.</summary>
+    [HttpPost("api/v1/platform/pairing/{pairingId:guid}/complete-repair")]
+    [RequiresOperator]
+    public async Task<IActionResult> CompleteRepair(Guid pairingId, [FromBody] CompleteRepairRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _pairing.CompleteRepairAsync(pairingId, request.OldCredentialId, cancellationToken);
+        switch (result.Outcome)
+        {
+            case CompleteRepairOutcome.Success:
+                _audit.Record("sdk.repair-completed", Actor(), "sdk-pairing", pairingId.ToString(), result.ProjectId,
+                    data: new { OldCredentialId = request.OldCredentialId, NewCredentialId = result.NewCredentialId, RebindCount = result.RebindCount });
+                await _db.SaveChangesAsync(cancellationToken);
+                return Ok(new { rebindCount = result.RebindCount });
+            case CompleteRepairOutcome.NotConfirmed:
+                return Conflict(new { error = "The new credential has not been confirmed by the application yet. Wait for confirmation before completing the re-pair." });
+            case CompleteRepairOutcome.OldCredentialWrongProject:
+                return BadRequest(new { error = "That credential does not belong to this pairing session's project." });
+            case CompleteRepairOutcome.OldCredentialNotFound:
+                return NotFound(new { error = "The credential to be replaced was not found." });
+            default:
+                return NotFound(new { error = "Pairing session not found." });
+        }
+    }
+
     private string Actor() => Request.Headers["X-Kairon-Operator"].ToString() is { Length: > 0 } value
         ? value
         : "local-operator";
@@ -96,4 +136,14 @@ public sealed class RedeemPairingRequest
     public string Code { get; set; } = string.Empty;
     public string SdkType { get; set; } = string.Empty;
     public string Version { get; set; } = string.Empty;
+}
+
+public sealed class ConfirmPairingRequest
+{
+    public string ApiKey { get; set; } = string.Empty;
+}
+
+public sealed class CompleteRepairRequest
+{
+    public Guid OldCredentialId { get; set; }
 }

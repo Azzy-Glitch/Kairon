@@ -72,9 +72,9 @@ def format_exception(exc: BaseException) -> Optional[str]:
 def pair(endpoint: str, code: str, version: str = "1.0.1", timeout_seconds: float = 10.0) -> Optional[dict]:
     """Redeems a one-time pairing code (minted by an operator in the Kairon UI) for a
     persistent project API key - the Python counterpart to Kairon.SDK's KaironPairingClient
-    (docs/DESKTOP_SHELL.md). Returns a dict with "apiKey"/"projectId"/"endpoint" on success, or
-    None on any failure (rejected code, malformed response, unreachable backend) - contained
-    here rather than raised, matching every other network path in this client.
+    (docs/DESKTOP_SHELL.md). Returns a dict with "apiKey"/"projectId"/"endpoint"/"pairingId" on
+    success, or None on any failure (rejected code, malformed response, unreachable backend) -
+    contained here rather than raised, matching every other network path in this client.
     """
     try:
         parsed = urlsplit(endpoint)
@@ -94,6 +94,8 @@ def pair(endpoint: str, code: str, version: str = "1.0.1", timeout_seconds: floa
                 return None
             if not isinstance(result.get("projectId"), str) or UUID(result["projectId"]).int == 0:
                 return None
+            if not isinstance(result.get("pairingId"), str) or UUID(result["pairingId"]).int == 0:
+                return None
             address = urlsplit(result.get("endpoint", ""))
             if address.scheme not in ("http", "https") or not address.netloc or address.username or address.password:
                 return None
@@ -109,26 +111,36 @@ def _resolve_configuration(
     pairing_code: Optional[str],
     config_path: Optional[str],
 ) -> tuple:
-    """Implements the documented configuration precedence: an explicit pairing_code always wins -
-    it (re)pairs immediately, before anything else is even consulted, so it can force a re-pair
-    over an existing stored credential (e.g. after that credential was revoked from the KAIRON
-    UI). Only when no pairing_code is given does resolution fall through to explicit arguments,
-    then KAIRON_ENDPOINT/KAIRON_PROJECT_ID/KAIRON_API_KEY environment variables, then a previously
-    stored paired credential. Raises ValueError/RuntimeError (no new exception hierarchy) rather
-    than ever continuing with an incomplete credential.
+    """Implements the required configuration precedence:
+
+        1. explicit pairing_code - always wins, redeeming (or re-pairing) immediately, before
+           anything else below is even consulted.
+        2. a previously stored credential, if one exists - preferred as a whole over ordinary
+           configuration. A stored credential represents a real, completed pairing event; treating
+           it as the strongest available signal of intended identity (once no pairing_code is
+           given) means a stray or inherited KAIRON_PROJECT_ID/KAIRON_API_KEY - or even an explicit
+           project_id/api_key left over in code - can never silently override, or be silently
+           mixed field-by-field with, an application's own already-paired identity. endpoint/
+           project_id/api_key are always taken from the SAME source together: there is no
+           per-field merge between "stored" and "explicit/env" anywhere in this function, which is
+           what makes a mixed configuration (one project's id with another's key) structurally
+           impossible rather than merely unlikely.
+        3. ordinary explicit arguments, then KAIRON_ENDPOINT/KAIRON_PROJECT_ID/KAIRON_API_KEY
+           environment variables - consulted only when neither of the above applies (first-time
+           onboarding, or a fresh config_path with nothing stored yet).
+
+    Raises ValueError/RuntimeError (no new exception hierarchy) rather than ever continuing with
+    an incomplete credential.
 
     Pairing is always explicit, never automatic: nothing in this SDK ever supplies pairing_code
     on the caller's behalf (not on HTTP 401, not on startup with a still-valid credential) - it is
     consulted here only because the caller passed it in this exact call.
     """
-    endpoint = endpoint or os.environ.get("KAIRON_ENDPOINT")
-    project_id = project_id or os.environ.get("KAIRON_PROJECT_ID")
-    api_key = api_key or os.environ.get("KAIRON_API_KEY")
-
     path = Path(config_path) if config_path else None
 
     if pairing_code:
-        paired = pair(endpoint or DEFAULT_ENDPOINT, pairing_code)
+        resolved_endpoint = endpoint or os.environ.get("KAIRON_ENDPOINT") or DEFAULT_ENDPOINT
+        paired = pair(resolved_endpoint, pairing_code)
         if paired is None:
             raise RuntimeError(
                 "Kairon pairing failed: the pairing code is invalid, expired, already used, or "
@@ -139,18 +151,20 @@ def _resolve_configuration(
         # win outright, replacing whatever explicit args/env vars/stored file resolved above -
         # an explicit pairing_code is a direct instruction to (re)pair now, not a fallback.
         _credential_store.save_stored_config(paired["endpoint"], paired["projectId"], paired["apiKey"], path)
+        _confirm_pairing(paired["endpoint"], paired["pairingId"], paired["apiKey"])
         return paired["endpoint"], paired["projectId"], paired["apiKey"]
 
-    # project_id has always been required; api_key has always been optional (some deployments
-    # run with no authentication at all) - so only project_id being absent triggers the
-    # stored-config fallback. An explicit project_id with no api_key is the existing,
-    # still-supported "unauthenticated" configuration, unrelated to pairing.
-    if not project_id:
-        stored = _credential_store.load_stored_config(path)
-        if stored:
-            endpoint = endpoint or stored.get("endpoint")
-            project_id = project_id or stored.get("projectId")
-            api_key = api_key or stored.get("apiKey")
+    stored = _credential_store.load_stored_config(path)
+    if stored and stored.get("projectId"):
+        resolved_endpoint = endpoint or os.environ.get("KAIRON_ENDPOINT") or stored.get("endpoint") or DEFAULT_ENDPOINT
+        return resolved_endpoint, stored["projectId"], stored.get("apiKey")
+
+    # First-time onboarding: no pairing code, nothing stored yet - project_id has always been
+    # required; api_key has always been optional (some deployments run with no authentication at
+    # all), which is the existing, still-supported "unauthenticated" configuration.
+    endpoint = endpoint or os.environ.get("KAIRON_ENDPOINT")
+    project_id = project_id or os.environ.get("KAIRON_PROJECT_ID")
+    api_key = api_key or os.environ.get("KAIRON_API_KEY")
 
     if not project_id:
         raise ValueError(
@@ -160,6 +174,26 @@ def _resolve_configuration(
         )
 
     return endpoint or DEFAULT_ENDPOINT, project_id, api_key
+
+
+def _confirm_pairing(endpoint: str, pairing_id: str, api_key: str, timeout_seconds: float = 10.0) -> None:
+    """Proves to the backend that this SDK actually received and is about to persist the newly
+    issued credential - the only trustworthy signal of that, distinct from the backend merely
+    having ISSUED the credential (a redeem response can be lost in transit, or this process could
+    crash between receiving it and writing it to disk). Best-effort and silent: a confirmation
+    failure must never block onboarding - the credential is already saved and fully usable either
+    way. It only means an operator-triggered re-pair completion (which revokes the credential being
+    replaced) will keep waiting until a retry, or the next successful telemetry send, lets this
+    catch up - never that the old credential gets revoked before this one is confirmed working.
+    """
+    try:
+        url = endpoint.rstrip("/") + f"/api/v1/sdk/pair/{pairing_id}/confirm"
+        body = json.dumps({"apiKey": api_key}).encode("utf-8")
+        request = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=max(1.0, timeout_seconds)):
+            pass
+    except Exception:
+        pass
 
 
 class Kairon:

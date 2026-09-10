@@ -229,4 +229,30 @@ public sealed class WindowsServiceRemediationTests
         Assert.Contains(machine.Id.ToString(), audit.DataJson);
         if (expected == VerificationStatus.Passed) Assert.Contains("availability is not restored", result.Summary);
     }
+
+    [Fact]
+    public void TargetFingerprintFailsSafelyRatherThanThrowingWhenTheMachineDisappearsMidResolution()
+    {
+        // Machines are never physically deleted through any endpoint in this system today, but
+        // TargetFingerprint must not assume that forever: a target whose Machine vanished between
+        // resolution steps (or via any future code path) must be treated exactly like any other
+        // resolution failure in this method - a null fingerprint, not an unhandled exception.
+        using var h = new TestHarness();
+        var incident = h.SeedIncident();
+        var machine = h.SeedMachine();
+        var credential = h.SeedCredential(h.ProjectId);
+        var snapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
+        snapshots.ForEach(s => s.MachineId = machine.Id);
+        incident.CorrelatedMetricsJson = SreJson.Serialize(snapshots);
+        h.Db.SaveChanges();
+        h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName, allowedOperations: [ServiceToolNames.RestartService]);
+
+        var tool = new RestartServiceTool(h.Db, h.Targets, new Scm());
+        Assert.NotNull(tool.TargetFingerprint(incident)); // sanity: resolves fine while the machine exists
+
+        h.Db.Machines.Remove(machine);
+        h.Db.SaveChanges();
+
+        Assert.Null(tool.TargetFingerprint(incident));
+    }
 }

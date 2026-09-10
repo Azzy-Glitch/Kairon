@@ -15,14 +15,22 @@ namespace Kairon.SDK;
 /// KaironTelemetryClient, KaironTelemetrySender, KaironMetricsCollector - instead of duplicating
 /// them, just wires them up imperatively instead of through the DI container.
 ///
-/// Configuration precedence, matching the documented SDK behavior: an explicit pairingCode always
-/// wins - it (re)pairs immediately, before anything else is even consulted, so it can force a
-/// re-pair over an existing stored credential (e.g. after that credential was revoked from the
-/// KAIRON UI). Only when no pairingCode is given does resolution fall through to explicit
-/// constructor arguments, then KAIRON_ENDPOINT/KAIRON_PROJECT_ID/KAIRON_API_KEY environment
-/// variables, then a previously stored paired credential (KaironCredentialStore). Pairing is
-/// always explicit, never automatic: nothing in this SDK ever supplies pairingCode on the
-/// caller's behalf (not on HTTP 401, not on startup with a still-valid credential) - it is
+/// Configuration precedence (required order):
+///   1. explicit pairingCode - always wins, (re)pairing immediately before anything else below
+///      is even consulted (e.g. to force a re-pair over an existing stored credential after it
+///      was revoked from the KAIRON UI).
+///   2. a previously stored credential (KaironCredentialStore), if one exists - preferred as a
+///      whole over ordinary configuration. It represents a real, completed pairing event, the
+///      strongest available signal of intended identity once no pairingCode is given; ProjectId
+///      and ApiKey are always read from the SAME source together (stored, or explicit/env - never
+///      one field from each), which is what makes a mixed configuration - an explicit/env
+///      ProjectId paired with a DIFFERENT pairing's stored ApiKey, or vice versa - structurally
+///      impossible rather than merely unlikely.
+///   3. ordinary explicit constructor arguments, then KAIRON_ENDPOINT/KAIRON_PROJECT_ID/
+///      KAIRON_API_KEY environment variables - consulted only when neither of the above applies
+///      (first-time onboarding, or a fresh configPath with nothing stored yet).
+/// Pairing is always explicit, never automatic: nothing in this SDK ever supplies pairingCode on
+/// the caller's behalf (not on HTTP 401, not on startup with a still-valid credential) - it is
 /// consulted here only because the caller passed it in this exact call.
 /// </summary>
 public sealed class KaironClient : IDisposable, IAsyncDisposable
@@ -107,23 +115,12 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
 
     private static KaironOptions Resolve(string? pairingCode, string? endpoint, Guid? projectId, string? apiKey, string? configPath)
     {
-        endpoint ??= Environment.GetEnvironmentVariable("KAIRON_ENDPOINT");
-
-        var resolvedProjectId = projectId;
-        if (resolvedProjectId is null)
-        {
-            var envProjectId = Environment.GetEnvironmentVariable("KAIRON_PROJECT_ID");
-            if (!string.IsNullOrWhiteSpace(envProjectId) && Guid.TryParse(envProjectId, out var parsed))
-                resolvedProjectId = parsed;
-        }
-
-        apiKey ??= Environment.GetEnvironmentVariable("KAIRON_API_KEY");
-
         var path = configPath ?? KaironCredentialStore.DefaultPath();
 
         if (!string.IsNullOrWhiteSpace(pairingCode))
         {
-            var paired = KaironPairingClient.PairAsync(endpoint ?? "http://localhost:8000", pairingCode)
+            var resolvedEndpointForPairing = endpoint ?? Environment.GetEnvironmentVariable("KAIRON_ENDPOINT") ?? "http://localhost:8000";
+            var paired = KaironPairingClient.PairAsync(resolvedEndpointForPairing, pairingCode)
                 .GetAwaiter().GetResult();
             if (!paired.Success)
                 throw new InvalidOperationException(
@@ -137,19 +134,38 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
             // a fallback consulted only when everything else came up empty.
             KaironCredentialStore.Save(path, paired.Endpoint!, paired.ProjectId, paired.ApiKey!);
 
+            // Best-effort proof of receipt/persistence for an operator-driven re-pair completion -
+            // see KaironPairingClient.ConfirmAsync's remarks. Never throws, never blocks longer
+            // than its own short timeout.
+            KaironPairingClient.ConfirmAsync(paired.Endpoint!, paired.PairingId, paired.ApiKey!).GetAwaiter().GetResult();
+
             return new KaironOptions { Endpoint = paired.Endpoint!, ProjectId = paired.ProjectId, ApiKey = paired.ApiKey! };
         }
 
-        if (resolvedProjectId is null || string.IsNullOrWhiteSpace(apiKey))
+        // A previously stored credential - if one exists - represents a real, completed pairing
+        // and is preferred wholesale over ordinary configuration. ProjectId and ApiKey always come
+        // from the SAME source together here - never an explicit/env ProjectId combined with a
+        // stored ApiKey (or vice versa) belonging to a different pairing.
+        var stored = KaironCredentialStore.Load(path);
+        if (stored is { } credential)
         {
-            var stored = KaironCredentialStore.Load(path);
-            if (stored is { } credential)
-            {
-                endpoint ??= credential.Endpoint;
-                resolvedProjectId ??= credential.ProjectId;
-                apiKey ??= credential.ApiKey;
-            }
+            var storedEndpoint = endpoint ?? Environment.GetEnvironmentVariable("KAIRON_ENDPOINT") ?? credential.Endpoint;
+            return new KaironOptions { Endpoint = storedEndpoint, ProjectId = credential.ProjectId, ApiKey = credential.ApiKey };
         }
+
+        // First-time onboarding: no pairing code, nothing stored yet - ordinary explicit
+        // arguments, then environment variables.
+        endpoint ??= Environment.GetEnvironmentVariable("KAIRON_ENDPOINT");
+
+        var resolvedProjectId = projectId;
+        if (resolvedProjectId is null)
+        {
+            var envProjectId = Environment.GetEnvironmentVariable("KAIRON_PROJECT_ID");
+            if (!string.IsNullOrWhiteSpace(envProjectId) && Guid.TryParse(envProjectId, out var parsed))
+                resolvedProjectId = parsed;
+        }
+
+        apiKey ??= Environment.GetEnvironmentVariable("KAIRON_API_KEY");
 
         if (resolvedProjectId is null || string.IsNullOrWhiteSpace(apiKey))
             throw new InvalidOperationException(

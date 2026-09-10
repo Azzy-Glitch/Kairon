@@ -155,6 +155,9 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
             machine.LastSeenAt < DateTime.UtcNow.AddSeconds(-Math.Clamp(_legacyOptions.MachineHeartbeatMaxAgeSeconds, 10, 300)))
             return null;
 
+        // Bundled into the same result WindowsServiceTool.TargetFingerprint needs, rather than
+        // making that caller re-query this exact Machine row a second time.
+        target.AgentCredentialHash = machine.AgentCredentialHash;
         return target;
     }
 

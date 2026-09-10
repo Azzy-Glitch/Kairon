@@ -19,7 +19,7 @@ from kairon.client import pair
 
 class _PairingHandler(BaseHTTPRequestHandler):
     status_to_return = 200
-    body_to_return = b'{"apiKey": "krn_abc123", "projectId": "11111111-1111-1111-1111-111111111111", "endpoint": "http://127.0.0.1:8000"}'
+    body_to_return = b'{"apiKey": "krn_abc123", "projectId": "11111111-1111-1111-1111-111111111111", "pairingId": "22222222-2222-2222-2222-222222222222", "endpoint": "http://127.0.0.1:8000"}'
     received: list = []
 
     def do_POST(self):
@@ -39,7 +39,7 @@ class _PairingHandler(BaseHTTPRequestHandler):
 def pairing_server():
     _PairingHandler.received = []
     _PairingHandler.status_to_return = 200
-    _PairingHandler.body_to_return = b'{"apiKey": "krn_abc123", "projectId": "11111111-1111-1111-1111-111111111111", "endpoint": "http://127.0.0.1:8000"}'
+    _PairingHandler.body_to_return = b'{"apiKey": "krn_abc123", "projectId": "11111111-1111-1111-1111-111111111111", "pairingId": "22222222-2222-2222-2222-222222222222", "endpoint": "http://127.0.0.1:8000"}'
 
     server = HTTPServer(("127.0.0.1", 0), _PairingHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -88,7 +88,15 @@ def test_timeout_returns_none_not_an_exception():
         assert pair("http://localhost:8000", "pair_x") is None
 
 
-@pytest.mark.parametrize("body", [b"{}", b"[]", b"null", b'{"apiKey":"x","projectId":"not-a-uuid","endpoint":"http://localhost"}'])
+@pytest.mark.parametrize("body", [
+    b"{}", b"[]", b"null",
+    b'{"apiKey":"x","projectId":"not-a-uuid","endpoint":"http://localhost"}',
+    # A response missing pairingId (or carrying an invalid one) is rejected exactly like a missing
+    # projectId - pairingId is what lets this SDK later confirm it received/persisted the
+    # credential (SdkPairingService.ConfirmAsync), so a response without one is just as unusable.
+    b'{"apiKey":"x","projectId":"11111111-1111-1111-1111-111111111111","endpoint":"http://localhost"}',
+    b'{"apiKey":"x","projectId":"11111111-1111-1111-1111-111111111111","pairingId":"not-a-uuid","endpoint":"http://localhost"}',
+])
 def test_valid_json_without_usable_credentials_is_rejected(pairing_server, body):
     _PairingHandler.body_to_return = body
     assert pair(pairing_server, "pair_x") is None

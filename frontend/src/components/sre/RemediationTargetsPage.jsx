@@ -94,9 +94,18 @@ export default function RemediationTargetsPage({ preselectMachineId }) {
   useEffect(() => {
     if (!form?.projectId) {
       setCredentials([]);
-      return;
+      return undefined;
     }
-    sdkApi.listCredentials(form.projectId).then(setCredentials).catch(() => setCredentials([]));
+    // Guards against an out-of-order response: if the operator switches project A -> B quickly,
+    // project A's request can still be in flight and complete AFTER project B's, which would
+    // otherwise overwrite B's already-loaded credential list with A's stale one. Only the request
+    // for the project selected at the time it settles is allowed to update state.
+    let stale = false;
+    const requestedProjectId = form.projectId;
+    sdkApi.listCredentials(requestedProjectId)
+      .then((result) => { if (!stale) setCredentials(result); })
+      .catch(() => { if (!stale) setCredentials([]); });
+    return () => { stale = true; };
   }, [form?.projectId]);
 
   const openCreate = () => {

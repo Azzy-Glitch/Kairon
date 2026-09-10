@@ -50,6 +50,14 @@ public sealed class TestHarness : IDisposable
     /// to construct, and always reflects any mutation tests make to WindowsRemediation.</summary>
     public IRemediationTargetResolver Targets => new RemediationTargetResolver(Db, Opt(WindowsRemediation));
 
+    /// <summary>A second AppDbContext over the SAME underlying in-memory SQLite connection as Db -
+    /// simulates a genuinely independent request's own scoped DbContext, distinct from Db's own
+    /// change tracker. Needed for concurrency tests: two reads through the SAME Db instance would
+    /// share one tracked entity and could never reproduce "two requests both read before either
+    /// commits."</summary>
+    public AppDbContext CreateAdditionalDbContext() =>
+        new(new DbContextOptionsBuilder<AppDbContext>().UseSqlite(_connection).Options);
+
     public TestHarness(Action<TestHarness>? configure = null)
     {
         _connection = new SqliteConnection("DataSource=:memory:");

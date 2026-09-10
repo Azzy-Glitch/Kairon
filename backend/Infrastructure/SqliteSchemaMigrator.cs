@@ -19,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 5;
+    public const int CurrentVersion = 6;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -124,6 +124,21 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                 await ExecuteAsync(connection, transaction, "PRAGMA user_version = 5;", cancellationToken);
                 version = 5;
                 _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: RemediationTargets", version);
+            }
+
+            // Version 6: adds SdkPairingSessions.IssuedCredentialId/ConfirmedAt - the safe re-pair
+            // handoff (backend/Services/SdkPairingService.cs). RemediationTarget.UpdatedAt also
+            // becomes an EF concurrency token in this release, but that is a mapping-only change
+            // (AppDbContext) with no schema effect, so nothing to migrate for it here.
+            if (version == 5) {
+                foreach (var column in new[] { "IssuedCredentialId", "ConfirmedAt" }) {
+                    var columns = await ColumnsAsync(connection, transaction, "SdkPairingSessions", cancellationToken);
+                    if (!columns.Contains(column))
+                        await ExecuteAsync(connection, transaction, $"ALTER TABLE \"SdkPairingSessions\" ADD COLUMN \"{column}\" TEXT NULL;", cancellationToken);
+                }
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 6;", cancellationToken);
+                version = 6;
+                _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: SdkPairingSessions confirmation columns", version);
             }
 
             if (version != CurrentVersion)

@@ -329,6 +329,16 @@ public class AppDbContext : DbContext
             entity.Property(e => e.ExpectedHostName).HasMaxLength(255).IsRequired();
             entity.Property(e => e.WindowsServiceName).HasMaxLength(256).IsRequired();
             entity.Property(e => e.AllowedOperationsJson).HasMaxLength(500).IsRequired();
+            // A genuine, database-enforced optimistic-concurrency check: EF includes this
+            // property's originally-read value in every UPDATE's WHERE clause and throws
+            // DbUpdateConcurrencyException when zero rows match (RemediationTargetManagementService
+            // translates that into a 409 "stale-update"). Purely a mapping-level annotation - no
+            // schema/column change, so no migration is required for either provider. This is in
+            // addition to, not instead of, the explicit ExpectedUpdatedAt pre-check: that check
+            // catches the common "operator edited a stale form" case with a clear message even
+            // when nothing is truly racing; this token is what makes two genuinely simultaneous
+            // requests resolve to exactly one winner rather than a silent lost update.
+            entity.Property(e => e.UpdatedAt).IsConcurrencyToken();
         });
 
         modelBuilder.Entity<SdkPairingSession>(entity =>
