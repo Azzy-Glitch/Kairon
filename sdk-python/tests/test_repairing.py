@@ -168,6 +168,44 @@ def test_pairing_confirms_with_the_backend_after_redemption(repair_server, confi
         kairon.stop(timeout_seconds=1)
 
 
+def test_persistence_failure_prevents_confirmation_and_propagates_the_error(repair_server, config_path, monkeypatch):
+    import kairon._credential_store as credential_store
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(credential_store, "save_stored_config", _boom)
+
+    with pytest.raises(OSError, match="disk full"):
+        Kairon(pairing_code="pair_diskfull", endpoint=repair_server, config_path=config_path)
+
+    # Confirmation is proof the SDK durably persisted the credential - it must never be sent when
+    # persistence itself failed, even though the backend already issued a real credential.
+    assert _RepairHandler.confirm_calls == 0
+    assert not Path(config_path).exists()
+
+
+def test_confirmation_network_failure_does_not_block_onboarding_or_change_the_credential(repair_server, config_path):
+    # The backend-reported "endpoint" (where confirm is POSTed) can differ from - and be less
+    # reachable than - the endpoint used to redeem the code. Confirmation is best-effort: its own
+    # request failing must never fail pairing, revert the just-persisted credential, or delete it.
+    _RepairHandler.next_pairing_body = json.dumps({
+        "apiKey": "krn_new_key",
+        "projectId": "77777777-7777-7777-7777-777777777777",
+        "pairingId": "99999999-9999-9999-9999-999999999999",
+        "endpoint": "http://127.0.0.1:1",
+    }).encode("utf-8")
+
+    kairon = Kairon(pairing_code="pair_lossy_confirm", endpoint=repair_server, config_path=config_path)
+    try:
+        assert kairon.api_key == "krn_new_key"
+        assert kairon.project_id == "77777777-7777-7777-7777-777777777777"
+        assert Path(config_path).exists()
+        assert _RepairHandler.confirm_calls == 0  # confirm's own POST never reached a real server
+    finally:
+        kairon.stop(timeout_seconds=1)
+
+
 # --- Required precedence: pairing_code > stored credential > ordinary configuration --------
 
 

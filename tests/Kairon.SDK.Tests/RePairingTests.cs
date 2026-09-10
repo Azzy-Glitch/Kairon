@@ -102,6 +102,56 @@ public sealed class RePairingTests : IDisposable
         Assert.Equal("krn_old_key", server.LastConfirmApiKey);
     }
 
+    [Fact]
+    public void PersistenceFailurePreventsConfirmationAndPropagatesTheError()
+    {
+        using var server = new FakeRepairServer();
+        server.NextPairingBody = JsonSerializer.Serialize(new
+        {
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
+        });
+
+        // Force KaironCredentialStore.Save to fail: making _tempDir itself an ordinary FILE means
+        // creating "<_tempDir>/credential.json"'s parent directory (_tempDir) is impossible.
+        File.WriteAllText(_tempDir, "occupies the path Save would need as a directory");
+        try
+        {
+            var badConfigPath = Path.Combine(_tempDir, "credential.json");
+
+            Assert.ThrowsAny<IOException>(
+                () => new KaironClient(pairingCode: "pair_diskfull", endpoint: server.Url, configPath: badConfigPath));
+
+            // Confirmation is proof the SDK durably persisted the credential - it must never be
+            // sent when persistence itself failed, even though the backend already issued a real
+            // credential.
+            Assert.Equal(0, server.ConfirmCalls);
+        }
+        finally
+        {
+            if (File.Exists(_tempDir)) File.Delete(_tempDir);
+        }
+    }
+
+    [Fact]
+    public async Task ConfirmationNetworkFailureDoesNotBlockOnboardingOrChangeTheCredential()
+    {
+        using var server = new FakeRepairServer();
+        // The backend-reported "endpoint" (where confirm is POSTed) can differ from - and be less
+        // reachable than - the endpoint used to redeem the code. Confirmation is best-effort: its
+        // own request failing must never fail pairing, revert the just-persisted credential, or
+        // delete it.
+        server.NextPairingBody = JsonSerializer.Serialize(new
+        {
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = "http://127.0.0.1:1"
+        });
+
+        await using var kairon = new KaironClient(pairingCode: "pair_lossy_confirm", endpoint: server.Url, configPath: ConfigPath);
+
+        Assert.Equal(Guid.Parse("77777777-7777-7777-7777-777777777777"), kairon.ProjectId);
+        Assert.True(File.Exists(ConfigPath));
+        Assert.Equal(0, server.ConfirmCalls); // confirm's own POST never reached a real server
+    }
+
     // --- Required precedence: pairingCode > stored credential > ordinary configuration --------
 
     [Fact]

@@ -127,6 +127,37 @@ public class KaironTests : IDisposable
         Assert.Contains("needs a project", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void CorruptedStoredCredentialFileIsTreatedAsNotStored()
+    {
+        // A stored credential.json can become unreadable (disk corruption, a foreign machine's
+        // key ring after copying the file across machines, a partial write) - this must never be
+        // fatal and must never be partially trusted; it is exactly as if nothing had been stored.
+        Directory.CreateDirectory(_tempDir);
+        File.WriteAllText(ConfigPath, "not valid protected data at all");
+
+        using var kairon = new KaironClient(
+            endpoint: "http://127.0.0.1:9999",
+            projectId: Guid.Parse("66666666-6666-6666-6666-666666666666"),
+            apiKey: "krn_fallback",
+            configPath: ConfigPath);
+
+        Assert.Equal(Guid.Parse("66666666-6666-6666-6666-666666666666"), kairon.ProjectId);
+    }
+
+    [Fact]
+    public void MissingEverythingFailsClearlyEvenWithAPartiallyValidStoredFilePresent()
+    {
+        // A stored file that fails KaironCredentialStore.Load's own validity check (e.g. saved
+        // by a corrupted/older writer) must be rejected as a whole, never partially trusted - so
+        // with nothing else supplying a project/key, construction still fails clearly.
+        Directory.CreateDirectory(_tempDir);
+        File.WriteAllText(ConfigPath, "");
+
+        var ex = Assert.Throws<InvalidOperationException>(() => new KaironClient(configPath: ConfigPath));
+        Assert.Contains("needs a project", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed class FakePairingServer : IDisposable
     {
         private readonly HttpListener _listener = new();

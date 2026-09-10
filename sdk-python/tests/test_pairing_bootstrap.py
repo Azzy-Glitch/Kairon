@@ -138,6 +138,32 @@ def test_missing_everything_fails_clearly_instead_of_starting_half_configured(co
         Kairon(config_path=config_path)
 
 
+def test_corrupted_stored_credential_file_is_treated_as_not_stored(config_path):
+    # A stored credential.json can become unreadable (disk corruption, a foreign machine's DPAPI
+    # key after copying the file across machines, a partial write) - this must never be a fatal
+    # error and must never be partially trusted; it is exactly as if nothing had been stored yet.
+    Path(config_path).write_bytes(b"not valid json at all")
+
+    kairon = Kairon(endpoint="http://127.0.0.1:9999", project_id="proj-fallback", api_key="krn_fallback",
+                     config_path=config_path)
+    try:
+        assert kairon.project_id == "proj-fallback"
+        assert kairon.api_key == "krn_fallback"
+    finally:
+        kairon.stop(timeout_seconds=1)
+
+
+def test_stored_credential_missing_a_required_field_is_treated_as_not_stored(config_path):
+    # A stored blob missing apiKey (e.g. an older/foreign format) must be rejected as a whole -
+    # never partially trusted for the fields it does have - so it falls through exactly like "no
+    # stored credential at all", and with nothing else supplying a project_id, onboarding fails
+    # clearly instead of silently starting half-configured.
+    Path(config_path).write_text(json.dumps({"endpoint": "http://127.0.0.1:8000", "projectId": "proj-partial"}))
+
+    with pytest.raises(ValueError, match="needs a project_id"):
+        Kairon(config_path=config_path)
+
+
 def test_stored_credential_is_encrypted_or_permission_restricted_at_rest(pairing_server, config_path):
     kairon = Kairon(pairing_code="pair_secureme", endpoint=pairing_server, config_path=config_path)
     try:

@@ -394,6 +394,46 @@ public sealed class SdkPairingTests : IDisposable
     }
 
     [Fact]
+    public async Task CompleteRepairOnlyTouchesEnabledSameProjectTargetsBoundToTheExactOldCredential()
+    {
+        _h.EnsureProject();
+        var otherProject = new Project { Name = "other-project-for-rebind-scope" };
+        _h.Db.Projects.Add(otherProject);
+        _h.Db.SaveChanges();
+
+        var oldCredential = _h.SeedCredential(_h.ProjectId, "old-hash");
+        var otherCredential = _h.SeedCredential(_h.ProjectId, "other-hash");
+        var machine = _h.SeedMachine();
+
+        var targetA = _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName, service: "SvcA");
+        var targetB = _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName, service: "SvcB");
+        var targetC = _h.SeedRemediationTarget(machine.Id, otherCredential.Id, machine.HostName, service: "SvcC");
+        var disabledTarget = _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName, service: "SvcDisabled", enabled: false);
+        // A data anomaly a correct implementation must still defend against: another project's own
+        // row somehow carrying this project's old credential id. ProjectId scoping - not "does any
+        // row reference this credential id" - must be what decides eligibility.
+        var otherProjectTarget = _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName,
+            service: "SvcOtherProject", projectId: otherProject.Id);
+
+        var service = Service();
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default))!;
+        var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
+        await service.ConfirmAsync(created.PairingId, paired.ApiKey, default);
+
+        var result = await service.CompleteRepairAsync(created.PairingId, oldCredential.Id, default);
+        var newCredentialId = _h.Db.SdkPairingSessions.Single(s => s.Id == created.PairingId).IssuedCredentialId!.Value;
+
+        Assert.Equal(CompleteRepairOutcome.Success, result.Outcome);
+        Assert.Equal(2, result.RebindCount);
+        Assert.Equal(newCredentialId, _h.Db.RemediationTargets.Single(t => t.Id == targetA.Id).TelemetryCredentialId);
+        Assert.Equal(newCredentialId, _h.Db.RemediationTargets.Single(t => t.Id == targetB.Id).TelemetryCredentialId);
+        Assert.Equal(otherCredential.Id, _h.Db.RemediationTargets.Single(t => t.Id == targetC.Id).TelemetryCredentialId);
+        Assert.Equal(oldCredential.Id, _h.Db.RemediationTargets.Single(t => t.Id == disabledTarget.Id).TelemetryCredentialId);
+        Assert.Equal(oldCredential.Id, _h.Db.RemediationTargets.Single(t => t.Id == otherProjectTarget.Id).TelemetryCredentialId);
+        Assert.NotNull(_h.Db.ProjectApiCredentials.Single(c => c.Id == oldCredential.Id).RevokedAt);
+    }
+
+    [Fact]
     public async Task CompleteRepairRejectsACredentialBelongingToAnotherProjectAndLeavesItUntouched()
     {
         _h.EnsureProject();
