@@ -40,7 +40,7 @@ public sealed class WindowsServiceRemediationTests
         var result = await tool.ExecuteAsync(new RemediationToolContext {
             ProjectId = incident.ProjectId, IncidentId = incident.Id, IncidentKey = incident.IncidentKey,
             Environment = incident.Environment, Service = incident.Service, ActionKey = "ACT-states",
-            Parameters = new Dictionary<string, string> { ["targetFingerprint"] = tool.TargetFingerprint(incident)! }
+            Parameters = new Dictionary<string, string> { ["targetFingerprint"] = (await tool.TargetFingerprintAsync(incident))! }
         });
         Assert.Equal(success, result.Success); Assert.Equal(final, scm.State); Assert.Equal(calls, scm.Calls.Count);
         Assert.All(scm.Calls, c => Assert.Equal((machine.HostName, "ScopedService"), (c.Host, c.Service)));
@@ -116,31 +116,31 @@ public sealed class WindowsServiceRemediationTests
         var tool = new RestartServiceTool(h.Db, h.Targets, scm);
         var registry = new RemediationToolRegistry([tool]);
         var policy = new RemediationPolicy(registry, Options.Create(new RemediationOptions()), NullLogger<RemediationPolicy>.Instance);
-        var parameters = new Dictionary<string, string> { ["targetFingerprint"] = tool.TargetFingerprint(incident)! };
+        var parameters = new Dictionary<string, string> { ["targetFingerprint"] = (await tool.TargetFingerprintAsync(incident))! };
         var action = new RemediationAction { IncidentId = incident.Id, ActionType = tool.Name, Status = RemediationStatus.Proposed, ParametersJson = SreJson.Serialize(parameters) };
-        Assert.False(policy.ValidateExecution(incident, action).Allowed);
+        Assert.False((await policy.ValidateExecutionAsync(incident, action)).Allowed);
         action.Status = RemediationStatus.Approved;
-        Assert.True(policy.ValidateExecution(incident, action).Allowed);
+        Assert.True((await policy.ValidateExecutionAsync(incident, action)).Allowed);
         var result = await tool.ExecuteAsync(new RemediationToolContext { ProjectId = incident.ProjectId, IncidentId = incident.Id, IncidentKey = incident.IncidentKey, ActionKey = "ACT-test", Service = incident.Service, Environment = environment, Parameters = parameters });
         Assert.True(result.Success);
         Assert.Equal(new[] { ("enrolled-host", "ScopedService", false), ("enrolled-host", "ScopedService", true) }, scm.Calls);
         target.WindowsServiceName = "AnotherService";
         h.Db.SaveChanges();
-        Assert.Equal("target-changed", policy.ValidateExecution(incident, action).Code);
+        Assert.Equal("target-changed", (await policy.ValidateExecutionAsync(incident, action)).Code);
         Assert.False((await tool.ExecuteAsync(new RemediationToolContext { ProjectId = incident.ProjectId, IncidentId = incident.Id, IncidentKey = incident.IncidentKey, ActionKey = "ACT-test", Service = incident.Service, Environment = environment, Parameters = parameters })).Success);
         Assert.Equal(2, scm.Calls.Count);
         machine.LastSeenAt = DateTime.UtcNow.AddMinutes(-10);
         h.Db.SaveChanges();
-        Assert.Null(tool.TargetFingerprint(incident));
+        Assert.Null(await tool.TargetFingerprintAsync(incident));
     }
     [Theory]
     [InlineData("Demo")]
     [InlineData("Hackathon")]
-    public void RetiredEnvironmentCannotBeEnabledByAllowlist(string environment) {
+    public async Task RetiredEnvironmentCannotBeEnabledByAllowlist(string environment) {
         using var h = new TestHarness();
         h.Remediation.AllowedEnvironments.Add(environment);
         var incident = h.SeedIncident(); incident.Environment = environment;
-        Assert.Equal("environment-not-allowed", h.Policy.ValidateProposal(incident, DemoToolNames.RunHealthCheck, RiskLevel.Low).Code);
+        Assert.Equal("environment-not-allowed", (await h.Policy.ValidateProposalAsync(incident, DemoToolNames.RunHealthCheck, RiskLevel.Low)).Code);
     }
 
     [Theory]
@@ -165,7 +165,7 @@ public sealed class WindowsServiceRemediationTests
             environment: incident.Environment, service: incident.Service, allowedOperations: [ServiceToolNames.RestartService]);
         var scm = new Scm { State = scenario == "stopped" ? 1 : 4 };
         var tool = new RestartServiceTool(h.Db, h.Targets, scm);
-        var action = new RemediationAction { IncidentId = incident.Id, ActionKey = "ACT-scope", ActionType = tool.Name, Status = RemediationStatus.Executed, CompletedAt = DateTime.UtcNow.AddSeconds(-20), ParametersJson = SreJson.Serialize(new Dictionary<string, string> { ["targetFingerprint"] = tool.TargetFingerprint(incident)! }) };
+        var action = new RemediationAction { IncidentId = incident.Id, ActionKey = "ACT-scope", ActionType = tool.Name, Status = RemediationStatus.Executed, CompletedAt = DateTime.UtcNow.AddSeconds(-20), ParametersJson = SreJson.Serialize(new Dictionary<string, string> { ["targetFingerprint"] = (await tool.TargetFingerprintAsync(incident))! }) };
         incident.Actions.Add(action); h.Db.RemediationActions.Add(action);
         var before = h.SeedMetric(DateTime.UtcNow.AddSeconds(-30), cpu: 95, retries: 50);
         before.MachineId = machine.Id;
@@ -206,7 +206,7 @@ public sealed class WindowsServiceRemediationTests
             environment: incident.Environment, service: incident.Service, allowedOperations: [ServiceToolNames.StopService]);
         var scm = new Scm { State = scenario == "running" ? 4 : 1 };
         var tool = new StopServiceTool(h.Db, h.Targets, scm);
-        var action = new RemediationAction { IncidentId = incident.Id, ActionKey = "ACT-scope", ActionType = tool.Name, Status = RemediationStatus.Executed, CompletedAt = DateTime.UtcNow.AddSeconds(-20), ParametersJson = SreJson.Serialize(new Dictionary<string, string> { ["targetFingerprint"] = tool.TargetFingerprint(incident)! }) };
+        var action = new RemediationAction { IncidentId = incident.Id, ActionKey = "ACT-scope", ActionType = tool.Name, Status = RemediationStatus.Executed, CompletedAt = DateTime.UtcNow.AddSeconds(-20), ParametersJson = SreJson.Serialize(new Dictionary<string, string> { ["targetFingerprint"] = (await tool.TargetFingerprintAsync(incident))! }) };
         incident.Actions.Add(action); h.Db.RemediationActions.Add(action);
 
         if (scenario == "old-heartbeat") machine.LastSeenAt = action.CompletedAt!.Value.AddSeconds(-1);
@@ -230,8 +230,56 @@ public sealed class WindowsServiceRemediationTests
         if (expected == VerificationStatus.Passed) Assert.Contains("availability is not restored", result.Summary);
     }
 
+    private sealed class MutatingScm : IWindowsServiceControl {
+        public int State = 1;
+        public List<(string Host, string Service, bool Start)> Calls = [];
+        public Action? OnQuery;
+        public Task<int> QueryAsync(string host, string service, CancellationToken ct) {
+            var callback = OnQuery;
+            OnQuery = null; // only ever mutate once, however many times QueryAsync is called
+            callback?.Invoke();
+            return Task.FromResult(State);
+        }
+        public Task ChangeAsync(string host, string service, bool start, CancellationToken ct) {
+            Calls.Add((host, service, start)); State = start ? 4 : 1; return Task.CompletedTask;
+        }
+    }
+
     [Fact]
-    public void TargetFingerprintFailsSafelyRatherThanThrowingWhenTheMachineDisappearsMidResolution()
+    public async Task ATargetDisabledDuringTheScmQueryIsCaughtBeforeTheIrreversibleChangeCall()
+    {
+        // P2-11 (TOCTOU): the target is re-resolved and re-fingerprinted immediately before each
+        // irreversible ChangeAsync call, not just once at the top of ExecuteAsync. This simulates
+        // an operator disabling the target during the SCM query's own round-trip - after the
+        // lock-acquisition-time check already passed, but before the state-changing SCM call.
+        using var h = new TestHarness();
+        var incident = h.SeedIncident(); incident.Environment = "Production";
+        var machine = h.SeedMachine();
+        var credential = h.SeedCredential(incident.ProjectId);
+        var snapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
+        snapshots.ForEach(s => s.MachineId = machine.Id);
+        incident.CorrelatedMetricsJson = SreJson.Serialize(snapshots);
+        h.Db.SaveChanges();
+        var target = h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName,
+            environment: incident.Environment, service: incident.Service, allowedOperations: [ServiceToolNames.StartService]);
+
+        var scm = new MutatingScm { State = 1 };
+        var tool = new StartServiceTool(h.Db, h.Targets, scm);
+        var fingerprint = (await tool.TargetFingerprintAsync(incident))!;
+        scm.OnQuery = () => { target.Enabled = false; h.Db.SaveChanges(); };
+
+        var result = await tool.ExecuteAsync(new RemediationToolContext {
+            ProjectId = incident.ProjectId, IncidentId = incident.Id, IncidentKey = incident.IncidentKey,
+            Environment = incident.Environment, Service = incident.Service, ActionKey = "ACT-toctou",
+            Parameters = new Dictionary<string, string> { ["targetFingerprint"] = fingerprint }
+        });
+
+        Assert.False(result.Success);
+        Assert.Empty(scm.Calls); // the irreversible SCM state change was never issued
+    }
+
+    [Fact]
+    public async Task TargetFingerprintFailsSafelyRatherThanThrowingWhenTheMachineDisappearsMidResolution()
     {
         // Machines are never physically deleted through any endpoint in this system today, but
         // TargetFingerprint must not assume that forever: a target whose Machine vanished between
@@ -248,11 +296,11 @@ public sealed class WindowsServiceRemediationTests
         h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName, allowedOperations: [ServiceToolNames.RestartService]);
 
         var tool = new RestartServiceTool(h.Db, h.Targets, new Scm());
-        Assert.NotNull(tool.TargetFingerprint(incident)); // sanity: resolves fine while the machine exists
+        Assert.NotNull(await tool.TargetFingerprintAsync(incident)); // sanity: resolves fine while the machine exists
 
         h.Db.Machines.Remove(machine);
         h.Db.SaveChanges();
 
-        Assert.Null(tool.TargetFingerprint(incident));
+        Assert.Null(await tool.TargetFingerprintAsync(incident));
     }
 }

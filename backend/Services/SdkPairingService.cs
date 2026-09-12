@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models.Platform;
+using Kairon.Backend.Services.Audit;
 using Microsoft.EntityFrameworkCore;
 
 namespace Kairon.Backend.Services;
@@ -26,7 +27,32 @@ public sealed record PairingStatus(
     Guid PairingId, Guid ProjectId, string SdkType, DateTime CreatedAt, DateTime ExpiresAt,
     DateTime? RedeemedAt, DateTime? ConfirmedAt, DateTime? RevokedAt, string Status);
 
-public enum CompleteRepairOutcome { Success, SessionNotFound, NotConfirmed, OldCredentialNotFound, OldCredentialWrongProject }
+public enum CompleteRepairOutcome
+{
+    Success,
+    SessionNotFound,
+    NotConfirmed,
+    OldCredentialNotFound,
+    OldCredentialWrongProject,
+
+    /// <summary>The caller-supplied old-credential id does not match the exact credential this
+    /// session was bound, at creation, to replace (SdkPairingSession.ReplacesCredentialId) - or
+    /// this session was never bound to replace anything (a first-time pairing session has no
+    /// binding at all, and can never be completed as a re-pair).</summary>
+    OldCredentialMismatch,
+
+    /// <summary>The old credential is already revoked, but not because THIS session's own
+    /// completion revoked it (that case is reported as Success, idempotently, via CompletedAt) -
+    /// something else revoked it first, so the expected rebind cannot be verified to have actually
+    /// happened under this session.</summary>
+    OldCredentialAlreadyRevoked,
+
+    /// <summary>The newly issued credential - confirmed as received/usable at confirmation time -
+    /// has since been independently revoked (e.g. a second, unrelated re-pair; a direct operator
+    /// revocation). Completing now would rebind targets onto a credential that no longer works and
+    /// revoke the one they were still relying on - refused instead.</summary>
+    NewCredentialRevoked
+}
 
 /// <summary>NewCredentialId/ProjectId are populated on Success (and are needed by the controller
 /// for a secret-free audit record); RebindCount is the number of enabled RemediationTargets whose
@@ -53,12 +79,22 @@ public sealed record CompleteRepairResult(
 /// CompleteRepairAsync (operator-driven) become willing to revoke the old credential, and it does
 /// so atomically together with rebinding any RemediationTarget that referenced it, so the system
 /// is never left believing a target is healthy while its credential is actually revoked.
+///
+/// Every mutating method records its own audit event (IPlatformAuditService.Record only adds to
+/// this same AppDbContext's change tracker; it does not save independently) immediately before its
+/// own SaveChangesAsync/CommitAsync, so the audit row and the business-state mutation it describes
+/// either both land or neither does - a separate, later SaveChangesAsync call (e.g. from a
+/// controller, after this method's own transaction already committed) could otherwise lose the
+/// audit record for an operation that had already taken effect.
 /// </summary>
 public interface ISdkPairingService
 {
-    Task<CreatedPairing?> CreateAsync(Guid projectId, string sdkType, CancellationToken cancellationToken);
+    Task<CreatedPairing?> CreateAsync(Guid projectId, string sdkType, CancellationToken cancellationToken,
+        Guid? replacesCredentialId = null, string actor = "local-operator");
+
     Task<PairedSdk?> RedeemAsync(string code, string sdkType, string version, CancellationToken cancellationToken);
-    Task<bool> RevokePairingAsync(Guid pairingId, CancellationToken cancellationToken);
+
+    Task<bool> RevokePairingAsync(Guid pairingId, CancellationToken cancellationToken, string actor = "local-operator");
 
     /// <summary>Lets an operator UI poll whether a pairing session (re-pairing included - a
     /// re-pair is just another pairing session for the same, already-connected, project) has been
@@ -68,17 +104,23 @@ public interface ISdkPairingService
     /// <summary>Called by the SDK itself, unattended, right after it durably persists the newly
     /// redeemed credential - authenticates by proving possession of the EXACT api key this session
     /// issued (never merely "any valid credential for the project", which the old one still is
-    /// until revoked). Idempotent: confirming an already-confirmed session succeeds trivially.</summary>
+    /// until revoked). Revalidates that exact credential on EVERY call, including a replay of an
+    /// already-confirmed session: a repeated confirmation request must never be able to claim
+    /// success without presenting the correct key again, even if some earlier call already
+    /// succeeded.</summary>
     Task<bool> ConfirmAsync(Guid pairingId, string? apiKey, CancellationToken cancellationToken);
 
     /// <summary>Operator-driven re-pair completion. Refuses unless the session is Confirmed (see
-    /// class remarks). Atomically rebinds every ENABLED RemediationTarget currently bound to
+    /// class remarks) and the supplied oldCredentialId matches exactly what this session was bound,
+    /// at creation, to replace. Re-validates the NEW credential is still active immediately before
+    /// acting on it, then atomically rebinds every ENABLED RemediationTarget currently bound to
     /// oldCredentialId - scoped to this session's own project, so it can never touch another
     /// project's targets - onto the newly issued credential, then revokes oldCredentialId. Safe to
     /// call more than once: re-pairing "itself" (oldCredentialId already equal to the issued
-    /// credential) and completing an already-completed repair (oldCredentialId already revoked)
-    /// both succeed as no-ops rather than erroring or double-revoking.</summary>
-    Task<CompleteRepairResult> CompleteRepairAsync(Guid pairingId, Guid oldCredentialId, CancellationToken cancellationToken);
+    /// credential) and completing an already-completed repair both succeed as no-ops rather than
+    /// erroring or double-revoking.</summary>
+    Task<CompleteRepairResult> CompleteRepairAsync(Guid pairingId, Guid oldCredentialId, CancellationToken cancellationToken,
+        string actor = "local-operator");
 }
 
 public sealed class SdkPairingService : ISdkPairingService
@@ -87,17 +129,20 @@ public sealed class SdkPairingService : ISdkPairingService
     private readonly IProjectCredentialService _credentials;
     private readonly TimeProvider _time;
     private readonly IConfiguration _configuration;
+    private readonly IPlatformAuditService _audit;
 
     public SdkPairingService(AppDbContext db, IProjectCredentialService credentials, TimeProvider time,
-        IConfiguration configuration)
+        IConfiguration configuration, IPlatformAuditService audit)
     {
         _db = db;
         _credentials = credentials;
         _time = time;
         _configuration = configuration;
+        _audit = audit;
     }
 
-    public async Task<CreatedPairing?> CreateAsync(Guid projectId, string sdkType, CancellationToken cancellationToken)
+    public async Task<CreatedPairing?> CreateAsync(Guid projectId, string sdkType, CancellationToken cancellationToken,
+        Guid? replacesCredentialId = null, string actor = "local-operator")
     {
         // Matches ProjectCredentialService.AuthorizeAsync's own IsActive requirement: an inactive
         // project can never authenticate telemetry, so pairing must not issue a usable-looking
@@ -105,6 +150,18 @@ public sealed class SdkPairingService : ISdkPairingService
         if (!await _db.Projects.AsNoTracking().AnyAsync(x => x.Id == projectId && x.IsActive, cancellationToken)) return null;
         var normalized = NormalizeSdk(sdkType);
         if (normalized is null) return null;
+
+        if (replacesCredentialId is { } oldId)
+        {
+            // A re-pair session must be bound, at creation, to the exact active credential it
+            // intends to replace - CompleteRepairAsync later refuses any other credential (see its
+            // own remarks). Rejecting an invalid binding here rather than silently ignoring it
+            // means a session can never exist "for" a credential it could never actually complete
+            // against.
+            var replaces = await _db.ProjectApiCredentials.AsNoTracking()
+                .SingleOrDefaultAsync(c => c.Id == oldId, cancellationToken);
+            if (replaces is null || replaces.ProjectId != projectId || replaces.RevokedAt is not null) return null;
+        }
 
         var code = "pair_" + Token(24);
         var now = _time.GetUtcNow().UtcDateTime;
@@ -115,9 +172,12 @@ public sealed class SdkPairingService : ISdkPairingService
             SdkType = normalized,
             CodeHash = Hash(code),
             CreatedAt = now,
-            ExpiresAt = now.AddMinutes(10)
+            ExpiresAt = now.AddMinutes(10),
+            ReplacesCredentialId = replacesCredentialId
         };
         _db.SdkPairingSessions.Add(session);
+        _audit.Record("sdk.pairing-created", actor, "project", projectId.ToString(), projectId,
+            data: new { PairingId = session.Id, SdkType = normalized, session.ExpiresAt, ReplacesCredentialId = replacesCredentialId });
         await _db.SaveChangesAsync(cancellationToken);
         return new CreatedPairing(session.Id, code, session.ExpiresAt, normalized);
     }
@@ -149,6 +209,8 @@ public sealed class SdkPairingService : ISdkPairingService
 
         session.RedeemedAt = now;
         session.IssuedCredentialId = created.Id;
+        _audit.Record("sdk.paired", "sdk:" + sdkType, "project", session.ProjectId.ToString(), session.ProjectId,
+            data: new { SdkType = sdkType, Version = version });
         await _db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
@@ -156,7 +218,7 @@ public sealed class SdkPairingService : ISdkPairingService
         return new PairedSdk(created.ApiKey, session.ProjectId, endpoint.TrimEnd('/'), session.Id);
     }
 
-    public async Task<bool> RevokePairingAsync(Guid pairingId, CancellationToken cancellationToken)
+    public async Task<bool> RevokePairingAsync(Guid pairingId, CancellationToken cancellationToken, string actor = "local-operator")
     {
         var session = await _db.SdkPairingSessions.SingleOrDefaultAsync(x => x.Id == pairingId, cancellationToken);
         var now = _time.GetUtcNow().UtcDateTime;
@@ -166,6 +228,7 @@ public sealed class SdkPairingService : ISdkPairingService
         if (session is null || session.RedeemedAt is not null || session.RevokedAt is not null || session.ExpiresAt <= now)
             return false;
         session.RevokedAt = now;
+        _audit.Record("sdk.pairing-revoked", actor, "sdk-pairing", pairingId.ToString(), session.ProjectId);
         await _db.SaveChangesAsync(cancellationToken);
         return true;
     }
@@ -192,12 +255,17 @@ public sealed class SdkPairingService : ISdkPairingService
 
         var session = await _db.SdkPairingSessions.SingleOrDefaultAsync(x => x.Id == pairingId, cancellationToken);
         if (session is null || session.RedeemedAt is null || session.IssuedCredentialId is null) return false;
-        if (session.ConfirmedAt is not null) return true; // idempotent replay - already confirmed
 
         // Deliberately NOT ProjectCredentialService.AuthorizeAsync: that call is gated by
         // PlatformSecurity:RequireTelemetryKey and would trivially "pass" with any/no key at all
         // when that flag is off. Confirmation must always cryptographically prove possession of
         // this session's specific issued credential, regardless of the telemetry-auth toggle.
+        //
+        // This check runs BEFORE the already-confirmed idempotency shortcut below, on every call,
+        // including a replay - a repeated confirmation request must never be able to claim success
+        // (even for an already-confirmed session) without presenting the correct key again. It also
+        // means a session whose credential was revoked after it was first confirmed can no longer
+        // be "re-confirmed" by replaying the old key.
         var credential = await _db.ProjectApiCredentials.AsNoTracking()
             .SingleOrDefaultAsync(c => c.Id == session.IssuedCredentialId.Value && c.ProjectId == session.ProjectId, cancellationToken);
         if (credential is null || credential.RevokedAt is not null) return false;
@@ -207,18 +275,37 @@ public sealed class SdkPairingService : ISdkPairingService
                 Encoding.ASCII.GetBytes(suppliedHash), Encoding.ASCII.GetBytes(credential.KeyHash)))
             return false;
 
+        if (session.ConfirmedAt is not null) return true; // idempotent replay - just reproven above
+
         session.ConfirmedAt = _time.GetUtcNow().UtcDateTime;
         await _db.SaveChangesAsync(cancellationToken);
         return true;
     }
 
-    public async Task<CompleteRepairResult> CompleteRepairAsync(Guid pairingId, Guid oldCredentialId, CancellationToken cancellationToken)
+    public async Task<CompleteRepairResult> CompleteRepairAsync(Guid pairingId, Guid oldCredentialId, CancellationToken cancellationToken,
+        string actor = "local-operator")
     {
         var session = await _db.SdkPairingSessions.SingleOrDefaultAsync(x => x.Id == pairingId, cancellationToken);
         if (session is null || session.IssuedCredentialId is null)
             return new CompleteRepairResult(CompleteRepairOutcome.SessionNotFound);
         if (session.ConfirmedAt is null)
             return new CompleteRepairResult(CompleteRepairOutcome.NotConfirmed);
+
+        // The session must have been explicitly bound, at creation, to the exact credential it is
+        // completing against - never any other active same-project credential the caller happens
+        // to supply (see SdkPairingSession.ReplacesCredentialId's remarks). A first-time pairing
+        // session (no binding at all) can never be completed as a re-pair. Checked BEFORE the
+        // idempotency shortcut below: a replay against a different (wrong) credential must never
+        // succeed just because this session already completed against its real one.
+        if (session.ReplacesCredentialId is null || session.ReplacesCredentialId != oldCredentialId)
+            return new CompleteRepairResult(CompleteRepairOutcome.OldCredentialMismatch);
+
+        // Idempotent replay: THIS session's own completion already ran (and the caller just
+        // proved, above, that they're asking about the same credential relationship). Deliberately
+        // distinct from "the old credential happens to be revoked" (checked further down) - that
+        // alone doesn't prove this session is what did it.
+        if (session.CompletedAt is not null)
+            return new CompleteRepairResult(CompleteRepairOutcome.Success, 0, session.IssuedCredentialId, session.ProjectId);
 
         var oldCredential = await _db.ProjectApiCredentials.SingleOrDefaultAsync(c => c.Id == oldCredentialId, cancellationToken);
         if (oldCredential is null)
@@ -227,14 +314,36 @@ public sealed class SdkPairingService : ISdkPairingService
             return new CompleteRepairResult(CompleteRepairOutcome.OldCredentialWrongProject);
 
         var newCredentialId = session.IssuedCredentialId.Value;
-        if (oldCredentialId == newCredentialId || oldCredential.RevokedAt is not null)
+        if (oldCredentialId == newCredentialId)
         {
-            // Re-pairing "itself", or a retry after a previous completion already ran - a safe,
-            // idempotent no-op rather than an error or a second revoke/rebind pass.
+            // Re-pairing "itself" - a safe no-op; still recorded as completed so a replay is
+            // consistent and idempotent.
+            session.CompletedAt = _time.GetUtcNow().UtcDateTime;
+            _audit.Record("sdk.repair-completed", actor, "sdk-pairing", pairingId.ToString(), session.ProjectId,
+                data: new { OldCredentialId = oldCredentialId, NewCredentialId = newCredentialId, RebindCount = 0 });
+            await _db.SaveChangesAsync(cancellationToken);
             return new CompleteRepairResult(CompleteRepairOutcome.Success, 0, newCredentialId, session.ProjectId);
         }
 
+        if (oldCredential.RevokedAt is not null)
+        {
+            // Not this session's own prior completion (that would have short-circuited via
+            // CompletedAt above) - something else revoked it first. Reporting success here would
+            // misrepresent whether the expected rebind actually happened under this session.
+            return new CompleteRepairResult(CompleteRepairOutcome.OldCredentialAlreadyRevoked);
+        }
+
         await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
+
+        // Re-load and revalidate the NEW credential itself, immediately before acting on it.
+        // Confirmed only proves it was valid at confirmation time - it could have been
+        // independently revoked any time between then and now (a second, unrelated re-pair; a
+        // direct operator revocation). Rebinding targets onto an already-revoked credential, or
+        // revoking the old one in exchange for a new one that no longer works, would silently
+        // strand telemetry.
+        var newCredential = await _db.ProjectApiCredentials.SingleOrDefaultAsync(c => c.Id == newCredentialId, cancellationToken);
+        if (newCredential is null || newCredential.ProjectId != session.ProjectId || newCredential.RevokedAt is not null)
+            return new CompleteRepairResult(CompleteRepairOutcome.NewCredentialRevoked);
 
         // Only ENABLED targets referencing the exact old credential, in this exact project - never
         // another project's rows (TelemetryCredentialId alone is not project-scoped by itself, so
@@ -248,9 +357,13 @@ public sealed class SdkPairingService : ISdkPairingService
         {
             target.TelemetryCredentialId = newCredentialId;
             target.UpdatedAt = now;
+            target.RowVersion = Guid.NewGuid();
         }
 
         oldCredential.RevokedAt = now;
+        session.CompletedAt = now;
+        _audit.Record("sdk.repair-completed", actor, "sdk-pairing", pairingId.ToString(), session.ProjectId,
+            data: new { OldCredentialId = oldCredentialId, NewCredentialId = newCredentialId, RebindCount = affected.Count });
 
         await _db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);

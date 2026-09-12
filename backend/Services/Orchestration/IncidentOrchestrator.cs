@@ -429,7 +429,7 @@ public class IncidentOrchestrator : IIncidentOrchestrator
         foreach (var recommendation in result.Recommendations)
         {
             var risk = ParseRisk(recommendation.RiskLevel);
-            var decision = _policy.ValidateProposal(incident, recommendation.Action, risk);
+            var decision = await _policy.ValidateProposalAsync(incident, recommendation.Action, risk, cancellationToken);
 
             annotated.Add(new RecommendationDto
             {
@@ -457,7 +457,7 @@ public class IncidentOrchestrator : IIncidentOrchestrator
                         message: "Windows service tools do not accept AI-supplied target parameters.");
                     continue;
                 }
-                var binding = scoped.TargetFingerprint(incident);
+                var binding = await scoped.TargetFingerprintAsync(incident, cancellationToken);
                 if (binding is null) continue;
                 parameters = new Dictionary<string, string> { ["targetFingerprint"] = binding };
             }

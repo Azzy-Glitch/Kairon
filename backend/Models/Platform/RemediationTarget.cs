@@ -38,4 +38,16 @@ public sealed class RemediationTarget
 
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>The actual EF concurrency token (AppDbContext) - regenerated to a fresh random
+    /// value on every write that changes this row. UpdatedAt alone is not safe as a concurrency
+    /// token: two independent writes can compute the identical wall-clock value (coarse OS clock
+    /// resolution, or two requests landing in the same tick), which would make EF's "did the
+    /// original value I read still match?" check pass even though someone else's write already
+    /// landed in between - silently losing that update. A freshly-randomized Guid can never
+    /// collide with the value it replaces, so it is safe as the sole concurrency token regardless
+    /// of clock resolution. UpdatedAt itself remains for display and for the existing
+    /// ExpectedUpdatedAt stale-form pre-check, which is a coarser, human-facing "was this edited
+    /// since I loaded the form" signal - distinct from, and not a substitute for, this token.</summary>
+    public Guid RowVersion { get; set; } = Guid.NewGuid();
 }

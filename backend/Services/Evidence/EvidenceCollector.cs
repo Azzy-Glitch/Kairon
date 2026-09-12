@@ -121,6 +121,15 @@ public class EvidenceCollector : IEvidenceCollector
             .Take(_options.MaxAgentEvents)
             .ToListAsync(cancellationToken);
 
+        // Precomputed before the (synchronous) DTO projection below can reference it - resolving a
+        // scoped tool's target is a real, async EF read, so it cannot happen inside a LINQ .Where.
+        var authorizedToolNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var t in _tools.All())
+        {
+            if (t is not IScopedRemediationTool scoped || await scoped.TargetFingerprintAsync(incident, cancellationToken) is not null)
+                authorizedToolNames.Add(t.Name);
+        }
+
         var package = new EvidencePackageDto
         {
             Incident = new IncidentContextDto
@@ -208,7 +217,7 @@ public class EvidenceCollector : IEvidenceCollector
             // The closed set of things the model is allowed to propose. Anything it invents
             // outside this list is rejected by policy before it can reach an executor.
             AvailableActions = _tools.All()
-                .Where(t => t is not IScopedRemediationTool scoped || scoped.TargetFingerprint(incident) is not null)
+                .Where(t => authorizedToolNames.Contains(t.Name))
                 .Select(t => new AvailableActionDto
                 {
                     Action = t.Name,

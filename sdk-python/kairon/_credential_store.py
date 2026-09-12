@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -72,10 +74,14 @@ def _dpapi_unprotect(data: bytes) -> bytes:
 
 
 def load_stored_config(path: Optional[Path] = None) -> Optional[dict]:
-    """Returns {"endpoint", "projectId", "apiKey"} from a previous successful pairing, or None if
-    there is nothing stored, or if the file cannot be read/decrypted (a foreign machine's DPAPI
-    key, a corrupted file) - callers treat that exactly like "not paired yet", never as a fatal
-    error, since re-pairing is always the safe fallback."""
+    """Returns {"endpoint", "projectId", "apiKey", "pendingConfirmationPairingId"} from a previous
+    successful pairing, or None if there is nothing stored, or if the file cannot be read/decrypted
+    (a foreign machine's DPAPI key, a corrupted file) - callers treat that exactly like "not paired
+    yet", never as a fatal error, since re-pairing is always the safe fallback.
+    pendingConfirmationPairingId is present only while a redeemed credential has not yet been
+    confirmed with the backend (the confirmation response was lost, or the process exited before
+    sending it) - non-secret (a plain session id, not a credential), kept alongside the credential
+    it describes purely so a later run can retry confirming it without needing a new pairing code."""
     target = path or default_config_path()
     try:
         if not target.exists():
@@ -92,16 +98,51 @@ def load_stored_config(path: Optional[Path] = None) -> Optional[dict]:
         return None
 
 
-def save_stored_config(endpoint: str, project_id: str, api_key: str, path: Optional[Path] = None) -> None:
+def save_stored_config(
+    endpoint: str, project_id: str, api_key: str, path: Optional[Path] = None,
+    pending_confirmation_pairing_id: Optional[str] = None,
+) -> None:
     """Raises on any failure rather than returning a status - a caller must never report a
-    successful pairing when the credential could not actually be persisted."""
+    successful pairing when the credential could not actually be persisted.
+
+    Writes to a per-call-uniquely-named temporary file before the final atomic os.replace, rather
+    than a single fixed ".tmp" name - two SDK instances (or two overlapping calls in one process)
+    saving at the same moment must never read or clobber each other's still-being-written temp
+    file; os.replace itself remains the sole atomic publish step either way, so whichever finishes
+    last still wins cleanly rather than corrupting the target.
+    """
     target = path or default_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    plaintext = json.dumps({"endpoint": endpoint, "projectId": project_id, "apiKey": api_key}).encode("utf-8")
+    data = {"endpoint": endpoint, "projectId": project_id, "apiKey": api_key}
+    if pending_confirmation_pairing_id:
+        data["pendingConfirmationPairingId"] = pending_confirmation_pairing_id
+    plaintext = json.dumps(data).encode("utf-8")
     payload = _dpapi_protect(plaintext) if sys.platform == "win32" else plaintext
 
-    temp_path = target.with_suffix(target.suffix + ".tmp")
-    temp_path.write_bytes(payload)
-    if sys.platform != "win32":
-        os.chmod(temp_path, 0o600)
-    os.replace(temp_path, target)
+    temp_path = target.with_suffix(target.suffix + f".{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        temp_path.write_bytes(payload)
+        if sys.platform != "win32":
+            os.chmod(temp_path, 0o600)
+        # On Windows, os.replace can transiently fail with PermissionError/OSError when another
+        # thread or process replaces the SAME destination at nearly the same instant (or a virus
+        # scanner briefly holds it open) - POSIX rename has no such window, but Windows' does. A
+        # short bounded retry is the standard way to make the replace itself robust to that; it is
+        # still the single atomic publish step, never a partial/torn write either way.
+        last_error: Optional[OSError] = None
+        for attempt in range(5):
+            try:
+                os.replace(temp_path, target)
+                last_error = None
+                break
+            except OSError as exc:
+                last_error = exc
+                time.sleep(0.05 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
+    finally:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass

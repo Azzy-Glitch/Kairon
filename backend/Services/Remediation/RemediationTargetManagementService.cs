@@ -184,6 +184,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         entity.AllowedOperationsJson = RemediationTargetOperations.Serialize(request.AllowedOperations);
         entity.Enabled = request.Enabled;
         entity.UpdatedAt = _time.GetUtcNow().UtcDateTime;
+        entity.RowVersion = Guid.NewGuid();
 
         // Deliberately does not touch RemediationAction.ParametersJson or any previously-computed
         // targetFingerprint - an approved action's fingerprint is re-derived and compared against
@@ -243,6 +244,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         {
             entity.Enabled = enabled;
             entity.UpdatedAt = _time.GetUtcNow().UtcDateTime;
+            entity.RowVersion = Guid.NewGuid();
             _audit.Record(enabled ? "remediation-target.enabled" : "remediation-target.disabled", actor,
                 "remediation-target", entity.Id.ToString(), entity.ProjectId, data: Snapshot(entity));
             try
@@ -310,10 +312,19 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
     /// plausibly violate (the filtered ProjectId+Environment+Service index - the primary key is a
     /// client-generated Guid, effectively never colliding) so only that expected violation is ever
     /// translated into a clean 409. Any other DbUpdateException is deliberately left to propagate
-    /// rather than being blindly swallowed.</summary>
+    /// rather than being blindly swallowed.
+    ///
+    /// SqliteErrorCode 19 (SQLITE_CONSTRAINT) is the PRIMARY result code shared by every kind of
+    /// SQLite constraint failure - unique, foreign-key, NOT NULL, and CHECK all report the same 19.
+    /// Matching on it alone would misclassify a foreign-key or NOT NULL violation as a duplicate-
+    /// target conflict. SqliteExtendedErrorCode 2067 (SQLITE_CONSTRAINT_UNIQUE) is SQLite's more
+    /// specific "extended result code" and fires only for a unique-index violation - the equivalent
+    /// specificity SQL Server's 2601/2627 already have natively (those numbers are unique-violation-
+    /// specific; SQL Server reports foreign-key/CHECK failures as 547 and NOT NULL as 515, so no
+    /// further narrowing was ever needed on that side).</summary>
     private static bool IsUniqueConstraintViolation(DbUpdateException ex) => ex.InnerException switch
     {
-        Microsoft.Data.Sqlite.SqliteException sqlite => sqlite.SqliteErrorCode == 19, // SQLITE_CONSTRAINT
+        Microsoft.Data.Sqlite.SqliteException sqlite => sqlite.SqliteExtendedErrorCode == 2067, // SQLITE_CONSTRAINT_UNIQUE
         Microsoft.Data.SqlClient.SqlException sql => sql.Number is 2601 or 2627, // unique index / unique constraint
         _ => false
     };

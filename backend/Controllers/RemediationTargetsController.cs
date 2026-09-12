@@ -87,6 +87,10 @@ public sealed class RemediationTargetsController : ControllerBase
         {
             RemediationTargetOperationOutcome.Success => NoContent(),
             RemediationTargetOperationOutcome.NotFound => NotFound(Error(result.Error!, result.ErrorCode!, StatusCodes.Status404NotFound)),
+            // A concurrent/stale delete is the same "someone else changed this row first" conflict
+            // Update/Enable already report as 409 - not a validation failure, so it must not fall
+            // through to the generic 422 below.
+            RemediationTargetOperationOutcome.Conflict => Conflict(Error(result.Error!, result.ErrorCode!, StatusCodes.Status409Conflict)),
             _ => UnprocessableEntity(Error(result.Error!, result.ErrorCode!, 422))
         };
     }

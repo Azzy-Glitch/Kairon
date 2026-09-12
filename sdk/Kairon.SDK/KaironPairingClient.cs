@@ -36,12 +36,12 @@ public static class KaironPairingClient
                 .InformationalVersion ?? "1.0.1";
 
             var response = await client.PostAsJsonAsync("api/v1/sdk/pair",
-                new { code = pairingCode, sdkType = "dotnet", version }, cancellationToken);
+                new { code = pairingCode, sdkType = "dotnet", version }, cancellationToken).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
                 return new KaironPairingResult(false, "Pairing code was rejected.");
 
-            var paired = await response.Content.ReadFromJsonAsync<PairingWireResponse>(cancellationToken);
+            var paired = await response.Content.ReadFromJsonAsync<PairingWireResponse>(cancellationToken).ConfigureAwait(false);
             return paired is null || paired.ProjectId == Guid.Empty || string.IsNullOrWhiteSpace(paired.ApiKey) ||
                 paired.PairingId == Guid.Empty ||
                 !Uri.TryCreate(paired.Endpoint, UriKind.Absolute, out var address) ||
@@ -59,26 +59,43 @@ public static class KaironPairingClient
     /// proves to the backend that this SDK actually received and is using it, the only
     /// trustworthy signal distinct from the backend merely having issued it (a redeem response can
     /// be lost in transit, or the process can crash before the credential is saved to disk).
-    /// Best-effort and silent: the credential is already valid and usable regardless of whether
-    /// this call succeeds, so a failure here must never fault construction - it only means an
-    /// operator-triggered re-pair completion (which revokes the credential being replaced) keeps
-    /// waiting until a retry, or a later successful telemetry send, lets this catch up.</summary>
-    public static async Task ConfirmAsync(string backendEndpoint, Guid pairingId, string apiKey,
-        CancellationToken cancellationToken = default, HttpMessageHandler? handler = null)
+    /// Never throws - the credential is already valid and usable regardless of whether this call
+    /// succeeds - so this returns a bool rather than propagating an exception. A failure here only
+    /// means an operator-triggered re-pair completion (which revokes the credential being
+    /// replaced) keeps waiting until a retry - either one of THIS call's own bounded attempts, or a
+    /// later run recovering a still-pending confirmation from the stored credential file (see
+    /// KaironClient.ResolveAsync) - lets this catch up.
+    ///
+    /// Retries a small, fixed number of times with a short linear backoff before giving up for
+    /// THIS call - bounded, never an unbounded loop - so a single transient network blip does not
+    /// need a full process restart to recover from.</summary>
+    public static async Task<bool> ConfirmAsync(string backendEndpoint, Guid pairingId, string apiKey,
+        CancellationToken cancellationToken = default, HttpMessageHandler? handler = null, int attempts = 2)
     {
-        try
+        using var client = new HttpClient(handler ?? new HttpClientHandler(), disposeHandler: true)
         {
-            using var client = new HttpClient(handler ?? new HttpClientHandler(), disposeHandler: true)
+            BaseAddress = new Uri(backendEndpoint.TrimEnd('/') + "/"),
+            Timeout = TimeSpan.FromSeconds(10)
+        };
+        for (var attempt = 0; attempt < Math.Max(1, attempts); attempt++)
+        {
+            try
             {
-                BaseAddress = new Uri(backendEndpoint.TrimEnd('/') + "/"),
-                Timeout = TimeSpan.FromSeconds(10)
-            };
-            await client.PostAsJsonAsync($"api/v1/sdk/pair/{pairingId}/confirm", new { apiKey }, cancellationToken);
+                var response = await client.PostAsJsonAsync($"api/v1/sdk/pair/{pairingId}/confirm", new { apiKey }, cancellationToken)
+                    .ConfigureAwait(false);
+                if (response.IsSuccessStatusCode) return true;
+            }
+            catch
+            {
+                // Falls through to the backoff/retry below - never propagated.
+            }
+            if (attempt + 1 < attempts)
+            {
+                try { await Task.Delay(TimeSpan.FromMilliseconds(500 * (attempt + 1)), cancellationToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return false; }
+            }
         }
-        catch
-        {
-            // Best-effort - see remarks above.
-        }
+        return false;
     }
 
     private sealed class PairingWireResponse

@@ -78,7 +78,7 @@ public class IncidentsController : ControllerBase
 
     /// <summary>The registered remediation tools and whether policy currently permits each one.</summary>
     [HttpGet("tools")]
-    public IActionResult Tools() => Ok(_query.GetTools());
+    public async Task<IActionResult> Tools(CancellationToken cancellationToken) => Ok(await _query.GetToolsAsync(cancellationToken));
 
     /// <summary>
     /// Re-runs AI investigation. Queued rather than executed inline so a slow model call cannot

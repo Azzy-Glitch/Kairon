@@ -13,9 +13,13 @@ namespace Kairon.Backend.Services.Remediation.Tools;
 
 public interface IScopedRemediationTool
 {
-    // Includes immutable target identity for approval binding. Null means not authorized.
-    string? TargetFingerprint(SreIncident incident);
-    Guid? TargetMachineId(SreIncident incident);
+    // Includes immutable target identity for approval binding. Null means not authorized. Fully
+    // async: resolving/validating the target is a real EF/database read, and every caller either
+    // already runs asynchronously or is a thin, easily-async-ified wrapper around one - there is no
+    // genuine need for a synchronous-blocking bridge here (see WindowsServiceTool's remarks on the
+    // one bridge that DOES remain, and why).
+    Task<string?> TargetFingerprintAsync(SreIncident incident, CancellationToken ct = default);
+    Task<Guid?> TargetMachineIdAsync(SreIncident incident, CancellationToken ct = default);
     Task<bool> IsDesiredStateAsync(SreIncident incident, string fingerprint, CancellationToken ct);
 }
 
@@ -102,31 +106,24 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
         return valid;
     }
     // Centralized in RemediationTargetResolver.ResolveExecutionTargetAsync (the former inline body
-    // of this method) - the database-backed replacement for WindowsRemediation:Targets. Kept
-    // synchronous-callable via GetAwaiter().GetResult() in TargetFingerprint only, since that
-    // method is part of IScopedRemediationTool's synchronous contract used throughout
-    // RemediationPolicy/IncidentOrchestrator/VerificationService/EvidenceCollector; the two
-    // already-async callers (IsDesiredStateAsync, ExecuteAsync) await it directly.
+    // of this method) - the database-backed replacement for WindowsRemediation:Targets.
     private Task<WindowsServiceTarget?> Target(Guid projectId, string environment, string service) =>
         _targets.ResolveExecutionTargetAsync(projectId, environment, service, Name);
-    public Guid? TargetMachineId(SreIncident incident) => TargetFingerprint(incident) is null ? null : IncidentMachineScope.GetMachineId(incident);
+    public async Task<Guid?> TargetMachineIdAsync(SreIncident incident, CancellationToken ct = default) =>
+        await TargetFingerprintAsync(incident, ct) is null ? null : IncidentMachineScope.GetMachineId(incident);
     public async Task<bool> IsDesiredStateAsync(SreIncident incident, string fingerprint, CancellationToken ct) {
-        if (TargetFingerprint(incident) != fingerprint) return false;
+        if (await TargetFingerprintAsync(incident, ct) != fingerprint) return false;
         var target = (await Target(incident.ProjectId, incident.Environment, incident.Service))!;
         return await _control.QueryAsync(target.ExpectedHostName, target.WindowsServiceName, ct) == (Name == ServiceToolNames.StopService ? 1 : 4);
     }
-    public string? TargetFingerprint(SreIncident incident)
+    public async Task<string?> TargetFingerprintAsync(SreIncident incident, CancellationToken ct = default)
     {
-        // The one unavoidable sync-over-async bridge: IScopedRemediationTool.TargetFingerprint is
-        // a synchronous contract shared by RemediationPolicy/IncidentOrchestrator/
-        // VerificationService/EvidenceCollector (all four already call it synchronously
-        // throughout the codebase), so making just this one method async would require converting
-        // that whole call chain - out of scope for a fingerprint-correctness fix. What IS fixed
-        // here: this used to be two blocking-adjacent reads (this resolve, then a second
-        // unguarded _db.Machines.Single(...) below) where the second could throw on a genuine
-        // deletion race; ResolveExecutionTargetAsync now returns AgentCredentialHash directly, so
-        // there is exactly one blocking call and no second query that can fail out-of-band.
-        var target = Target(incident.ProjectId, incident.Environment, incident.Service).GetAwaiter().GetResult();
+        // A genuine, fresh re-resolve every call - never cached, never assumed unchanged from a
+        // prior call in the same request. This is what makes re-checking it immediately before an
+        // irreversible SCM operation (ExecuteAsync below) actually mean something: a target
+        // mutated, disabled, rebound to a different credential, or a machine that dropped its
+        // heartbeat all change - or null out - the fingerprint this recomputes.
+        var target = await Target(incident.ProjectId, incident.Environment, incident.Service);
         if (target is null || IncidentMachineScope.GetMachineId(incident) != target.MachineId) return null;
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(SreJson.Serialize(new {
             target.ProjectId, target.Environment, target.Service, target.MachineId, target.TelemetryCredentialId,
@@ -141,7 +138,7 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
         var incident = await _db.SreIncidents.FindAsync([context.IncidentId], ct);
         if (incident is null || incident.ProjectId != context.ProjectId || incident.Environment != context.Environment || incident.Service != context.Service)
             return RemediationToolResult.Fail("Incident scope does not match execution context.");
-        var fingerprint = TargetFingerprint(incident);
+        var fingerprint = await TargetFingerprintAsync(incident, ct);
         if (!ValidateParameters(context.Parameters, out var error) || fingerprint is null || context.Parameters["targetFingerprint"] != fingerprint)
             return RemediationToolResult.Fail(error ?? "Target changed, offline, unenrolled or not allowlisted; a new approval is required.");
         var target = (await Target(context.ProjectId, context.Environment, context.Service))!;
@@ -149,7 +146,7 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
         var targetLock = TargetLocks[(uint)StringComparer.Ordinal.GetHashCode(lockKey) % (uint)TargetLocks.Length];
         await targetLock.WaitAsync(ct);
         try {
-        if (TargetFingerprint(incident) != fingerprint)
+        if (await TargetFingerprintAsync(incident, ct) != fingerprint)
             return RemediationToolResult.Fail("Target authorization changed while waiting for execution.");
         var state = await _control.QueryAsync(target.ExpectedHostName, target.WindowsServiceName, ct);
         if (Name == ServiceToolNames.RunHealthCheck) {
@@ -159,12 +156,20 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
         if (Name == ServiceToolNames.RestartService && state != 4)
             return RemediationToolResult.Fail("Restart requires a service currently in Running state.");
         if (state is not (1 or 4)) return RemediationToolResult.Fail("Service is transitioning or paused; no change was issued.");
+        // Re-validated once more, immediately before each irreversible state-changing SCM call -
+        // narrows the TOCTOU window to "however long QueryAsync's own round-trip just took", not
+        // the whole approval-to-execution lifetime. A target mutated (or a machine that dropped
+        // its heartbeat) in that narrow window is caught here rather than acted upon.
         if (Name is ServiceToolNames.StopService or ServiceToolNames.RestartService && state == 4) {
+            if (await TargetFingerprintAsync(incident, ct) != fingerprint)
+                return RemediationToolResult.Fail("Target authorization changed while waiting for execution.");
             await _control.ChangeAsync(target.ExpectedHostName, target.WindowsServiceName, false, ct);
             await WaitAsync(target, 1, ct);
         }
         if (Name is ServiceToolNames.StartService or ServiceToolNames.RestartService && (state == 1 || Name == ServiceToolNames.RestartService)) {
             ct.ThrowIfCancellationRequested();
+            if (await TargetFingerprintAsync(incident, ct) != fingerprint)
+                return RemediationToolResult.Fail("Target authorization changed while waiting for execution.");
             await _control.ChangeAsync(target.ExpectedHostName, target.WindowsServiceName, true, ct);
             await WaitAsync(target, 4, ct);
         }

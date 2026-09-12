@@ -28,7 +28,8 @@ public sealed class SdkPairingTests : IDisposable
 
     private SdkPairingService Service() => new(_h.Db,
         new ProjectCredentialService(_h.Db, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System),
-        TimeProvider.System, new ConfigurationBuilder().Build());
+        TimeProvider.System, new ConfigurationBuilder().Build(),
+        new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
 
     [Theory]
     [InlineData("dotnet")]
@@ -238,7 +239,7 @@ public sealed class SdkPairingTests : IDisposable
     [Fact]
     public async Task ControllerGetStatusReturns404ForAnUnknownSessionWithoutLeakingInternals()
     {
-        var controller = new SdkPairingController(Service(), new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), _h.Db)
+        var controller = new SdkPairingController(Service())
         { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() } };
 
         Assert.IsType<NotFoundResult>(await controller.GetStatus(Guid.NewGuid(), default));
@@ -329,6 +330,60 @@ public sealed class SdkPairingTests : IDisposable
         Assert.False(await service.ConfirmAsync(created.PairingId, paired.ApiKey, default));
     }
 
+    [Fact]
+    public async Task ARepeatedConfirmationWithAnUnrelatedKeyNeverSucceedsEvenAfterTheSessionWasAlreadyConfirmed()
+    {
+        // Regression: confirmation must revalidate the exact key on EVERY call, not just the
+        // first - otherwise, once ConfirmedAt is set, literally any non-empty string would be
+        // accepted as a "replay", including a completely unrelated caller's key.
+        _h.EnsureProject();
+        var service = Service();
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default))!;
+        var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
+        Assert.True(await service.ConfirmAsync(created.PairingId, paired.ApiKey, default));
+
+        Assert.False(await service.ConfirmAsync(created.PairingId, "some-unrelated-key", default));
+        Assert.False(await service.ConfirmAsync(created.PairingId, "", default));
+
+        // The genuine replay (the real key, again) must still succeed.
+        Assert.True(await service.ConfirmAsync(created.PairingId, paired.ApiKey, default));
+    }
+
+    [Fact]
+    public async Task ConfirmationFailsIfTheIssuedCredentialIsRevokedAfterItWasAlreadyConfirmedOnce()
+    {
+        _h.EnsureProject();
+        var service = Service();
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default))!;
+        var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
+        Assert.True(await service.ConfirmAsync(created.PairingId, paired.ApiKey, default));
+
+        var issuedCredentialId = _h.Db.SdkPairingSessions.Single(s => s.Id == created.PairingId).IssuedCredentialId!.Value;
+        var credentials = new ProjectCredentialService(_h.Db, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System);
+        await credentials.RevokeAsync(_h.ProjectId, issuedCredentialId, default);
+
+        Assert.False(await service.ConfirmAsync(created.PairingId, paired.ApiKey, default));
+    }
+
+    [Fact]
+    public async Task ConfirmRejectsAKeyThatBelongsToAnotherProjectsCredentialEvenIfHashedFormatMatches()
+    {
+        _h.EnsureProject();
+        var otherProject = new Project { Name = "other-project-for-confirm" };
+        _h.Db.Projects.Add(otherProject);
+        _h.Db.SaveChanges();
+
+        var service = Service();
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default))!;
+        await service.RedeemAsync(created.Code, "python", "1.0.0", default);
+
+        var otherCreated = (await service.CreateAsync(otherProject.Id, "python", default))!;
+        var otherPaired = (await service.RedeemAsync(otherCreated.Code, "python", "1.0.0", default))!;
+
+        // otherPaired.ApiKey is a real, currently-active credential - just not this session's.
+        Assert.False(await service.ConfirmAsync(created.PairingId, otherPaired.ApiKey, default));
+    }
+
     // --- Phase 5: CompleteRepairAsync - atomic rebind + revoke, gated on Confirmed -----------
 
     [Fact]
@@ -339,7 +394,7 @@ public sealed class SdkPairingTests : IDisposable
         var oldCredential = _h.SeedCredential(_h.ProjectId, "old-hash");
         var machine = _h.SeedMachine();
         _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName);
-        var created = (await service.CreateAsync(_h.ProjectId, "python", default))!;
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
         await service.RedeemAsync(created.Code, "python", "1.0.0", default);
 
         var result = await service.CompleteRepairAsync(created.PairingId, oldCredential.Id, default);
@@ -357,7 +412,7 @@ public sealed class SdkPairingTests : IDisposable
         var machine = _h.SeedMachine();
         var target = _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName);
 
-        var created = (await service.CreateAsync(_h.ProjectId, "python", default))!;
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
         var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
         Assert.True(await service.ConfirmAsync(created.PairingId, paired.ApiKey, default));
 
@@ -381,7 +436,7 @@ public sealed class SdkPairingTests : IDisposable
         var enabledTarget = _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName, service: "SvcA");
         var disabledTarget = _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName, service: "SvcB", enabled: false);
 
-        var created = (await service.CreateAsync(_h.ProjectId, "python", default))!;
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
         var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
         await service.ConfirmAsync(created.PairingId, paired.ApiKey, default);
 
@@ -416,7 +471,7 @@ public sealed class SdkPairingTests : IDisposable
             service: "SvcOtherProject", projectId: otherProject.Id);
 
         var service = Service();
-        var created = (await service.CreateAsync(_h.ProjectId, "python", default))!;
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
         var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
         await service.ConfirmAsync(created.PairingId, paired.ApiKey, default);
 
@@ -434,7 +489,7 @@ public sealed class SdkPairingTests : IDisposable
     }
 
     [Fact]
-    public async Task CompleteRepairRejectsACredentialBelongingToAnotherProjectAndLeavesItUntouched()
+    public async Task CreatingAReRepairSessionRejectsAnOldCredentialFromAnotherProject()
     {
         _h.EnsureProject();
         var otherProject = new Project { Name = "other-project" };
@@ -442,15 +497,88 @@ public sealed class SdkPairingTests : IDisposable
         _h.Db.SaveChanges();
         var otherCredential = _h.SeedCredential(otherProject.Id, "other-hash");
 
+        Assert.Null(await Service().CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: otherCredential.Id));
+        Assert.Empty(_h.Db.SdkPairingSessions);
+    }
+
+    [Fact]
+    public async Task CreatingAReRepairSessionRejectsAnAlreadyRevokedOldCredential()
+    {
+        _h.EnsureProject();
+        var revoked = _h.SeedCredential(_h.ProjectId, "revoked-hash");
+        revoked.RevokedAt = DateTime.UtcNow;
+        _h.Db.SaveChanges();
+
+        Assert.Null(await Service().CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: revoked.Id));
+        Assert.Empty(_h.Db.SdkPairingSessions);
+    }
+
+    [Fact]
+    public async Task CompleteRepairRejectsAWrongButRealSameProjectCredentialTheSessionWasNeverBoundTo()
+    {
+        _h.EnsureProject();
+        var boundCredential = _h.SeedCredential(_h.ProjectId, "bound-hash");
+        var unrelatedCredential = _h.SeedCredential(_h.ProjectId, "unrelated-hash");
+
         var service = Service();
-        var created = (await service.CreateAsync(_h.ProjectId, "python", default))!;
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: boundCredential.Id))!;
         var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
         await service.ConfirmAsync(created.PairingId, paired.ApiKey, default);
 
-        var result = await service.CompleteRepairAsync(created.PairingId, otherCredential.Id, default);
+        // A real, active, same-project credential - just not the one THIS session was bound to.
+        var result = await service.CompleteRepairAsync(created.PairingId, unrelatedCredential.Id, default);
+
+        Assert.Equal(CompleteRepairOutcome.OldCredentialMismatch, result.Outcome);
+        Assert.Null(_h.Db.ProjectApiCredentials.Single(c => c.Id == unrelatedCredential.Id).RevokedAt);
+        Assert.Null(_h.Db.ProjectApiCredentials.Single(c => c.Id == boundCredential.Id).RevokedAt);
+    }
+
+    [Fact]
+    public async Task ReplayingCompletionAgainstADifferentCredentialNeverSucceeds()
+    {
+        _h.EnsureProject();
+        var oldCredential = _h.SeedCredential(_h.ProjectId, "old-hash");
+        var unrelatedCredential = _h.SeedCredential(_h.ProjectId, "unrelated-hash");
+
+        var service = Service();
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
+        var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
+        await service.ConfirmAsync(created.PairingId, paired.ApiKey, default);
+        Assert.Equal(CompleteRepairOutcome.Success, (await service.CompleteRepairAsync(created.PairingId, oldCredential.Id, default)).Outcome);
+
+        // The session already completed successfully - a replay naming a DIFFERENT credential must
+        // never be treated as "already done" just because this session is already complete.
+        var replay = await service.CompleteRepairAsync(created.PairingId, unrelatedCredential.Id, default);
+
+        Assert.Equal(CompleteRepairOutcome.OldCredentialMismatch, replay.Outcome);
+        Assert.Null(_h.Db.ProjectApiCredentials.Single(c => c.Id == unrelatedCredential.Id).RevokedAt);
+    }
+
+    /// <summary>A data-integrity defense-in-depth check: even if a credential's own ProjectId were
+    /// somehow mutated after it was bound as a session's ReplacesCredentialId (never possible
+    /// through this codebase's normal write paths, which never reassign a credential's project),
+    /// CompleteRepairAsync must still refuse rather than trust the binding blindly.</summary>
+    [Fact]
+    public async Task CompleteRepairDefendsAgainstTheBoundCredentialNoLongerBelongingToTheSessionsProject()
+    {
+        _h.EnsureProject();
+        var otherProject = new Project { Name = "other-project" };
+        _h.Db.Projects.Add(otherProject);
+        _h.Db.SaveChanges();
+        var credential = _h.SeedCredential(_h.ProjectId, "old-hash");
+
+        var service = Service();
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: credential.Id))!;
+        var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
+        await service.ConfirmAsync(created.PairingId, paired.ApiKey, default);
+
+        credential.ProjectId = otherProject.Id; // simulated data anomaly
+        _h.Db.SaveChanges();
+
+        var result = await service.CompleteRepairAsync(created.PairingId, credential.Id, default);
 
         Assert.Equal(CompleteRepairOutcome.OldCredentialWrongProject, result.Outcome);
-        Assert.Null(_h.Db.ProjectApiCredentials.Single(c => c.Id == otherCredential.Id).RevokedAt);
+        Assert.Null(_h.Db.ProjectApiCredentials.Single(c => c.Id == credential.Id).RevokedAt);
     }
 
     [Fact]
@@ -462,7 +590,7 @@ public sealed class SdkPairingTests : IDisposable
         var machine = _h.SeedMachine();
         _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName);
 
-        var created = (await service.CreateAsync(_h.ProjectId, "python", default))!;
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
         var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
         await service.ConfirmAsync(created.PairingId, paired.ApiKey, default);
 
@@ -473,6 +601,43 @@ public sealed class SdkPairingTests : IDisposable
         Assert.Equal(1, first.RebindCount);
         Assert.Equal(CompleteRepairOutcome.Success, second.Outcome);
         Assert.Equal(0, second.RebindCount); // nothing left to rebind/revoke a second time
+    }
+
+    /// <summary>The core P1 race this task fixes: Redeemed/Confirmed only prove the NEW credential
+    /// was valid at THAT time - it can still be independently revoked (a second, unrelated re-pair;
+    /// a direct operator action) any time between confirmation and completion. Completion must
+    /// re-check the new credential itself, inside its own transaction, immediately before acting -
+    /// not trust that a Confirmed session's credential is still good.</summary>
+    [Fact]
+    public async Task CompleteRepairFailsSafelyIfTheNewCredentialWasRevokedAfterConfirmationButBeforeCompletion()
+    {
+        _h.EnsureProject();
+        var oldCredential = _h.SeedCredential(_h.ProjectId, "old-hash");
+        var machine = _h.SeedMachine();
+        var target = _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName);
+
+        var service = Service();
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
+        var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
+        Assert.True(await service.ConfirmAsync(created.PairingId, paired.ApiKey, default));
+
+        var newCredentialId = _h.Db.SdkPairingSessions.Single(s => s.Id == created.PairingId).IssuedCredentialId!.Value;
+        var credentials = new ProjectCredentialService(_h.Db, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System);
+        await credentials.RevokeAsync(_h.ProjectId, newCredentialId, default); // independently revoked before completion
+
+        var result = await service.CompleteRepairAsync(created.PairingId, oldCredential.Id, default);
+
+        Assert.Equal(CompleteRepairOutcome.NewCredentialRevoked, result.Outcome);
+        // Nothing committed: the old (still genuinely working) credential stays active, the target
+        // stays bound to it, and the newly-revoked credential was never bound to anything.
+        Assert.Null(_h.Db.ProjectApiCredentials.Single(c => c.Id == oldCredential.Id).RevokedAt);
+        Assert.Equal(oldCredential.Id, _h.Db.RemediationTargets.Single(t => t.Id == target.Id).TelemetryCredentialId);
+        Assert.Null(_h.Db.SdkPairingSessions.Single(s => s.Id == created.PairingId).CompletedAt);
+
+        // The session is not permanently stuck either - completing is never possible for THIS now-
+        // dead credential, but the old credential remaining active means telemetry/remediation keep
+        // working, and an operator can start a fresh re-pair for the same old credential.
+        Assert.False(await service.ConfirmAsync(created.PairingId, paired.ApiKey, default)); // the confirmed key is dead too
     }
 
     // --- Controller: Confirm/CompleteRepair authorization + outcome mapping -----------------
@@ -492,7 +657,7 @@ public sealed class SdkPairingTests : IDisposable
         var service = Service();
         var created = (await service.CreateAsync(_h.ProjectId, "python", default))!;
         var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
-        var controller = new SdkPairingController(service, new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), _h.Db)
+        var controller = new SdkPairingController(service)
         { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() } };
 
         Assert.IsType<BadRequestObjectResult>(await controller.Confirm(created.PairingId, new ConfirmPairingRequest { ApiKey = "wrong" }, default));
@@ -505,9 +670,9 @@ public sealed class SdkPairingTests : IDisposable
         _h.EnsureProject();
         var oldCredential = _h.SeedCredential(_h.ProjectId, "old-hash");
         var service = Service();
-        var created = (await service.CreateAsync(_h.ProjectId, "python", default))!;
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
         var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
-        var controller = new SdkPairingController(service, new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), _h.Db)
+        var controller = new SdkPairingController(service)
         { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() } };
 
         Assert.IsType<ConflictObjectResult>(
@@ -519,6 +684,26 @@ public sealed class SdkPairingTests : IDisposable
 
         var audit = _h.Db.PlatformAuditEvents.Single(e => e.Action == "sdk.repair-completed");
         Assert.DoesNotContain(paired.ApiKey, audit.DataJson);
+    }
+
+    [Fact]
+    public async Task ANonSuccessfulCompleteRepairAttemptNeverRecordsACompletionAuditEvent()
+    {
+        // Regression guard for the audit/transaction-consistency fix: the audit call for
+        // "sdk.repair-completed" lives on the SAME code path as the state mutation it describes
+        // (inside CompleteRepairAsync, before its own SaveChangesAsync/CommitAsync) - not in the
+        // controller, as a separate save after the fact. Proving a failed attempt records nothing
+        // is the other half of proving they can never drift apart: either both land, or neither does.
+        _h.EnsureProject();
+        var oldCredential = _h.SeedCredential(_h.ProjectId, "old-hash");
+        var service = Service();
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
+        await service.RedeemAsync(created.Code, "python", "1.0.0", default); // never confirmed
+
+        var result = await service.CompleteRepairAsync(created.PairingId, oldCredential.Id, default);
+
+        Assert.Equal(CompleteRepairOutcome.NotConfirmed, result.Outcome);
+        Assert.DoesNotContain(_h.Db.PlatformAuditEvents, e => e.Action == "sdk.repair-completed");
     }
 
     public void Dispose() => _h.Dispose();

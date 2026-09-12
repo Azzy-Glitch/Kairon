@@ -29,7 +29,7 @@ public interface IIncidentQueryService
 
     Task<SreDashboardDto> GetDashboardAsync(Guid? projectId, CancellationToken cancellationToken = default);
 
-    List<RemediationToolDto> GetTools();
+    Task<List<RemediationToolDto>> GetToolsAsync(CancellationToken cancellationToken = default);
 }
 
 public class IncidentQueryService : IIncidentQueryService
@@ -361,15 +361,16 @@ public class IncidentQueryService : IIncidentQueryService
         };
     }
 
-    public List<RemediationToolDto> GetTools()
+    public async Task<List<RemediationToolDto>> GetToolsAsync(CancellationToken cancellationToken = default)
     {
         // No global authorization claim: a real incident and configured target are required.
         var probe = new SreIncident { Environment = "Production", Service = "" };
 
-        return _tools.All().Select(t =>
+        var results = new List<RemediationToolDto>();
+        foreach (var t in _tools.All())
         {
-            var decision = _policy.ValidateProposal(probe, t.Name, t.RiskLevel);
-            return new RemediationToolDto
+            var decision = await _policy.ValidateProposalAsync(probe, t.Name, t.RiskLevel, cancellationToken);
+            results.Add(new RemediationToolDto
             {
                 Name = t.Name,
                 Description = t.Description,
@@ -377,8 +378,9 @@ public class IncidentQueryService : IIncidentQueryService
                 RequiresApproval = _remediation.RequireApprovalForEveryAction,
                 AllowedByPolicy = decision.Allowed,
                 PolicyNote = decision.Allowed ? null : decision.Reason
-            };
-        }).ToList();
+            });
+        }
+        return results;
     }
 
     private async Task<bool> CanConnectAsync(CancellationToken cancellationToken)

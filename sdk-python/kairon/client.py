@@ -146,17 +146,34 @@ def _resolve_configuration(
                 "Kairon pairing failed: the pairing code is invalid, expired, already used, or "
                 "Kairon is unavailable. Generate a new pairing code from Kairon and try again."
             )
-        # Persisted before being used - if this raises, __init__ never completes, so pairing is
-        # never reported as successful without a durable credential. The freshly redeemed values
-        # win outright, replacing whatever explicit args/env vars/stored file resolved above -
-        # an explicit pairing_code is a direct instruction to (re)pair now, not a fallback.
-        _credential_store.save_stored_config(paired["endpoint"], paired["projectId"], paired["apiKey"], path)
-        _confirm_pairing(paired["endpoint"], paired["pairingId"], paired["apiKey"])
+        # Persisted (with the pairing id recorded as still-pending-confirmation) before being used
+        # - if this raises, __init__ never completes, so pairing is never reported as successful
+        # without a durable credential. The freshly redeemed values win outright, replacing
+        # whatever explicit args/env vars/stored file resolved above - an explicit pairing_code is
+        # a direct instruction to (re)pair now, not a fallback.
+        _credential_store.save_stored_config(
+            paired["endpoint"], paired["projectId"], paired["apiKey"], path,
+            pending_confirmation_pairing_id=paired["pairingId"],
+        )
+        if _confirm_pairing(paired["endpoint"], paired["pairingId"], paired["apiKey"]):
+            # Clears the pending marker now that confirmation actually succeeded - leaving it set
+            # after a successful confirm would cause every future run to keep retrying pointlessly.
+            _credential_store.save_stored_config(paired["endpoint"], paired["projectId"], paired["apiKey"], path)
+        # If confirmation did not succeed, the pending marker stays recorded on disk (set just
+        # above) so a LATER run - even with no pairing_code at all - can retry it. Never treated as
+        # a fatal error here: the credential itself is already valid and saved either way.
         return paired["endpoint"], paired["projectId"], paired["apiKey"]
 
     stored = _credential_store.load_stored_config(path)
     if stored and stored.get("projectId"):
         resolved_endpoint = endpoint or os.environ.get("KAIRON_ENDPOINT") or stored.get("endpoint") or DEFAULT_ENDPOINT
+        pending_pairing_id = stored.get("pendingConfirmationPairingId")
+        if pending_pairing_id and stored.get("apiKey"):
+            # Recovers a confirmation whose earlier attempt was lost (network failure, or the
+            # process exited before it could run) - never re-redeems a code, never generates one:
+            # the stored credential's own presence is what makes retrying confirmation safe here.
+            if _confirm_pairing(stored["endpoint"], pending_pairing_id, stored["apiKey"]):
+                _credential_store.save_stored_config(stored["endpoint"], stored["projectId"], stored["apiKey"], path)
         return resolved_endpoint, stored["projectId"], stored.get("apiKey")
 
     # First-time onboarding: no pairing code, nothing stored yet - project_id has always been
@@ -176,24 +193,36 @@ def _resolve_configuration(
     return endpoint or DEFAULT_ENDPOINT, project_id, api_key
 
 
-def _confirm_pairing(endpoint: str, pairing_id: str, api_key: str, timeout_seconds: float = 10.0) -> None:
+def _confirm_pairing(
+    endpoint: str, pairing_id: str, api_key: str, timeout_seconds: float = 10.0, attempts: int = 2,
+) -> bool:
     """Proves to the backend that this SDK actually received and is about to persist the newly
     issued credential - the only trustworthy signal of that, distinct from the backend merely
     having ISSUED the credential (a redeem response can be lost in transit, or this process could
-    crash between receiving it and writing it to disk). Best-effort and silent: a confirmation
-    failure must never block onboarding - the credential is already saved and fully usable either
-    way. It only means an operator-triggered re-pair completion (which revokes the credential being
-    replaced) will keep waiting until a retry, or the next successful telemetry send, lets this
-    catch up - never that the old credential gets revoked before this one is confirmed working.
+    crash between receiving it and writing it to disk). A confirmation failure must never block
+    onboarding or raise - the credential is already saved and fully usable either way - so this
+    always returns a bool rather than propagating an exception. It only means an operator-triggered
+    re-pair completion (which revokes the credential being replaced) keeps waiting until a retry -
+    either one of these attempts, or a later run recovering a still-pending confirmation from the
+    stored credential file - lets this catch up; never that the old credential gets revoked before
+    the new one is confirmed working.
+
+    Retries a small, fixed number of times with a short linear backoff before giving up for THIS
+    call - bounded, never an unbounded loop - so a single transient network blip does not need a
+    full process restart to recover from; a longer-lived outage is instead recovered by the pending
+    marker _resolve_configuration persists, picked up on a later run.
     """
-    try:
-        url = endpoint.rstrip("/") + f"/api/v1/sdk/pair/{pairing_id}/confirm"
-        body = json.dumps({"apiKey": api_key}).encode("utf-8")
-        request = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=max(1.0, timeout_seconds)):
-            pass
-    except Exception:
-        pass
+    body = json.dumps({"apiKey": api_key}).encode("utf-8")
+    url = endpoint.rstrip("/") + f"/api/v1/sdk/pair/{pairing_id}/confirm"
+    for attempt in range(max(1, attempts)):
+        try:
+            request = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=max(1.0, timeout_seconds)):
+                return True
+        except Exception:
+            if attempt + 1 < attempts:
+                time.sleep(0.5 * (attempt + 1))
+    return False
 
 
 class Kairon:

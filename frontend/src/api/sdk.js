@@ -24,9 +24,13 @@ export function revokeCredential(projectId, credentialId) {
   return request(client.delete(`/v1/projects/${projectId}/credentials/${credentialId}`));
 }
 
-/** sdkType is 'dotnet' or 'python'. Returns { pairingId, code, expiresAt, sdkType }. */
-export function createPairing(projectId, sdkType) {
-  return request(client.post(`/v1/projects/${projectId}/pairing`, { sdkType }));
+/** sdkType is 'dotnet' or 'python'. For a re-pair, replacesCredentialId must be the exact
+ * credential this session is meant to replace - the backend binds the session to it at creation
+ * and later refuses to complete against any other credential (never omit it for a re-pair; a
+ * session created without it can never be completed later). Omit entirely for a first-time
+ * pairing session, which has no credential to replace. Returns { pairingId, code, expiresAt, sdkType }. */
+export function createPairing(projectId, sdkType, replacesCredentialId) {
+  return request(client.post(`/v1/projects/${projectId}/pairing`, { sdkType, replacesCredentialId }));
 }
 
 export function revokePairing(pairingId) {

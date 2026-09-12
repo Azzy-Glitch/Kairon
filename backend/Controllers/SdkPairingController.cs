@@ -1,8 +1,6 @@
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Services;
-using Kairon.Backend.Services.Audit;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace Kairon.Backend.Controllers;
 
@@ -10,32 +8,33 @@ namespace Kairon.Backend.Controllers;
 /// The real pairing flow: an operator mints a temporary code for a project; a developer's SDK
 /// redeems it once, unattended, for a persistent credential. Adapted from Azzy's productization
 /// branch onto this codebase's simpler Project-only model (docs/DESKTOP_SHELL.md).
+///
+/// Every mutating call here delegates its audit recording to ISdkPairingService itself (see that
+/// interface's remarks) - the service records the audit event and persists it in the SAME
+/// SaveChangesAsync/transaction as the business-state change it describes, so this controller
+/// never needs its own separate, later save that could lose the audit trail for a mutation that
+/// had already taken effect.
 /// </summary>
 [ApiController]
 public sealed class SdkPairingController : ControllerBase
 {
     private readonly ISdkPairingService _pairing;
-    private readonly IPlatformAuditService _audit;
-    private readonly AppDbContext _db;
 
-    public SdkPairingController(ISdkPairingService pairing, IPlatformAuditService audit, AppDbContext db)
-    {
-        _pairing = pairing;
-        _audit = audit;
-        _db = db;
-    }
+    public SdkPairingController(ISdkPairingService pairing) => _pairing = pairing;
 
     [HttpPost("api/v1/projects/{projectId:guid}/pairing")]
     [RequiresOperator]
     public async Task<IActionResult> Create(Guid projectId, [FromBody] PairingRequest request,
         CancellationToken cancellationToken)
     {
-        var created = await _pairing.CreateAsync(projectId, request.SdkType, cancellationToken);
-        if (created is null) return BadRequest(new { error = "Project not found or SDK type is invalid (use 'dotnet' or 'python')." });
-
-        _audit.Record("sdk.pairing-created", Actor(), "project", projectId.ToString(), projectId,
-            data: new { created.PairingId, created.SdkType, created.ExpiresAt });
-        await _db.SaveChangesAsync(cancellationToken);
+        var created = await _pairing.CreateAsync(projectId, request.SdkType, cancellationToken,
+            request.ReplacesCredentialId, Actor());
+        if (created is null)
+            return BadRequest(new
+            {
+                error = "Project not found or inactive, SDK type is invalid (use 'dotnet' or 'python'), or the " +
+                         "credential to replace does not exist, belongs to another project, or is already revoked."
+            });
 
         return Ok(created);
     }
@@ -49,10 +48,6 @@ public sealed class SdkPairingController : ControllerBase
         if (paired is null)
             return BadRequest(new { error = "Pairing code is invalid, expired, revoked, or already used." });
 
-        _audit.Record("sdk.paired", "sdk:" + request.SdkType, "project", paired.ProjectId.ToString(), paired.ProjectId,
-            data: new { request.SdkType, request.Version });
-        await _db.SaveChangesAsync(cancellationToken);
-
         return Ok(paired);
     }
 
@@ -60,13 +55,7 @@ public sealed class SdkPairingController : ControllerBase
     [RequiresOperator]
     public async Task<IActionResult> RevokePairing(Guid pairingId, CancellationToken cancellationToken)
     {
-        var session = await _db.SdkPairingSessions.AsNoTracking()
-            .SingleOrDefaultAsync(x => x.Id == pairingId, cancellationToken);
-        if (session is null || !await _pairing.RevokePairingAsync(pairingId, cancellationToken)) return NotFound();
-
-        _audit.Record("sdk.pairing-revoked", Actor(), "sdk-pairing", pairingId.ToString(), session.ProjectId);
-        await _db.SaveChangesAsync(cancellationToken);
-
+        if (!await _pairing.RevokePairingAsync(pairingId, cancellationToken, Actor())) return NotFound();
         return NoContent();
     }
 
@@ -84,41 +73,52 @@ public sealed class SdkPairingController : ControllerBase
     /// <summary>Called by the SDK itself, unattended, immediately after it durably persists the
     /// credential redemption just issued - the only trustworthy proof that the redeem response was
     /// actually received and saved, not merely that the backend issued it. Authenticates by
-    /// requiring the exact api key this session issued; never accepts a bare claim.</summary>
+    /// requiring the exact api key this session issued; never accepts a bare claim. Safe to call
+    /// more than once (recoverable if a previous confirmation's response was lost).</summary>
     [HttpPost("api/v1/sdk/pair/{pairingId:guid}/confirm")]
     public async Task<IActionResult> Confirm(Guid pairingId, [FromBody] ConfirmPairingRequest request, CancellationToken cancellationToken)
     {
         if (!await _pairing.ConfirmAsync(pairingId, request.ApiKey, cancellationToken))
             return BadRequest(new { error = "Pairing session not found, not yet redeemed, or the supplied API key does not match." });
-
         return NoContent();
     }
 
     /// <summary>Operator-driven re-pair completion: only proceeds once the SDK has itself Confirmed
-    /// the new credential (never on Redeemed alone - see SdkPairingService's remarks). Atomically
-    /// rebinds every enabled RemediationTarget bound to oldCredentialId - scoped to this session's
-    /// own project - onto the newly issued credential, then revokes oldCredentialId.</summary>
+    /// the new credential (never on Redeemed alone - see SdkPairingService's remarks), and only for
+    /// the exact old credential this session was bound to replace at creation. Atomically rebinds
+    /// every enabled RemediationTarget bound to oldCredentialId - scoped to this session's own
+    /// project - onto the newly issued credential, then revokes oldCredentialId.</summary>
     [HttpPost("api/v1/platform/pairing/{pairingId:guid}/complete-repair")]
     [RequiresOperator]
     public async Task<IActionResult> CompleteRepair(Guid pairingId, [FromBody] CompleteRepairRequest request, CancellationToken cancellationToken)
     {
-        var result = await _pairing.CompleteRepairAsync(pairingId, request.OldCredentialId, cancellationToken);
-        switch (result.Outcome)
+        var result = await _pairing.CompleteRepairAsync(pairingId, request.OldCredentialId, cancellationToken, Actor());
+        return result.Outcome switch
         {
-            case CompleteRepairOutcome.Success:
-                _audit.Record("sdk.repair-completed", Actor(), "sdk-pairing", pairingId.ToString(), result.ProjectId,
-                    data: new { OldCredentialId = request.OldCredentialId, NewCredentialId = result.NewCredentialId, RebindCount = result.RebindCount });
-                await _db.SaveChangesAsync(cancellationToken);
-                return Ok(new { rebindCount = result.RebindCount });
-            case CompleteRepairOutcome.NotConfirmed:
-                return Conflict(new { error = "The new credential has not been confirmed by the application yet. Wait for confirmation before completing the re-pair." });
-            case CompleteRepairOutcome.OldCredentialWrongProject:
-                return BadRequest(new { error = "That credential does not belong to this pairing session's project." });
-            case CompleteRepairOutcome.OldCredentialNotFound:
-                return NotFound(new { error = "The credential to be replaced was not found." });
-            default:
-                return NotFound(new { error = "Pairing session not found." });
-        }
+            CompleteRepairOutcome.Success => Ok(new { rebindCount = result.RebindCount }),
+            CompleteRepairOutcome.NotConfirmed => Conflict(new
+            {
+                error = "The new credential has not been confirmed by the application yet. Wait for confirmation before completing the re-pair."
+            }),
+            CompleteRepairOutcome.OldCredentialMismatch => BadRequest(new
+            {
+                error = "That credential is not the one this pairing session was created to replace."
+            }),
+            CompleteRepairOutcome.OldCredentialWrongProject => BadRequest(new
+            {
+                error = "That credential does not belong to this pairing session's project."
+            }),
+            CompleteRepairOutcome.OldCredentialNotFound => NotFound(new { error = "The credential to be replaced was not found." }),
+            CompleteRepairOutcome.OldCredentialAlreadyRevoked => Conflict(new
+            {
+                error = "The credential to be replaced has already been revoked by something other than this re-pair. Nothing was changed."
+            }),
+            CompleteRepairOutcome.NewCredentialRevoked => Conflict(new
+            {
+                error = "The newly issued credential has since been revoked and can no longer be completed onto. The old credential was left untouched."
+            }),
+            _ => NotFound(new { error = "Pairing session not found." })
+        };
     }
 
     private string Actor() => Request.Headers["X-Kairon-Operator"].ToString() is { Length: > 0 } value
@@ -129,6 +129,11 @@ public sealed class SdkPairingController : ControllerBase
 public sealed class PairingRequest
 {
     public string SdkType { get; set; } = string.Empty;
+
+    /// <summary>For a re-pair: the exact credential this session is meant to replace, bound at
+    /// creation time. Omitted (null) for a first-time pairing session, which has no credential to
+    /// replace yet.</summary>
+    public Guid? ReplacesCredentialId { get; set; }
 }
 
 public sealed class RedeemPairingRequest

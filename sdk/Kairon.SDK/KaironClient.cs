@@ -32,6 +32,16 @@ namespace Kairon.SDK;
 /// Pairing is always explicit, never automatic: nothing in this SDK ever supplies pairingCode on
 /// the caller's behalf (not on HTTP 401, not on startup with a still-valid credential) - it is
 /// consulted here only because the caller passed it in this exact call.
+///
+/// Two ways to construct one: the synchronous constructor below (kept for backward compatibility
+/// and simple console-app/worker startup, where blocking briefly during construction is normal and
+/// there is no captured synchronization context to deadlock against), and the async
+/// <see cref="CreateAsync"/> factory (preferred for new code, and required in any host with a
+/// synchronization context - e.g. a UI thread - where blocking on async pairing/confirmation work
+/// via a synchronous wrapper risks a real deadlock). Both resolve configuration identically
+/// (<see cref="ResolveAsync"/> is the single implementation; the synchronous constructor is a thin
+/// blocking wrapper over it) and both fully support pairing-code redemption, confirmation, and
+/// confirmation recovery.
 /// </summary>
 public sealed class KaironClient : IDisposable, IAsyncDisposable
 {
@@ -59,8 +69,38 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
         string? serviceName = null,
         string? environment = null,
         string? configPath = null)
+        : this(ResolveAsync(pairingCode, endpoint, projectId, apiKey, configPath, default).GetAwaiter().GetResult(),
+              applicationName, serviceName, environment)
     {
-        var options = Resolve(pairingCode, endpoint, projectId, apiKey, configPath);
+    }
+
+    /// <summary>Fully asynchronous equivalent of the constructor above - resolves pairing/
+    /// confirmation/stored-credential lookup without ever blocking a thread on async work, so it
+    /// is safe to call from a host with a synchronization context (a UI thread, an ASP.NET Core
+    /// classic request) where the synchronous constructor's internal blocking could deadlock.
+    /// Preferred for new code; the constructor remains for simple synchronous startup and existing
+    /// callers.</summary>
+    public static async Task<KaironClient> CreateAsync(
+        string? pairingCode = null,
+        string? endpoint = null,
+        Guid? projectId = null,
+        string? apiKey = null,
+        string? applicationName = null,
+        string? serviceName = null,
+        string? environment = null,
+        string? configPath = null,
+        CancellationToken cancellationToken = default)
+    {
+        var options = await ResolveAsync(pairingCode, endpoint, projectId, apiKey, configPath, cancellationToken).ConfigureAwait(false);
+        return new KaironClient(options, applicationName, serviceName, environment);
+    }
+
+    /// <summary>Purely synchronous wiring over an already-resolved KaironOptions - no resolution
+    /// work, no async, nothing that could block. Shared by both the synchronous constructor and
+    /// <see cref="CreateAsync"/> so there is exactly one place that builds the queue/sender/
+    /// collector/HttpClient graph.</summary>
+    private KaironClient(KaironOptions options, string? applicationName, string? serviceName, string? environment)
+    {
         if (applicationName is not null) options.ApplicationName = applicationName;
         if (serviceName is not null) options.ServiceName = serviceName;
         if (environment is not null) options.Environment = environment;
@@ -90,8 +130,8 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
     {
         if (_started) return;
         _started = true;
-        await _sender.StartAsync(cancellationToken);
-        await _collector.StartAsync(cancellationToken);
+        await _sender.StartAsync(cancellationToken).ConfigureAwait(false);
+        await _collector.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Stops both background loops and attempts a bounded drain. Returns false if
@@ -103,8 +143,8 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(timeout);
-        try { await _sender.StopAsync(cts.Token); } catch (OperationCanceledException) { }
-        try { await _collector.StopAsync(cts.Token); } catch (OperationCanceledException) { }
+        try { await _sender.StopAsync(cts.Token).ConfigureAwait(false); } catch (OperationCanceledException) { }
+        try { await _collector.StopAsync(cts.Token).ConfigureAwait(false); } catch (OperationCanceledException) { }
         _http.Dispose();
         return _queue.FailedCount == 0 && _queue.DroppedCount == 0;
     }
@@ -113,31 +153,36 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
 
     public void Dispose() => Stop();
 
-    private static KaironOptions Resolve(string? pairingCode, string? endpoint, Guid? projectId, string? apiKey, string? configPath)
+    private static async Task<KaironOptions> ResolveAsync(string? pairingCode, string? endpoint, Guid? projectId, string? apiKey,
+        string? configPath, CancellationToken cancellationToken)
     {
         var path = configPath ?? KaironCredentialStore.DefaultPath();
 
         if (!string.IsNullOrWhiteSpace(pairingCode))
         {
             var resolvedEndpointForPairing = endpoint ?? Environment.GetEnvironmentVariable("KAIRON_ENDPOINT") ?? "http://localhost:8000";
-            var paired = KaironPairingClient.PairAsync(resolvedEndpointForPairing, pairingCode)
-                .GetAwaiter().GetResult();
+            var paired = await KaironPairingClient.PairAsync(resolvedEndpointForPairing, pairingCode, cancellationToken).ConfigureAwait(false);
             if (!paired.Success)
                 throw new InvalidOperationException(
                     $"Kairon pairing failed: {paired.Error ?? "the pairing code was rejected."} " +
                     "Generate a new pairing code from Kairon and try again.");
 
-            // Persisted before being used - a failure here throws and the constructor never
-            // completes, so pairing is never reported as successful without a durable credential.
-            // The freshly redeemed values win outright, replacing whatever explicit args/env vars
-            // resolved above - an explicit pairingCode is a direct instruction to (re)pair now, not
-            // a fallback consulted only when everything else came up empty.
-            KaironCredentialStore.Save(path, paired.Endpoint!, paired.ProjectId, paired.ApiKey!);
+            // Persisted (with the pairing id recorded as still-pending-confirmation) before being
+            // used - a failure here throws and construction never completes, so pairing is never
+            // reported as successful without a durable credential. The freshly redeemed values win
+            // outright, replacing whatever explicit args/env vars/stored file resolved above - an
+            // explicit pairingCode is a direct instruction to (re)pair now, not a fallback.
+            KaironCredentialStore.Save(path, paired.Endpoint!, paired.ProjectId, paired.ApiKey!, paired.PairingId);
 
-            // Best-effort proof of receipt/persistence for an operator-driven re-pair completion -
-            // see KaironPairingClient.ConfirmAsync's remarks. Never throws, never blocks longer
-            // than its own short timeout.
-            KaironPairingClient.ConfirmAsync(paired.Endpoint!, paired.PairingId, paired.ApiKey!).GetAwaiter().GetResult();
+            if (await KaironPairingClient.ConfirmAsync(paired.Endpoint!, paired.PairingId, paired.ApiKey!, cancellationToken).ConfigureAwait(false))
+            {
+                // Clears the pending marker now that confirmation actually succeeded - leaving it
+                // set would make every future run keep retrying a confirmation that already worked.
+                KaironCredentialStore.Save(path, paired.Endpoint!, paired.ProjectId, paired.ApiKey!);
+            }
+            // If confirmation did not succeed, the pending marker stays recorded on disk (set just
+            // above) so a LATER run - even with no pairingCode at all - can retry it. Never fatal
+            // here: the credential itself is already valid and saved either way.
 
             return new KaironOptions { Endpoint = paired.Endpoint!, ProjectId = paired.ProjectId, ApiKey = paired.ApiKey! };
         }
@@ -150,6 +195,17 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
         if (stored is { } credential)
         {
             var storedEndpoint = endpoint ?? Environment.GetEnvironmentVariable("KAIRON_ENDPOINT") ?? credential.Endpoint;
+
+            if (credential.PendingConfirmationPairingId is { } pendingId)
+            {
+                // Recovers a confirmation whose earlier attempt was lost (network failure, or the
+                // process exited before it could run) - never re-redeems a code, never generates
+                // one: the stored credential's own presence is what makes retrying confirmation
+                // safe here.
+                if (await KaironPairingClient.ConfirmAsync(credential.Endpoint, pendingId, credential.ApiKey, cancellationToken).ConfigureAwait(false))
+                    KaironCredentialStore.Save(path, credential.Endpoint, credential.ProjectId, credential.ApiKey);
+            }
+
             return new KaironOptions { Endpoint = storedEndpoint, ProjectId = credential.ProjectId, ApiKey = credential.ApiKey };
         }
 

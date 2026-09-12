@@ -19,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 6;
+    public const int CurrentVersion = 7;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -141,6 +141,29 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                 _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: SdkPairingSessions confirmation columns", version);
             }
 
+            // Version 7: adds SdkPairingSessions.ReplacesCredentialId/CompletedAt (a re-pair
+            // session's binding to the exact credential it replaces, and proof that ITS OWN
+            // completion already ran) and RemediationTargets.RowVersion (a real, randomized
+            // concurrency token - see AppDbContext's remarks on why UpdatedAt alone was not safe).
+            // RowVersion's default of all-zeros for pre-existing rows is safe: it only needs to
+            // differ from whatever the NEXT write to that row produces, and every write regenerates
+            // it to a fresh random value (RemediationTargetManagementService, SdkPairingService).
+            if (version == 6) {
+                foreach (var column in new[] { "ReplacesCredentialId", "CompletedAt" }) {
+                    var columns = await ColumnsAsync(connection, transaction, "SdkPairingSessions", cancellationToken);
+                    if (!columns.Contains(column))
+                        await ExecuteAsync(connection, transaction, $"ALTER TABLE \"SdkPairingSessions\" ADD COLUMN \"{column}\" TEXT NULL;", cancellationToken);
+                }
+                var targetColumns = await ColumnsAsync(connection, transaction, "RemediationTargets", cancellationToken);
+                if (!targetColumns.Contains("RowVersion"))
+                    await ExecuteAsync(connection, transaction,
+                        "ALTER TABLE \"RemediationTargets\" ADD COLUMN \"RowVersion\" TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000';",
+                        cancellationToken);
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 7;", cancellationToken);
+                version = 7;
+                _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: pairing repair-binding + RemediationTargets.RowVersion", version);
+            }
+
             if (version != CurrentVersion)
                 throw new InvalidOperationException($"No SQLite migration path exists from version {version}.");
 
@@ -156,10 +179,17 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 
     /// <summary>Entity types a given schema version is expected to have. Every version after the
     /// 1.0.1 baseline just adds to the full current model, so this only ever needs to name what to
-    /// *exclude* for an older version - version 1 predates AiProviderConfig.</summary>
+    /// *exclude* for an older version - version 1 predates AiProviderConfig AND RemediationTarget
+    /// (added at version 5). Excluding only AiProviderConfig here was the actual bug this fixes:
+    /// adopting a genuine legacy (version 0) database validated it against almost the entire
+    /// CURRENT model, including RemediationTargets - a table that would never exist yet on a real
+    /// 1.0.1 install - so a genuine legacy database could never be adopted at all. It went
+    /// unnoticed because the test exercising this path built its "legacy" database with
+    /// EnsureCreatedAsync against the current model, which already includes RemediationTargets -
+    /// see SqliteSchemaMigratorTests's genuine-legacy-fixture test for the corrected version.</summary>
     private IEnumerable<IEntityType> EntitiesAsOf(int version) => version switch
     {
-        1 => _db.Model.GetEntityTypes().Where(e => e.ClrType != typeof(AiProviderConfig)),
+        1 => _db.Model.GetEntityTypes().Where(e => e.ClrType != typeof(AiProviderConfig) && e.ClrType != typeof(RemediationTarget)),
         _ => _db.Model.GetEntityTypes(),
     };
 
@@ -224,7 +254,19 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var actual = await ColumnsAsync(connection, transaction, table, cancellationToken);
 
-            if (legacy && table is "Incidents" or "Metrics") expected.Remove("MachineId");
+            if (legacy)
+            {
+                if (table is "Incidents" or "Metrics") expected.Remove("MachineId"); // added at version 4
+                if (table == "SdkPairingSessions")
+                {
+                    // Added at versions 6 and 7 respectively - a genuine 1.0.1 database predates
+                    // all four of these columns just as surely as it predates RemediationTargets.
+                    expected.Remove("IssuedCredentialId");
+                    expected.Remove("ConfirmedAt");
+                    expected.Remove("ReplacesCredentialId");
+                    expected.Remove("CompletedAt");
+                }
+            }
             var missing = expected.Except(actual, StringComparer.OrdinalIgnoreCase).Order().ToArray();
             if (actual.Count == 0 || missing.Length > 0)
             {

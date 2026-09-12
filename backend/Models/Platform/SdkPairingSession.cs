@@ -30,4 +30,22 @@ public sealed class SdkPairingSession
     public DateTime? ConfirmedAt { get; set; }
 
     public DateTime? RevokedAt { get; set; }
+
+    /// <summary>For a re-pair session, the exact credential this session was created to replace -
+    /// recorded once, at creation, and never inferred or substituted later. CompleteRepairAsync
+    /// requires the caller-supplied "old credential" to equal this exact value: without this
+    /// binding, a pairing session could be completed against ANY active same-project credential
+    /// the caller happened to name, letting an unrelated credential be revoked/replaced by a
+    /// session that was never actually about it. Null for a first-time pairing session, which has
+    /// no credential to replace.</summary>
+    public Guid? ReplacesCredentialId { get; set; }
+
+    /// <summary>Set only once CompleteRepairAsync has actually finished the rebind+revoke for this
+    /// session - the authoritative "this exact operation already ran" signal. Distinct from simply
+    /// noticing that the old credential is revoked: something else entirely (an unrelated,
+    /// unexpected revocation) could also leave the old credential revoked without this session's
+    /// own completion ever having run, and treating that as "success" would misreport that the
+    /// intended rebind happened when it did not. Replaying CompleteRepairAsync after this is set is
+    /// always a safe, side-effect-free idempotent no-op.</summary>
+    public DateTime? CompletedAt { get; set; }
 }

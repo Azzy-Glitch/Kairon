@@ -28,10 +28,10 @@ public class PolicyDecision
 public interface IRemediationPolicy
 {
     /// <summary>Checked when the action is proposed, before it is offered for approval.</summary>
-    PolicyDecision ValidateProposal(SreIncident incident, string actionType, RiskLevel riskLevel);
+    Task<PolicyDecision> ValidateProposalAsync(SreIncident incident, string actionType, RiskLevel riskLevel, CancellationToken ct = default);
 
     /// <summary>Re-checked immediately before execution, after approval.</summary>
-    PolicyDecision ValidateExecution(SreIncident incident, RemediationAction action);
+    Task<PolicyDecision> ValidateExecutionAsync(SreIncident incident, RemediationAction action, CancellationToken ct = default);
 }
 
 public class RemediationPolicy : IRemediationPolicy
@@ -50,7 +50,7 @@ public class RemediationPolicy : IRemediationPolicy
         _logger = logger;
     }
 
-    public PolicyDecision ValidateProposal(SreIncident incident, string actionType, RiskLevel riskLevel)
+    public async Task<PolicyDecision> ValidateProposalAsync(SreIncident incident, string actionType, RiskLevel riskLevel, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(actionType))
             return PolicyDecision.Deny("empty-action", "No action was named.");
@@ -91,19 +91,19 @@ public class RemediationPolicy : IRemediationPolicy
                 $"Remediation is not permitted in environment '{incident.Environment}'.");
         }
 
-        if (tool is IScopedRemediationTool scoped && scoped.TargetFingerprint(incident) is null)
+        if (tool is IScopedRemediationTool scoped && await scoped.TargetFingerprintAsync(incident, ct) is null)
             return PolicyDecision.Deny("target-not-authorized", "No unique, online, enrolled and allowlisted Windows service target matches this incident.");
         return PolicyDecision.Allow($"'{tool.Name}' is registered, permitted, and within the risk ceiling.");
     }
 
-    public PolicyDecision ValidateExecution(SreIncident incident, RemediationAction action)
+    public async Task<PolicyDecision> ValidateExecutionAsync(SreIncident incident, RemediationAction action, CancellationToken ct = default)
     {
         if (!_options.Enabled)
             return PolicyDecision.Deny("remediation-disabled", "Remediation execution is disabled by configuration.");
 
         // Re-run every proposal check. Configuration or incident state can change between the
         // proposal and the approval, and the moment of execution is the one that matters.
-        var proposal = ValidateProposal(incident, action.ActionType, action.RiskLevel);
+        var proposal = await ValidateProposalAsync(incident, action.ActionType, action.RiskLevel, ct);
         if (!proposal.Allowed)
             return proposal;
 
@@ -112,7 +112,7 @@ public class RemediationPolicy : IRemediationPolicy
         if (_registry.TryGet(action.ActionType, out var executionTool) && executionTool is IScopedRemediationTool scoped) {
             var parameters = SreJson.Deserialize(action.ParametersJson, new Dictionary<string, string>());
             if (!executionTool.ValidateParameters(parameters, out _) ||
-                !parameters.TryGetValue("targetFingerprint", out var binding) || binding != scoped.TargetFingerprint(incident))
+                !parameters.TryGetValue("targetFingerprint", out var binding) || binding != await scoped.TargetFingerprintAsync(incident, ct))
                 return PolicyDecision.Deny("target-changed", "The approved target binding is missing or changed; obtain a new recommendation and approval.");
         }
 

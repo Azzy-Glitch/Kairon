@@ -72,8 +72,8 @@ public class VerificationService : IVerificationService
         var scoped = _tools.TryGet(action.ActionType, out var tool) ? tool as IScopedRemediationTool : null;
         var parameters = SreJson.Deserialize(action.ParametersJson, new Dictionary<string, string>());
         var bound = parameters.GetValueOrDefault("targetFingerprint");
-        var machineId = scoped?.TargetMachineId(incident);
-        var scopeValid = scoped is null || (machineId.HasValue && bound is not null && scoped.TargetFingerprint(incident) == bound);
+        var machineId = scoped is null ? null : await scoped.TargetMachineIdAsync(incident, cancellationToken);
+        var scopeValid = scoped is null || (machineId.HasValue && bound is not null && await scoped.TargetFingerprintAsync(incident, cancellationToken) == bound);
         var executedAt = action.CompletedAt ?? action.StartedAt ?? DateTime.UtcNow;
 
         if (action.ActionType == ServiceToolNames.StopService)

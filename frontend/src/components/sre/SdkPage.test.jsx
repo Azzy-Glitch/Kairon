@@ -54,6 +54,7 @@ async function startRepair(expiresAt = new Date(Date.now() + 10 * 60 * 1000).toI
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionStorage.clear();
   sdkApi.listProjects.mockResolvedValue([project]);
   sdkApi.listCredentials.mockResolvedValue([credential]);
 });
@@ -66,7 +67,7 @@ describe('SdkPage re-pairing', () => {
     await startRepair();
 
     expect(screen.getByText(/Re-pairing "orders-sdk"/)).toBeInTheDocument();
-    expect(sdkApi.createPairing).toHaveBeenCalledWith('proj-1', 'dotnet');
+    expect(sdkApi.createPairing).toHaveBeenCalledWith('proj-1', 'dotnet', 'cred-1');
   });
 
   it('never renders any credential secret, before or during a re-pair', async () => {
@@ -193,5 +194,91 @@ describe('SdkPage re-pairing', () => {
     await userEvent.click(screen.getByRole('button', { name: /Re-pair/ }));
 
     expect(await screen.findByText('Could not start re-pairing')).toBeInTheDocument();
+  });
+
+  it('disables starting a second re-pair while one is already in flight', async () => {
+    renderSdkPage();
+    await openPairingTab();
+    await startRepair('2099-01-01T00:10:00Z');
+
+    expect(screen.getByRole('button', { name: /Re-pair/ })).toBeDisabled();
+  });
+
+  it('never stores the API key or any credential secret in sessionStorage - only safe recovery metadata', async () => {
+    renderSdkPage();
+    await openPairingTab();
+    await startRepair();
+
+    const stored = sessionStorage.getItem('kairon:activeRepair');
+    expect(stored).toBeTruthy();
+    expect(stored).not.toContain('krn_');
+    const parsed = JSON.parse(stored);
+    expect(parsed).not.toHaveProperty('apiKey');
+    expect(parsed).not.toHaveProperty('codeHash');
+    expect(parsed.pairingId).toBe('pair-1');
+    expect(parsed.projectId).toBe('proj-1');
+  });
+
+  it('recovers an in-flight re-pair after a page refresh and resumes polling from where it left off', async () => {
+    const { unmount } = renderSdkPage();
+    await openPairingTab();
+    await startRepair();
+
+    // Simulates a page refresh: the whole React tree unmounts and a fresh one mounts in its
+    // place - sessionStorage (not component state) is all that survives across this boundary.
+    unmount();
+
+    sdkApi.getPairingStatus.mockResolvedValue({ status: 'Redeemed', redeemedAt: '2026-01-01T00:01:00Z', confirmedAt: '2026-01-01T00:01:05Z' });
+    sdkApi.completeRepair.mockResolvedValue({ rebindCount: 0 });
+
+    renderSdkPage();
+    await openPairingTab();
+
+    expect(await screen.findByText(/Re-pairing "orders-sdk"/)).toBeInTheDocument();
+    await waitFor(() => expect(sdkApi.completeRepair).toHaveBeenCalledWith('pair-1', 'cred-1'), { timeout: POLL_WAIT_TIMEOUT });
+  }, POLL_TEST_TIMEOUT);
+
+  it('does not recover a session that already reached a terminal state before the refresh', async () => {
+    const { unmount } = renderSdkPage();
+    await openPairingTab();
+    await startRepair();
+    sdkApi.getPairingStatus.mockResolvedValue({ status: 'Cancelled' });
+    await waitFor(() => expect(sdkApi.getPairingStatus).toHaveBeenCalled(), { timeout: POLL_WAIT_TIMEOUT });
+    await screen.findByText(/Cancelled - no credential was changed/i);
+
+    unmount();
+    renderSdkPage();
+    await openPairingTab();
+
+    expect(screen.queryByText(/Re-pairing "orders-sdk"/)).not.toBeInTheDocument();
+  }, POLL_TEST_TIMEOUT);
+
+  it('times out an awaiting-confirmation session that never gets confirmed, without polling forever', async () => {
+    sessionStorage.setItem('kairon:activeRepair', JSON.stringify({
+      projectId: 'proj-1', credentialId: 'cred-1', credentialName: 'orders-sdk',
+      pairingId: 'pair-1', code: 'pair_freshcode', expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+      status: 'AwaitingConfirmation', confirmationDeadline: Date.now() - 1000
+    }));
+
+    renderSdkPage();
+    await openPairingTab();
+
+    expect(await screen.findByText(/never confirmed it received the new credential/i)).toBeInTheDocument();
+    expect(sdkApi.getPairingStatus).not.toHaveBeenCalled();
+  });
+
+  it('does not pretend cancellation succeeded when the backend rejects it, and reflects the real status instead', async () => {
+    renderSdkPage();
+    await openPairingTab();
+    await startRepair('2099-01-01T00:10:00Z');
+
+    sdkApi.revokePairing.mockRejectedValue({ message: 'Pairing session not found.' });
+    sdkApi.getPairingStatus.mockResolvedValue({ status: 'Redeemed', redeemedAt: '2026-01-01T00:01:00Z', confirmedAt: null });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(await screen.findByText('Pairing session not found.')).toBeInTheDocument();
+    // Never silently cleared - the banner remains and now reflects the real, current status.
+    expect(await screen.findByText(/waiting for the application to confirm/i)).toBeInTheDocument();
   });
 });

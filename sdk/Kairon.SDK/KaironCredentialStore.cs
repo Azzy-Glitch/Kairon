@@ -26,13 +26,19 @@ internal static class KaironCredentialStore
         public string Endpoint { get; set; } = "";
         public string ProjectId { get; set; } = "";
         public string ApiKey { get; set; } = "";
+
+        /// <summary>Present only while a redeemed credential has not yet been confirmed with the
+        /// backend (the confirmation response was lost, or the process exited before sending it).
+        /// Non-secret (a session id, not a credential) - kept purely so a later run can retry
+        /// confirming it without needing a new pairing code.</summary>
+        public string? PendingConfirmationPairingId { get; set; }
     }
 
     public static string DefaultPath() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Kairon", "sdk", "credential.json");
 
-    public static (string Endpoint, Guid ProjectId, string ApiKey)? Load(string path)
+    public static (string Endpoint, Guid ProjectId, string ApiKey, Guid? PendingConfirmationPairingId)? Load(string path)
     {
         try
         {
@@ -42,7 +48,8 @@ internal static class KaironCredentialStore
             if (stored is null || !Guid.TryParse(stored.ProjectId, out var projectId) ||
                 string.IsNullOrWhiteSpace(stored.ApiKey) || string.IsNullOrWhiteSpace(stored.Endpoint))
                 return null;
-            return (stored.Endpoint, projectId, stored.ApiKey);
+            Guid? pending = Guid.TryParse(stored.PendingConfirmationPairingId, out var pendingId) ? pendingId : null;
+            return (stored.Endpoint, projectId, stored.ApiKey, pending);
         }
         catch
         {
@@ -55,19 +62,51 @@ internal static class KaironCredentialStore
 
     /// <summary>Throws on failure rather than returning a status - a caller must never report a
     /// successful pairing when the credential could not actually be persisted.</summary>
-    public static void Save(string path, string endpoint, Guid projectId, string apiKey)
+    public static void Save(string path, string endpoint, Guid projectId, string apiKey, Guid? pendingConfirmationPairingId = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var json = JsonSerializer.Serialize(new StoredCredential
         {
             Endpoint = endpoint,
             ProjectId = projectId.ToString(),
-            ApiKey = apiKey
+            ApiKey = apiKey,
+            PendingConfirmationPairingId = pendingConfirmationPairingId?.ToString()
         });
         var protectedText = CreateProtector(path).Protect(json);
-        var tempPath = path + ".tmp";
-        File.WriteAllText(tempPath, protectedText);
-        File.Move(tempPath, path, overwrite: true);
+
+        // A uniquely-named temp file per call (not a single fixed ".tmp") - two SDK instances (or
+        // two overlapping calls in one process) saving at the same moment must never read or
+        // clobber each other's still-being-written temp file; File.Move is still the sole atomic
+        // publish step either way, so whichever finishes last still wins cleanly.
+        var tempPath = path + "." + Environment.ProcessId + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(tempPath, protectedText);
+            // On Windows, a concurrent replace of the SAME destination from another thread/process
+            // (or a virus scanner briefly holding it open) can transiently fail with
+            // IOException/UnauthorizedAccessException - a short bounded retry is the standard way
+            // to make the move itself robust to that; it remains the one atomic publish step.
+            Exception? lastError = null;
+            for (var attempt = 0; attempt < 5; attempt++)
+            {
+                try
+                {
+                    File.Move(tempPath, path, overwrite: true);
+                    lastError = null;
+                    break;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    lastError = ex;
+                    Thread.Sleep(50 * (attempt + 1));
+                }
+            }
+            if (lastError is not null) throw lastError;
+        }
+        finally
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* best-effort cleanup */ }
+        }
     }
 
     private static IDataProtector CreateProtector(string credentialPath)

@@ -128,6 +128,33 @@ public class KaironTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateAsyncResolvesExplicitConfigurationJustLikeTheSynchronousConstructor()
+    {
+        await using var kairon = await KaironClient.CreateAsync(
+            endpoint: "http://127.0.0.1:9999",
+            projectId: Guid.Parse("44444444-4444-4444-4444-444444444444"),
+            apiKey: "krn_explicit",
+            configPath: ConfigPath);
+
+        Assert.Equal(Guid.Parse("44444444-4444-4444-4444-444444444444"), kairon.ProjectId);
+        Assert.Equal("http://127.0.0.1:9999", kairon.Endpoint);
+        Assert.False(File.Exists(ConfigPath));
+    }
+
+    [Fact]
+    public async Task CreateAsyncPropagatesAnInvalidPairingCodeJustLikeTheSynchronousConstructor()
+    {
+        using var server = new FakePairingServer(HttpStatusCode.BadRequest,
+            """{"error":"Pairing code is invalid, expired, revoked, or already used."}""");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => KaironClient.CreateAsync(pairingCode: "pair_bad", endpoint: server.Url, configPath: ConfigPath));
+
+        Assert.Contains("pairing failed", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(ConfigPath));
+    }
+
+    [Fact]
     public void CorruptedStoredCredentialFileIsTreatedAsNotStored()
     {
         // A stored credential.json can become unreadable (disk corruption, a foreign machine's

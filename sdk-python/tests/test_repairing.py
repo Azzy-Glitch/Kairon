@@ -30,6 +30,7 @@ class _RepairHandler(BaseHTTPRequestHandler):
     accepted_api_key = "krn_old_key"
     pairing_calls = 0
     confirm_calls = 0
+    confirm_should_fail = False
     last_confirm_api_key = None
     telemetry_calls = 0
     next_pairing_body = (
@@ -54,6 +55,10 @@ class _RepairHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/v1/sdk/pair/") and self.path.endswith("/confirm"):
             _RepairHandler.confirm_calls += 1
             _RepairHandler.last_confirm_api_key = json.loads(raw).get("apiKey")
+            if _RepairHandler.confirm_should_fail:
+                self.send_response(500)
+                self.end_headers()
+                return
             self.send_response(204)
             self.end_headers()
             return
@@ -79,6 +84,7 @@ def repair_server():
     _RepairHandler.accepted_api_key = "krn_old_key"
     _RepairHandler.pairing_calls = 0
     _RepairHandler.confirm_calls = 0
+    _RepairHandler.confirm_should_fail = False
     _RepairHandler.last_confirm_api_key = None
     _RepairHandler.telemetry_calls = 0
     _RepairHandler.next_pairing_status = 200
@@ -204,6 +210,92 @@ def test_confirmation_network_failure_does_not_block_onboarding_or_change_the_cr
         assert _RepairHandler.confirm_calls == 0  # confirm's own POST never reached a real server
     finally:
         kairon.stop(timeout_seconds=1)
+
+
+def test_a_lost_confirmation_is_retried_on_a_later_run_and_the_pending_marker_is_then_cleared(repair_server, config_path):
+    # Simulates the confirmation response getting lost the first time (a transient network
+    # failure, or the process exiting right after redemption) - recovery must not re-redeem a
+    # code or generate one; it must retry confirming with the SAME already-issued credential,
+    # using only the non-secret pairing id already recorded alongside it.
+    _RepairHandler.confirm_should_fail = True
+    first = Kairon(pairing_code="pair_lostconfirm", endpoint=repair_server, config_path=config_path)
+    try:
+        assert first.api_key == "krn_new_key"
+    finally:
+        first.stop(timeout_seconds=1)
+
+    from kairon import _credential_store
+
+    stored_after_first_run = _credential_store.load_stored_config(Path(config_path))
+    assert stored_after_first_run["pendingConfirmationPairingId"] == "99999999-9999-9999-9999-999999999999"
+    calls_after_first_run = _RepairHandler.confirm_calls
+    assert calls_after_first_run > 0  # it did try, more than once (bounded retry), just never succeeded
+
+    # A later run - crucially, with NO pairing_code at all - recovers the confirmation using only
+    # the stored credential and its recorded pending pairing id.
+    _RepairHandler.confirm_should_fail = False
+    second = Kairon(endpoint="http://127.0.0.1:1", config_path=config_path)
+    try:
+        assert second.api_key == "krn_new_key"
+        assert second.project_id == "77777777-7777-7777-7777-777777777777"
+    finally:
+        second.stop(timeout_seconds=1)
+
+    assert _RepairHandler.confirm_calls > calls_after_first_run  # it actually retried
+    stored_after_recovery = _credential_store.load_stored_config(Path(config_path))
+    assert "pendingConfirmationPairingId" not in stored_after_recovery
+
+    # A THIRD run must not keep retrying a confirmation that already succeeded.
+    calls_after_recovery = _RepairHandler.confirm_calls
+    third = Kairon(endpoint="http://127.0.0.1:1", config_path=config_path)
+    third.stop(timeout_seconds=1)
+    assert _RepairHandler.confirm_calls == calls_after_recovery
+
+
+def test_a_permanently_lost_confirmation_never_blocks_onboarding_or_deletes_the_credential(repair_server, config_path):
+    _RepairHandler.confirm_should_fail = True
+    kairon = Kairon(pairing_code="pair_neverconfirmed", endpoint=repair_server, config_path=config_path)
+    try:
+        assert kairon.api_key == "krn_new_key"
+        assert kairon.project_id == "77777777-7777-7777-7777-777777777777"
+    finally:
+        kairon.stop(timeout_seconds=1)
+
+    # Even with confirmation permanently failing, the credential remains usable for telemetry -
+    # a failed confirmation must never be treated as a reason to distrust or delete it.
+    result = kairon._send("api/telemetry/incidents", {})
+    assert result is True
+
+
+def test_concurrent_credential_writes_never_corrupt_the_stored_file(config_path):
+    # Multiple SDK instances (or overlapping calls within one process) saving at the same moment
+    # must never leave the stored file half-written or unreadable - each writer's own uniquely
+    # named temp file means no two writers can clobber each other's in-progress write, and the
+    # final os.replace is what atomically decides which one's contents actually land.
+    from kairon import _credential_store
+
+    errors = []
+
+    def _write(n: int) -> None:
+        try:
+            _credential_store.save_stored_config(
+                "http://127.0.0.1:8000", f"{n:08d}-0000-0000-0000-000000000000", f"krn_key_{n}", Path(config_path)
+            )
+        except Exception as exc:  # pragma: no cover - failure surfaces via `errors`
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_write, args=(n,)) for n in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert not errors
+    # Whichever write landed last, the file itself is fully intact and loadable - never a torn
+    # write from two overlapping temp files colliding on the same name.
+    final = _credential_store.load_stored_config(Path(config_path))
+    assert final is not None
+    assert final["apiKey"].startswith("krn_key_")
 
 
 # --- Required precedence: pairing_code > stored credential > ordinary configuration --------

@@ -78,10 +78,10 @@ public class RemediationTests : IDisposable
     // --- Policy ---
 
     [Fact]
-    public void PolicyPermitsARegisteredLowRiskTool()
+    public async Task PolicyPermitsARegisteredLowRiskTool()
     {
         var incident = _h.SeedIncident();
-        var decision = _h.Policy.ValidateProposal(incident, DemoToolNames.DisableDemoRetryLoop, RiskLevel.Low);
+        var decision = await _h.Policy.ValidateProposalAsync(incident, DemoToolNames.DisableDemoRetryLoop, RiskLevel.Low);
 
         Assert.True(decision.Allowed);
     }
@@ -90,118 +90,118 @@ public class RemediationTests : IDisposable
     [InlineData("rm -rf /")]
     [InlineData("DeleteProductionDatabase")]
     [InlineData("RunArbitraryShellCommand")]
-    public void PolicyRefusesAnythingNotInTheRegistry(string action)
+    public async Task PolicyRefusesAnythingNotInTheRegistry(string action)
     {
         var incident = _h.SeedIncident();
-        var decision = _h.Policy.ValidateProposal(incident, action, RiskLevel.Low);
+        var decision = await _h.Policy.ValidateProposalAsync(incident, action, RiskLevel.Low);
 
         Assert.False(decision.Allowed);
         Assert.Equal("unregistered-tool", decision.Code);
     }
 
     [Fact]
-    public void PolicyRefusesABlockedTool()
+    public async Task PolicyRefusesABlockedTool()
     {
         _h.Remediation.BlockedTools.Add(DemoToolNames.RestartDemoService);
         var incident = _h.SeedIncident();
 
-        var decision = _h.Policy.ValidateProposal(incident, DemoToolNames.RestartDemoService, RiskLevel.Low);
+        var decision = await _h.Policy.ValidateProposalAsync(incident, DemoToolNames.RestartDemoService, RiskLevel.Low);
 
         Assert.False(decision.Allowed);
         Assert.Equal("blocked-tool", decision.Code);
     }
 
     [Fact]
-    public void PolicyEnforcesAnAllowlistWhenOneIsConfigured()
+    public async Task PolicyEnforcesAnAllowlistWhenOneIsConfigured()
     {
         _h.Remediation.AllowedTools.Add(DemoToolNames.RunHealthCheck);
         var incident = _h.SeedIncident();
 
-        Assert.True(_h.Policy.ValidateProposal(incident, DemoToolNames.RunHealthCheck, RiskLevel.Low).Allowed);
+        Assert.True((await _h.Policy.ValidateProposalAsync(incident, DemoToolNames.RunHealthCheck, RiskLevel.Low)).Allowed);
         Assert.Equal("not-allowlisted",
-            _h.Policy.ValidateProposal(incident, DemoToolNames.RestartDemoService, RiskLevel.Low).Code);
+            (await _h.Policy.ValidateProposalAsync(incident, DemoToolNames.RestartDemoService, RiskLevel.Low)).Code);
     }
 
     [Fact]
-    public void PolicyRefusesRiskAboveTheCeiling()
+    public async Task PolicyRefusesRiskAboveTheCeiling()
     {
         _h.Remediation.MaxAllowedRisk = RiskLevel.Low;
         var incident = _h.SeedIncident();
 
-        var decision = _h.Policy.ValidateProposal(incident, DemoToolNames.RestartDemoService, RiskLevel.Medium);
+        var decision = await _h.Policy.ValidateProposalAsync(incident, DemoToolNames.RestartDemoService, RiskLevel.Medium);
 
         Assert.False(decision.Allowed);
         Assert.Equal("risk-too-high", decision.Code);
     }
 
     [Fact]
-    public void ToolDeclaredRiskWinsOverAClaimedLowerRisk()
+    public async Task ToolDeclaredRiskWinsOverAClaimedLowerRisk()
     {
         // A model cannot smuggle a riskier action past policy by labelling it "low".
         _h.Remediation.MaxAllowedRisk = RiskLevel.Low;
         var incident = _h.SeedIncident();
 
-        var decision = _h.Policy.ValidateProposal(incident, DemoToolNames.RestartDemoService, RiskLevel.Low);
+        var decision = await _h.Policy.ValidateProposalAsync(incident, DemoToolNames.RestartDemoService, RiskLevel.Low);
 
         Assert.False(decision.Allowed);
         Assert.Equal("risk-too-high", decision.Code);
     }
 
     [Fact]
-    public void PolicyRefusesADisallowedEnvironment()
+    public async Task PolicyRefusesADisallowedEnvironment()
     {
         var incident = _h.SeedIncident();
         incident.Environment = "Production";
         _h.Remediation.AllowedEnvironments.Remove("Production");
 
-        var decision = _h.Policy.ValidateProposal(incident, DemoToolNames.RunHealthCheck, RiskLevel.Low);
+        var decision = await _h.Policy.ValidateProposalAsync(incident, DemoToolNames.RunHealthCheck, RiskLevel.Low);
 
         Assert.False(decision.Allowed);
         Assert.Equal("environment-not-allowed", decision.Code);
     }
 
     [Fact]
-    public void ExecutionIsRefusedWithoutApproval()
+    public async Task ExecutionIsRefusedWithoutApproval()
     {
         var incident = _h.SeedIncident();
         var action = Action(incident, status: RemediationStatus.AwaitingApproval);
 
-        var decision = _h.Policy.ValidateExecution(incident, action);
+        var decision = await _h.Policy.ValidateExecutionAsync(incident, action);
 
         Assert.False(decision.Allowed);
         Assert.Equal("approval-required", decision.Code);
     }
 
     [Fact]
-    public void ExecutionIsRefusedForARejectedAction()
+    public async Task ExecutionIsRefusedForARejectedAction()
     {
         var incident = _h.SeedIncident();
         var action = Action(incident, status: RemediationStatus.Rejected);
 
-        Assert.Equal("rejected", _h.Policy.ValidateExecution(incident, action).Code);
+        Assert.Equal("rejected", (await _h.Policy.ValidateExecutionAsync(incident, action)).Code);
     }
 
     [Fact]
-    public void ExecutionIsRefusedTwiceForTheSameAction()
+    public async Task ExecutionIsRefusedTwiceForTheSameAction()
     {
         var incident = _h.SeedIncident();
         var action = Action(incident, status: RemediationStatus.Executed);
 
-        Assert.Equal("already-executed", _h.Policy.ValidateExecution(incident, action).Code);
+        Assert.Equal("already-executed", (await _h.Policy.ValidateExecutionAsync(incident, action)).Code);
     }
 
     [Fact]
-    public void ExecutionIsRefusedWhenRemediationIsDisabled()
+    public async Task ExecutionIsRefusedWhenRemediationIsDisabled()
     {
         _h.Remediation.Enabled = false;
         var incident = _h.SeedIncident();
         var action = Action(incident);
 
-        Assert.Equal("remediation-disabled", _h.Policy.ValidateExecution(incident, action).Code);
+        Assert.Equal("remediation-disabled", (await _h.Policy.ValidateExecutionAsync(incident, action)).Code);
     }
 
     [Fact]
-    public void ExecutionIsRefusedPastTheActionLimit()
+    public async Task ExecutionIsRefusedPastTheActionLimit()
     {
         _h.Remediation.MaxActionsPerIncident = 1;
         var incident = _h.SeedIncident();
@@ -209,7 +209,7 @@ public class RemediationTests : IDisposable
         Action(incident, status: RemediationStatus.Executed);
         var next = Action(incident, type: DemoToolNames.RunHealthCheck);
 
-        Assert.Equal("action-limit", _h.Policy.ValidateExecution(incident, next).Code);
+        Assert.Equal("action-limit", (await _h.Policy.ValidateExecutionAsync(incident, next)).Code);
     }
 
     // --- Executor ---

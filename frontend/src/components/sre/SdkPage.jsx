@@ -10,6 +10,43 @@ import { IconLink, IconCopy, IconCheck, IconTrash, IconRefresh, IconAlertTriangl
 // (a developer running the SDK right after copying the code) without hammering the backend.
 export const REPAIR_POLL_INTERVAL_MS = 3000;
 
+// A redeemed-but-never-confirmed session must not poll forever if the application that redeemed
+// it never actually confirms (crashed, was uninstalled, network permanently blocked) - this is a
+// separate, much longer bound than the 10-minute pairing CODE expiry, which no longer applies
+// once the code has already been redeemed.
+export const AWAITING_CONFIRMATION_TIMEOUT_MS = 30 * 60 * 1000;
+
+// Session-only (cleared when the tab closes), never localStorage: recovery state must survive a
+// refresh/navigation within the same tab, but this is exactly as sensitive as anything else already
+// visible in this UI while the tab is open - never more. Only non-secret pairing-session metadata is
+// ever stored here - no API key, no pairing-code hash, nothing the backend itself would not already
+// return from a plain status poll.
+const REPAIR_STORAGE_KEY = 'kairon:activeRepair';
+
+function loadStoredRepair() {
+  try {
+    const raw = sessionStorage.getItem(REPAIR_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredRepair(projectId, repair) {
+  try {
+    if (!repair || TERMINAL_REPAIR_STATUSES.has(repair.status)) {
+      sessionStorage.removeItem(REPAIR_STORAGE_KEY);
+      return;
+    }
+    sessionStorage.setItem(REPAIR_STORAGE_KEY, JSON.stringify({ projectId, ...repair }));
+  } catch {
+    // Best-effort: a full/blocked sessionStorage must never break the re-pair flow itself.
+  }
+}
+
+const TERMINAL_REPAIR_STATUSES = new Set(['Completed', 'CompletionFailed', 'Expired', 'Cancelled', 'ConfirmationTimedOut']);
+const POLLING_REPAIR_STATUSES = new Set(['Pending', 'AwaitingConfirmation']);
+
 const VIEWS = [
   { id: 'start', label: 'Get Started' },
   { id: 'pairing', label: 'Pairing' }
@@ -89,13 +126,37 @@ function Pairing({ onProjectSelected }) {
   // completeRepairOnce below. Status values: Pending -> AwaitingConfirmation (redeemed, but the
   // application has not yet proven it received/persisted the new credential) -> Completing ->
   // Completed | CompletionFailed, or Expired | Cancelled at any point before those.
-  const [repair, setRepair] = useState(null); // { credentialId, credentialName, pairingId, code, expiresAt, status, rebindCount?, completionError? }
+  const [repair, setRepair] = useState(null); // { credentialId, credentialName, pairingId, code, expiresAt, status, confirmationDeadline?, rebindCount?, completionError? }
   const { copiedKey, copy } = useCopy();
   // Guards against a re-pair completion running more than once: JavaScript callbacks already
   // queued by a prior interval tick can still execute even after clearInterval, so relying on
   // clearInterval alone is not enough to make "observed Confirmed -> complete the repair" happen
   // exactly once (audit Phase 7).
   const completionInFlightRef = useRef(new Set());
+  const rehydratedRef = useRef(false);
+
+  // Recovers an in-flight re-pair across a page refresh/navigation within the same tab (runs once,
+  // as soon as the project it belongs to is known - never re-redeems or re-generates anything,
+  // only resumes polling an already-existing session), AND keeps the recovery snapshot in sync
+  // with the actual UI state afterward - cleared the moment a terminal state is reached (see
+  // saveStoredRepair), so a later refresh never resurrects a finished/cancelled/expired session.
+  // Combined into one effect deliberately: rehydrating via setRepair() cannot also synchronously
+  // save in that SAME pass (repair here would still be the stale pre-rehydration value, null,
+  // which would immediately overwrite/erase the very state just read back) - returning early after
+  // rehydrating lets the next render (once setRepair's update actually applies) do the save.
+  useEffect(() => {
+    if (!selectedId) return;
+    if (!rehydratedRef.current) {
+      rehydratedRef.current = true;
+      const stored = loadStoredRepair();
+      if (stored && stored.projectId === selectedId && POLLING_REPAIR_STATUSES.has(stored.status)) {
+        const { projectId: _projectId, ...rest } = stored;
+        setRepair(rest);
+        return;
+      }
+    }
+    saveStoredRepair(selectedId, repair);
+  }, [selectedId, repair]);
 
   const refreshCredentials = () => {
     if (!selectedId) return;
@@ -132,9 +193,17 @@ function Pairing({ onProjectSelected }) {
   };
 
   useEffect(() => {
-    if (!repair || (repair.status !== 'Pending' && repair.status !== 'AwaitingConfirmation')) return undefined;
-    if (Date.now() >= new Date(repair.expiresAt).getTime()) {
+    if (!repair || !POLLING_REPAIR_STATUSES.has(repair.status)) return undefined;
+    if (repair.status === 'Pending' && Date.now() >= new Date(repair.expiresAt).getTime()) {
       setRepair((prev) => (prev ? { ...prev, status: 'Expired' } : prev));
+      return undefined;
+    }
+    // A session that is Redeemed but never Confirmed must not poll forever if the application
+    // that redeemed it never actually confirms - a separate, much longer bound than the pairing
+    // code's own 10-minute expiry, which stopped applying the moment it was redeemed.
+    if (repair.status === 'AwaitingConfirmation' && repair.confirmationDeadline
+      && Date.now() >= repair.confirmationDeadline) {
+      setRepair((prev) => (prev ? { ...prev, status: 'ConfirmationTimedOut' } : prev));
       return undefined;
     }
 
@@ -153,13 +222,15 @@ function Pairing({ onProjectSelected }) {
           await completeRepairOnce(repair);
         } else if (status.redeemedAt) {
           setRepair((prev) => (prev && prev.pairingId === repair.pairingId && prev.status === 'Pending'
-            ? { ...prev, status: 'AwaitingConfirmation' }
+            ? { ...prev, status: 'AwaitingConfirmation', confirmationDeadline: Date.now() + AWAITING_CONFIRMATION_TIMEOUT_MS }
             : prev));
-        } else if (Date.now() >= new Date(repair.expiresAt).getTime()) {
+        } else if (repair.status === 'Pending' && Date.now() >= new Date(repair.expiresAt).getTime()) {
           setRepair((prev) => (prev ? { ...prev, status: 'Expired' } : prev));
+        } else if (repair.status === 'AwaitingConfirmation' && repair.confirmationDeadline && Date.now() >= repair.confirmationDeadline) {
+          setRepair((prev) => (prev ? { ...prev, status: 'ConfirmationTimedOut' } : prev));
         }
       } catch {
-        // A transient poll failure is not a terminal state - keep polling until expiry.
+        // A transient poll failure is not a terminal state - keep polling until the bound above.
       }
     }, REPAIR_POLL_INTERVAL_MS);
 
@@ -168,12 +239,15 @@ function Pairing({ onProjectSelected }) {
       clearInterval(id);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repair?.pairingId, repair?.status]);
+  }, [repair?.pairingId, repair?.status, repair?.confirmationDeadline]);
 
   const handleStartRepair = async (credential) => {
     if (!selectedId) return;
     try {
-      const created = await sdkApi.createPairing(selectedId, sdkType);
+      // Binds the new pairing session, at creation, to the exact credential it is meant to
+      // replace - the backend refuses to complete a re-pair against any other credential (see
+      // sdkApi.createPairing's remarks), so this must never be omitted for a re-pair.
+      const created = await sdkApi.createPairing(selectedId, sdkType, credential.id);
       setRepair({
         credentialId: credential.id,
         credentialName: credential.name,
@@ -189,14 +263,39 @@ function Pairing({ onProjectSelected }) {
 
   const handleCancelRepair = async () => {
     if (!repair) return;
-    if (repair.status === 'Pending' || repair.status === 'AwaitingConfirmation') {
-      try {
-        await sdkApi.revokePairing(repair.pairingId);
-      } catch {
-        // Best-effort: even if this fails, the code still expires in at most 10 minutes on its own.
-      }
+    if (!POLLING_REPAIR_STATUSES.has(repair.status)) {
+      // A terminal state (Completed/CompletionFailed/Expired/Cancelled/ConfirmationTimedOut) has
+      // nothing left to cancel server-side - this is just dismissing the local banner.
+      setRepair(null);
+      return;
     }
-    setRepair(null);
+    try {
+      await sdkApi.revokePairing(repair.pairingId);
+      setRepair(null);
+    } catch (err) {
+      // The backend refuses to cancel a session that has since been redeemed (or otherwise
+      // changed) - never pretend cancellation succeeded when it did not. Re-fetch the real
+      // current status instead of silently clearing local state out from under it.
+      try {
+        const status = await sdkApi.getPairingStatus(repair.pairingId);
+        setRepair((prev) => (prev && prev.pairingId === repair.pairingId
+          ? {
+            ...prev,
+            status: status.confirmedAt ? prev.status : status.redeemedAt ? 'AwaitingConfirmation' : status.status,
+            confirmationDeadline: status.redeemedAt && !prev.confirmationDeadline
+              ? Date.now() + AWAITING_CONFIRMATION_TIMEOUT_MS
+              : prev.confirmationDeadline
+          }
+          : prev));
+      } catch {
+        // Could not even confirm the real status - leave the existing local state as-is rather
+        // than guessing, and tell the operator plainly what happened.
+      }
+      toast.addToast(
+        err?.message || 'Could not cancel - the code may already have been redeemed by the application.',
+        'error'
+      );
+    }
   };
 
   const loadProjects = async () => {
@@ -391,7 +490,7 @@ function Pairing({ onProjectSelected }) {
                         type="button"
                         className="small-btn"
                         title="Re-pair (issue a fresh credential and revoke this one)"
-                        disabled={repair && repair.status === 'Pending'}
+                        disabled={repair && !TERMINAL_REPAIR_STATUSES.has(repair.status)}
                         onClick={() => handleStartRepair(c)}
                       >
                         <IconRefresh className="w-3 h-3" /> Re-pair
@@ -425,6 +524,7 @@ function Pairing({ onProjectSelected }) {
                   {repair.status === 'CompletionFailed' && 'The application confirmed the new credential, but completing the re-pair failed.'}
                   {repair.status === 'Expired' && 'This code expired before it was used. Start again to generate a new one.'}
                   {repair.status === 'Cancelled' && 'Cancelled. The old credential was left untouched.'}
+                  {repair.status === 'ConfirmationTimedOut' && 'Redeemed, but the application never confirmed it received the new credential. The old credential was left untouched - safe to start again.'}
                 </p>
               </div>
             </div>
@@ -468,13 +568,15 @@ function Pairing({ onProjectSelected }) {
             </>
           )}
 
-          {(repair.status === 'Expired' || repair.status === 'Cancelled') && (
-            <p className="sdk-hint"><IconAlertTriangle className="w-3.5 h-3.5" /> {repair.status === 'Expired' ? 'Expired' : 'Cancelled'} - no credential was changed.</p>
+          {(repair.status === 'Expired' || repair.status === 'Cancelled' || repair.status === 'ConfirmationTimedOut') && (
+            <p className="sdk-hint">
+              <IconAlertTriangle className="w-3.5 h-3.5" /> {repair.status === 'Expired' ? 'Expired' : repair.status === 'Cancelled' ? 'Cancelled' : 'Timed out'} - no credential was changed.
+            </p>
           )}
 
           <div className="sdk-pairing-form">
             <button type="button" className="small-btn" disabled={repair.status === 'Completing'} onClick={handleCancelRepair}>
-              {repair.status === 'Pending' || repair.status === 'AwaitingConfirmation' ? 'Cancel' : 'Dismiss'}
+              {POLLING_REPAIR_STATUSES.has(repair.status) ? 'Cancel' : 'Dismiss'}
             </button>
           </div>
         </section>

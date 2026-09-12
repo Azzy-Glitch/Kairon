@@ -332,13 +332,15 @@ public class AppDbContext : DbContext
             // A genuine, database-enforced optimistic-concurrency check: EF includes this
             // property's originally-read value in every UPDATE's WHERE clause and throws
             // DbUpdateConcurrencyException when zero rows match (RemediationTargetManagementService
-            // translates that into a 409 "stale-update"). Purely a mapping-level annotation - no
-            // schema/column change, so no migration is required for either provider. This is in
+            // translates that into a 409 "stale-update"). RowVersion - not UpdatedAt - is the
+            // token: a wall-clock timestamp can collide between two independent writes (coarse OS
+            // clock resolution, or two requests landing in the same tick), which would silently
+            // defeat the check; a freshly-randomized Guid on every write cannot. This is in
             // addition to, not instead of, the explicit ExpectedUpdatedAt pre-check: that check
             // catches the common "operator edited a stale form" case with a clear message even
             // when nothing is truly racing; this token is what makes two genuinely simultaneous
             // requests resolve to exactly one winner rather than a silent lost update.
-            entity.Property(e => e.UpdatedAt).IsConcurrencyToken();
+            entity.Property(e => e.RowVersion).IsConcurrencyToken();
         });
 
         modelBuilder.Entity<SdkPairingSession>(entity =>

@@ -51,7 +51,7 @@ public class RemediationExecutor : IRemediationExecutor
         ArgumentNullException.ThrowIfNull(incident);
         ArgumentNullException.ThrowIfNull(action);
 
-        var decision = _policy.ValidateExecution(incident, action);
+        var decision = await _policy.ValidateExecutionAsync(incident, action, cancellationToken);
         action.PolicyDecision = $"{decision.Code}: {decision.Reason}";
 
         if (!decision.Allowed)

@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -256,6 +257,160 @@ public sealed class RePairingTests : IDisposable
     }
 
     [Fact]
+    public async Task ALostConfirmationIsRetriedOnALaterRunAndThePendingMarkerIsThenCleared()
+    {
+        // Simulates the confirmation response getting lost the first time (a transient network
+        // failure, or the process exiting right after redemption) - recovery must not re-redeem a
+        // code or generate one; it must retry confirming with the SAME already-issued credential,
+        // using only the non-secret pairing id already recorded alongside it.
+        using var server = new FakeRepairServer { ConfirmShouldFail = true };
+        server.NextPairingBody = JsonSerializer.Serialize(new
+        {
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
+        });
+
+        await using (var first = new KaironClient(pairingCode: "pair_lostconfirm", endpoint: server.Url, configPath: ConfigPath))
+        {
+            Assert.Equal(Guid.Parse("77777777-7777-7777-7777-777777777777"), first.ProjectId);
+        }
+        var callsAfterFirstRun = server.ConfirmCalls;
+        Assert.True(callsAfterFirstRun > 0); // it did try, more than once (bounded retry), just never succeeded
+
+        // A later run - crucially, with NO pairingCode at all - recovers the confirmation using
+        // only the stored credential and its recorded pending pairing id.
+        server.ConfirmShouldFail = false;
+        await using (var second = new KaironClient(endpoint: "http://127.0.0.1:1", configPath: ConfigPath))
+        {
+            Assert.Equal(Guid.Parse("77777777-7777-7777-7777-777777777777"), second.ProjectId);
+        }
+        Assert.True(server.ConfirmCalls > callsAfterFirstRun); // it actually retried and succeeded
+
+        // A THIRD run must not keep retrying a confirmation that already succeeded.
+        var callsAfterRecovery = server.ConfirmCalls;
+        await using (var third = new KaironClient(endpoint: "http://127.0.0.1:1", configPath: ConfigPath)) { }
+        Assert.Equal(callsAfterRecovery, server.ConfirmCalls);
+    }
+
+    [Fact]
+    public async Task APermanentlyLostConfirmationNeverBlocksOnboardingOrDeletesTheCredential()
+    {
+        using var server = new FakeRepairServer { ConfirmShouldFail = true };
+        server.NextPairingBody = JsonSerializer.Serialize(new
+        {
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
+        });
+
+        await using var kairon = new KaironClient(pairingCode: "pair_neverconfirmed", endpoint: server.Url, configPath: ConfigPath);
+
+        Assert.Equal(Guid.Parse("77777777-7777-7777-7777-777777777777"), kairon.ProjectId);
+        var result = await SendWithKeyAsync(server, "krn_new_key");
+        Assert.True(result.Success); // the credential remains fully usable despite confirmation never succeeding
+    }
+
+    [Fact]
+    public async Task ConcurrentCredentialWritesNeverCorruptTheStoredFile()
+    {
+        // Multiple overlapping saves to the SAME configPath must never leave it half-written or
+        // unreadable - each writer's own uniquely named temp file means no two writers can clobber
+        // each other's in-progress write, and the final File.Move is what atomically decides which
+        // one's contents actually land.
+        var writers = Enumerable.Range(1, 12).Select(n => Task.Run(async () =>
+        {
+            using var server = new FakeRepairServer();
+            server.NextPairingBody = JsonSerializer.Serialize(new
+            {
+                apiKey = $"krn_key_{n}", projectId = $"{n:00000000}-0000-0000-0000-000000000000", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
+            });
+            await using var kairon = new KaironClient(pairingCode: $"pair_concurrent_{n}", endpoint: server.Url, configPath: ConfigPath);
+        }));
+
+        await Task.WhenAll(writers);
+
+        // Whichever write landed last, the file itself is fully intact and loadable.
+        await using var final = new KaironClient(endpoint: "http://127.0.0.1:1", configPath: ConfigPath);
+        Assert.EndsWith("-0000-0000-0000-000000000000", final.ProjectId.ToString());
+    }
+
+    [Fact]
+    public void CreateAsyncDoesNotDeadlockUnderACapturedSingleThreadedSynchronizationContext()
+    {
+        // Reproduces the classic ASP.NET-classic/WinForms/WPF deadlock shape: a single-threaded
+        // synchronization context whose one thread is busy synchronously waiting - anything that
+        // needs to resume back on that exact thread (as `.GetAwaiter().GetResult()` on a
+        // continuation captured with the default awaiter config would) hangs forever. CreateAsync
+        // must complete cleanly here precisely because it never blocks synchronously on its own
+        // async work internally.
+        using var server = new FakeRepairServer();
+        server.NextPairingBody = JsonSerializer.Serialize(new
+        {
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
+        });
+
+        // The pump - and the blocking .GetAwaiter().GetResult() call it drives - run on their OWN
+        // dedicated background thread (mimicking a real UI thread), never on this xUnit test
+        // thread: if CreateAsync ever regresses back into deadlocking under a captured context, it
+        // is that background thread that hangs forever, not this test - Join's own timeout below
+        // still lets the test fail fast and cleanly either way, rather than hanging the whole run.
+        KaironClient? client = null;
+        Exception? backgroundError = null;
+        var pumpThread = new Thread(() =>
+        {
+            var singleThreaded = new SingleThreadedSynchronizationContext();
+            SynchronizationContext.SetSynchronizationContext(singleThreaded);
+            singleThreaded.Post(_ =>
+            {
+                try
+                {
+                    // Blocks THIS single thread synchronously waiting for CreateAsync - exactly
+                    // the deadlock-prone pattern this test exists to prove is now safe.
+                    client = KaironClient.CreateAsync(pairingCode: "pair_syncctx", endpoint: server.Url, configPath: ConfigPath)
+                        .GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    backgroundError = ex;
+                }
+                finally
+                {
+                    singleThreaded.Complete();
+                }
+            }, null);
+            singleThreaded.Pump();
+        }) { IsBackground = true };
+
+        pumpThread.Start();
+        var completed = pumpThread.Join(TimeSpan.FromSeconds(10));
+
+        Assert.True(completed, "CreateAsync deadlocked under a captured synchronization context.");
+        Assert.Null(backgroundError);
+        Assert.NotNull(client);
+        Assert.Equal(Guid.Parse("77777777-7777-7777-7777-777777777777"), client!.ProjectId);
+        client.Dispose();
+    }
+
+    /// <summary>Minimal single-threaded synchronization context test double: a message-loop-style
+    /// context (like WinForms/WPF/ASP.NET-classic) where every posted callback runs on ONE thread -
+    /// the well-established shape used to reproduce (or prove the absence of) the classic
+    /// sync-over-async deadlock in a unit test.</summary>
+    private sealed class SingleThreadedSynchronizationContext : SynchronizationContext
+    {
+        private readonly System.Collections.Concurrent.BlockingCollection<(SendOrPostCallback, object?)> _queue = new();
+
+        public override void Post(SendOrPostCallback d, object? state) => _queue.Add((d, state));
+
+        public void Complete() => _queue.CompleteAdding();
+
+        public void Pump()
+        {
+            foreach (var (callback, state) in _queue.GetConsumingEnumerable())
+            {
+                SetSynchronizationContext(this);
+                callback(state);
+            }
+        }
+    }
+
+    [Fact]
     public void AnExpiredOrCancelledPairingCodeFailsCleanlyWithoutPersistingAnything()
     {
         using var server = new FakeRepairServer();
@@ -277,6 +432,7 @@ public sealed class RePairingTests : IDisposable
         public string AcceptedApiKey = "krn_old_key";
         public int PairingCalls;
         public int ConfirmCalls;
+        public bool ConfirmShouldFail;
         public string? LastConfirmApiKey;
         public HttpStatusCode NextPairingStatus = HttpStatusCode.OK;
         public string NextPairingBody = """{"apiKey":"krn_old_key","projectId":"11111111-1111-1111-1111-111111111111","pairingId":"99999999-9999-9999-9999-999999999999","endpoint":"http://127.0.0.1:8000"}""";
@@ -327,6 +483,11 @@ public sealed class RePairingTests : IDisposable
                 Interlocked.Increment(ref ConfirmCalls);
                 using var doc = JsonDocument.Parse(raw);
                 LastConfirmApiKey = doc.RootElement.TryGetProperty("apiKey", out var apiKeyProp) ? apiKeyProp.GetString() : null;
+                if (ConfirmShouldFail)
+                {
+                    await RespondAsync(context, HttpStatusCode.InternalServerError, "", token);
+                    return;
+                }
                 await RespondAsync(context, HttpStatusCode.NoContent, "", token);
                 return;
             }

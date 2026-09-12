@@ -179,6 +179,61 @@ public sealed class RemediationTargetManagementTests : IDisposable
     }
 
     [Fact]
+    public async Task SqliteConstraintClassificationDistinguishesUniqueFromForeignKeyAndNotNullFailures()
+    {
+        // Empirically validates the assumption IsUniqueConstraintViolation depends on: SQLite's
+        // primary SqliteErrorCode (19, SQLITE_CONSTRAINT) is IDENTICAL for every kind of constraint
+        // failure - unique, foreign-key, and NOT NULL alike - so matching on it alone (the
+        // previous, overly-broad behavior) would misclassify a foreign-key or NOT NULL failure as
+        // a duplicate-target conflict. SqliteExtendedErrorCode is what actually discriminates.
+        // Goes through EF's own SaveChangesAsync (not hand-written SQL) so Guid columns are
+        // encoded exactly as the real code path encodes them - this is also the exact
+        // DbUpdateException-wrapping-SqliteException shape IsUniqueConstraintViolation itself
+        // pattern-matches against.
+        var machine = _h.SeedMachine();
+        var credential = _h.SeedCredential(_h.ProjectId);
+        _h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName); // occupies the unique key
+
+        async Task<Microsoft.Data.Sqlite.SqliteException> SaveAndCaptureAsync(RemediationTarget target)
+        {
+            using var db = _h.CreateAdditionalDbContext();
+            db.RemediationTargets.Add(target);
+            var ex = await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+            return Assert.IsType<Microsoft.Data.Sqlite.SqliteException>(ex.InnerException);
+        }
+
+        var uniqueEx = await SaveAndCaptureAsync(new RemediationTarget
+        {
+            ProjectId = _h.ProjectId, Environment = _h.Environment, Service = _h.Service, // same key as the seeded target
+            MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = machine.HostName,
+            WindowsServiceName = "AnotherSvc", AllowedOperationsJson = "[]", Enabled = true
+        });
+        var foreignKeyEx = await SaveAndCaptureAsync(new RemediationTarget
+        {
+            ProjectId = Guid.NewGuid(), // genuinely does not exist
+            Environment = "Staging", Service = "OtherSvc",
+            MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = machine.HostName,
+            WindowsServiceName = "AnotherSvc", AllowedOperationsJson = "[]", Enabled = true
+        });
+        var notNullEx = await SaveAndCaptureAsync(new RemediationTarget
+        {
+            ProjectId = _h.ProjectId, Environment = "Staging", Service = "OtherSvc2",
+            MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = machine.HostName,
+            WindowsServiceName = null!, AllowedOperationsJson = "[]", Enabled = true
+        });
+
+        // The old, overly-broad check would have treated all three identically.
+        Assert.Equal(19, uniqueEx.SqliteErrorCode);
+        Assert.Equal(19, foreignKeyEx.SqliteErrorCode);
+        Assert.Equal(19, notNullEx.SqliteErrorCode);
+
+        // The extended code is what genuinely discriminates - only the unique violation is 2067.
+        Assert.Equal(2067, uniqueEx.SqliteExtendedErrorCode);
+        Assert.NotEqual(2067, foreignKeyEx.SqliteExtendedErrorCode);
+        Assert.NotEqual(2067, notNullEx.SqliteExtendedErrorCode);
+    }
+
+    [Fact]
     public async Task DisabledDuplicatesMayCoexistWithAnEnabledTarget()
     {
         var machine = _h.SeedMachine();
@@ -426,6 +481,32 @@ public sealed class RemediationTargetManagementTests : IDisposable
     }
 
     [Fact]
+    public async Task ControllerDeleteMapsAConcurrentStaleDeleteTo409NotAGeneric422()
+    {
+        var machine = _h.SeedMachine();
+        var credential = _h.SeedCredential(_h.ProjectId);
+        var target = _h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName);
+
+        using var dbA = _h.CreateAdditionalDbContext();
+        using var dbB = _h.CreateAdditionalDbContext();
+        await dbA.RemediationTargets.SingleAsync(t => t.Id == target.Id);
+        await dbB.RemediationTargets.SingleAsync(t => t.Id == target.Id);
+        var controllerA = new RemediationTargetsController(new RemediationTargetManagementService(dbA,
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System))
+        { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() } };
+        var controllerB = new RemediationTargetsController(new RemediationTargetManagementService(dbB,
+            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System))
+        { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() } };
+
+        Assert.IsType<NoContentResult>(await controllerA.Delete(target.Id, default));
+        var second = await controllerB.Delete(target.Id, default);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(second);
+        var body = Assert.IsType<ApiResponse<object>>(conflict.Value);
+        Assert.Equal("stale-update", body.ErrorCode);
+    }
+
+    [Fact]
     public async Task DisabledTargetNoLongerResolvesAtRuntimeForAnyConsumer()
     {
         var machine = _h.SeedMachine();
@@ -478,7 +559,7 @@ public sealed class RemediationTargetManagementTests : IDisposable
         _h.Db.SaveChanges();
 
         var tool = new RestartServiceTool(_h.Db, _h.Targets, new Scm());
-        var originalFingerprint = tool.TargetFingerprint(incident);
+        var originalFingerprint = await tool.TargetFingerprintAsync(incident);
         Assert.NotNull(originalFingerprint);
 
         await service.UpdateAsync(created.Id, new UpdateRemediationTargetRequest
@@ -488,7 +569,7 @@ public sealed class RemediationTargetManagementTests : IDisposable
             WindowsServiceName = "ADifferentService", AllowedOperations = created.AllowedOperations, Enabled = true
         }, "op", default);
 
-        Assert.NotEqual(originalFingerprint, tool.TargetFingerprint(incident));
+        Assert.NotEqual(originalFingerprint, await tool.TargetFingerprintAsync(incident));
     }
 
     [Fact]
@@ -548,7 +629,7 @@ public sealed class RemediationTargetManagementTests : IDisposable
 
         var scm = new Scm { State = 4 };
         var tool = new RestartServiceTool(_h.Db, _h.Targets, scm);
-        var fingerprint = tool.TargetFingerprint(incident)!;
+        var fingerprint = (await tool.TargetFingerprintAsync(incident))!;
 
         var result = await tool.ExecuteAsync(new RemediationToolContext
         {
