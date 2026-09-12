@@ -89,7 +89,17 @@ public sealed class ProjectsController : ControllerBase
     [RequiresOperator]
     public async Task<IActionResult> RevokeCredential(Guid projectId, Guid credentialId, CancellationToken cancellationToken)
     {
-        if (!await _credentials.RevokeAsync(projectId, credentialId, cancellationToken)) return NotFound();
+        var outcome = await _credentials.RevokeAsync(projectId, credentialId, cancellationToken);
+        switch (outcome)
+        {
+            case RevokeCredentialOutcome.NotFound:
+                return NotFound();
+            case RevokeCredentialOutcome.ConcurrentConflict:
+                return Conflict(new
+                {
+                    error = "This credential was modified by something else at the same moment - reload and try again."
+                });
+        }
         _audit.Record("credential.revoked", Actor(), "credential", credentialId.ToString(), projectId);
         await _db.SaveChangesAsync(cancellationToken);
         return NoContent();

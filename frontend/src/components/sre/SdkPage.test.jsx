@@ -204,19 +204,42 @@ describe('SdkPage re-pairing', () => {
     expect(screen.getByRole('button', { name: /Re-pair/ })).toBeDisabled();
   });
 
-  it('never stores the API key or any credential secret in sessionStorage - only safe recovery metadata', async () => {
+  it('never stores the pairing code, API key, or any credential secret in sessionStorage - only safe recovery metadata', async () => {
     renderSdkPage();
     await openPairingTab();
     await startRepair();
 
+    // The code is genuinely visible on screen right now (in React state only) - confirms this
+    // assertion is actually exercising the storage boundary, not merely a code that was never shown.
+    expect(screen.getByText('pair_freshcode')).toBeInTheDocument();
+
     const stored = sessionStorage.getItem('kairon:activeRepair');
     expect(stored).toBeTruthy();
+    expect(stored).not.toContain('pair_freshcode');
     expect(stored).not.toContain('krn_');
     const parsed = JSON.parse(stored);
+    expect(parsed).not.toHaveProperty('code');
     expect(parsed).not.toHaveProperty('apiKey');
     expect(parsed).not.toHaveProperty('codeHash');
     expect(parsed.pairingId).toBe('pair-1');
     expect(parsed.projectId).toBe('proj-1');
+  });
+
+  it('recovers using only the persisted non-secret metadata after a refresh, with the code itself gone from the UI', async () => {
+    const { unmount } = renderSdkPage();
+    await openPairingTab();
+    await startRepair();
+
+    unmount(); // simulates a refresh - sessionStorage (code already stripped) is all that survives
+
+    renderSdkPage();
+    await openPairingTab();
+
+    // The banner and its polling recover from the stored metadata alone...
+    expect(await screen.findByText(/Re-pairing "orders-sdk"/)).toBeInTheDocument();
+    // ...but the secret code itself is never reconstructed - it was never in storage to recover.
+    expect(screen.queryByText('pair_freshcode')).not.toBeInTheDocument();
+    expect(await screen.findByText(/pairing code isn't shown after a refresh/i)).toBeInTheDocument();
   });
 
   it('recovers an in-flight re-pair after a page refresh and resumes polling from where it left off', async () => {
@@ -335,6 +358,67 @@ describe('SdkPage re-pairing', () => {
       // The recovery path only ever reads status - it must never call completeRepair a second time
       // just because the first call's response never arrived.
       expect(sdkApi.completeRepair).toHaveBeenCalledTimes(1);
+    }, POLL_TEST_TIMEOUT);
+
+    it('treats a timeout after the backend actually committed as unknown, not failed, and recovers to success without refreshing', async () => {
+      renderSdkPage();
+      await openPairingTab();
+      await startRepair();
+
+      sdkApi.getPairingStatus.mockResolvedValue({ status: 'Redeemed', redeemedAt: '2026-01-01T00:01:00Z', confirmedAt: '2026-01-01T00:01:05Z', completedAt: null });
+      // client.js's toOperatorError shape for ECONNABORTED - no response was ever received, even
+      // though the request may already have reached and been committed by the backend.
+      sdkApi.completeRepair.mockRejectedValue({ kind: 'timeout', status: null, code: 'TIMEOUT', message: 'The request took too long. The backend may be busy.' });
+
+      await waitFor(() => expect(sdkApi.completeRepair).toHaveBeenCalledTimes(1), { timeout: POLL_WAIT_TIMEOUT });
+      // Never immediately claims failure for a response that was merely lost.
+      expect(await screen.findByText(/checking whether the re-pair already finished/i)).toBeInTheDocument();
+      expect(screen.queryByText(/completing the re-pair failed/i)).not.toBeInTheDocument();
+
+      // The backend actually DID complete it - recovery discovers that on its own, no refresh
+      // needed, and never re-invokes the replacement operation to find out.
+      sdkApi.getPairingStatus.mockResolvedValue({ status: 'Completed', redeemedAt: '2026-01-01T00:01:00Z', confirmedAt: '2026-01-01T00:01:05Z', completedAt: '2026-01-01T00:01:06Z' });
+      sdkApi.listCredentials.mockResolvedValue([{ ...credential, revokedAt: '2026-01-01T00:01:06Z' }]);
+
+      expect(await screen.findByText(/the old one has been revoked/i, {}, { timeout: POLL_WAIT_TIMEOUT })).toBeInTheDocument();
+      expect(sdkApi.completeRepair).toHaveBeenCalledTimes(1);
+    }, POLL_TEST_TIMEOUT);
+
+    it('treats a network rejection (no response received) after the backend actually committed as unknown, not failed', async () => {
+      renderSdkPage();
+      await openPairingTab();
+      await startRepair();
+
+      sdkApi.getPairingStatus.mockResolvedValue({ status: 'Redeemed', redeemedAt: '2026-01-01T00:01:00Z', confirmedAt: '2026-01-01T00:01:05Z', completedAt: null });
+      // client.js's toOperatorError shape for "no response at all" (connection reset, offline, CORS
+      // failure) - distinct from a timeout, but equally uninformative about whether the backend saw it.
+      sdkApi.completeRepair.mockRejectedValue({ kind: 'offline', status: null, code: 'BACKEND_UNREACHABLE', message: 'Cannot reach the Kairon backend. Check that it is running on port 8000.' });
+
+      await waitFor(() => expect(sdkApi.completeRepair).toHaveBeenCalledTimes(1), { timeout: POLL_WAIT_TIMEOUT });
+      expect(await screen.findByText(/checking whether the re-pair already finished/i)).toBeInTheDocument();
+      expect(screen.queryByText(/completing the re-pair failed/i)).not.toBeInTheDocument();
+
+      sdkApi.getPairingStatus.mockResolvedValue({ status: 'Completed', redeemedAt: '2026-01-01T00:01:00Z', confirmedAt: '2026-01-01T00:01:05Z', completedAt: '2026-01-01T00:01:06Z' });
+      sdkApi.listCredentials.mockResolvedValue([{ ...credential, revokedAt: '2026-01-01T00:01:06Z' }]);
+
+      expect(await screen.findByText(/the old one has been revoked/i, {}, { timeout: POLL_WAIT_TIMEOUT })).toBeInTheDocument();
+      expect(sdkApi.completeRepair).toHaveBeenCalledTimes(1);
+    }, POLL_TEST_TIMEOUT);
+
+    it('a genuine definitive backend rejection (e.g. a 409 conflict) still shows failure immediately, never recovery', async () => {
+      renderSdkPage();
+      await openPairingTab();
+      await startRepair();
+
+      sdkApi.getPairingStatus.mockResolvedValue({ status: 'Redeemed', redeemedAt: '2026-01-01T00:01:00Z', confirmedAt: '2026-01-01T00:01:05Z', completedAt: null });
+      // A real HTTP response WAS received - the backend's own synchronous, transactional outcome
+      // mapping means this is authoritative: nothing was persisted.
+      sdkApi.completeRepair.mockRejectedValue({ kind: 'conflict', status: 409, message: 'Another confirmed session already replaced this credential.' });
+
+      await waitFor(() => expect(sdkApi.completeRepair).toHaveBeenCalledTimes(1), { timeout: POLL_WAIT_TIMEOUT });
+      expect(await screen.findByText(/completing the re-pair failed/i)).toBeInTheDocument();
+      expect(screen.getByText(/NOT revoked/i)).toBeInTheDocument();
+      expect(screen.queryByText(/checking whether the re-pair already finished/i)).not.toBeInTheDocument();
     }, POLL_TEST_TIMEOUT);
 
     it('a genuine completion failure remains recoverable and retryable after a refresh', async () => {

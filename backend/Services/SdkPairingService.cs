@@ -57,13 +57,16 @@ public enum CompleteRepairOutcome
     /// revoke the one they were still relying on - refused instead.</summary>
     NewCredentialRevoked,
 
-    /// <summary>A genuinely concurrent completion: another CONFIRMED session, also bound to
-    /// replace this exact old credential, committed its own replacement between this call's own
-    /// read of the old credential and this call's attempt to commit. Detected via
-    /// ProjectApiCredential.RowVersion's optimistic-concurrency check, not merely the earlier
-    /// in-memory RevokedAt read (which a genuine race can outrun) - nothing from this call was
-    /// persisted; the old credential, remediation targets, and this session's own CompletedAt are
-    /// exactly as the winner left them.</summary>
+    /// <summary>A genuinely concurrent change to either credential this completion depends on,
+    /// detected via ProjectApiCredential.RowVersion's optimistic-concurrency check rather than
+    /// merely the earlier in-memory RevokedAt reads (which a genuine race can outrun) - covers two
+    /// distinct races: (1) another CONFIRMED session, also bound to replace this exact old
+    /// credential, committed its own replacement between this call's own read of the old credential
+    /// and this call's commit; (2) the new credential this call already validated as active was
+    /// itself independently revoked (a second, unrelated re-pair; a direct operator revocation)
+    /// between that validation and this call's commit. Either way, nothing from this call was
+    /// persisted - the old credential, remediation targets, and this session's own CompletedAt are
+    /// exactly as whatever concurrent writer won left them.</summary>
     ConcurrentReplacementConflict
 }
 
@@ -363,6 +366,20 @@ public sealed class SdkPairingService : ISdkPairingService
         if (newCredential is null || newCredential.ProjectId != session.ProjectId || newCredential.RevokedAt is not null)
             return new CompleteRepairResult(CompleteRepairOutcome.NewCredentialRevoked);
 
+        // This check alone only proves newCredential was still valid at the instant of this read -
+        // it is never otherwise written by this method, so without this line EF has nothing to
+        // include newCredential in this SaveChangesAsync's change set at all, and therefore no
+        // concurrency check ever runs against it: a concurrent revoke of THIS credential (another
+        // unrelated re-pair; a direct operator revoke) landing after this read but before the
+        // commit below would go completely undetected, and the transaction would still complete
+        // "successfully" onto a credential that is actually already dead. Rotating RowVersion here
+        // - even though nothing else about newCredential changes - forces EF to issue a real
+        // UPDATE ... WHERE RowVersion = <value read above> for it, so a concurrent revoke (which
+        // itself now always rotates RowVersion - see ProjectCredentialService.RevokeAsync) makes
+        // that WHERE clause match zero rows and throws DbUpdateConcurrencyException below, exactly
+        // like the equivalent oldCredential protection already does.
+        newCredential.RowVersion = Guid.NewGuid();
+
         // Only ENABLED targets referencing the exact old credential, in this exact project - never
         // another project's rows (TelemetryCredentialId alone is not project-scoped by itself, so
         // the ProjectId filter here is load-bearing, not redundant) and never a disabled target an
@@ -391,12 +408,13 @@ public sealed class SdkPairingService : ISdkPairingService
         }
         catch (DbUpdateConcurrencyException)
         {
-            // Another confirmed session, also bound to replace this exact old credential, won the
-            // race and already committed its own replacement between our read of oldCredential
-            // above and this commit. SaveChangesAsync failing here means NONE of this call's
-            // changes landed - the target rebinds, the revocation, this session's CompletedAt, and
-            // the audit record all rolled back together - so returning anything but a clear
-            // conflict would misreport what actually happened.
+            // Either race this method guards against: another confirmed session also bound to
+            // replace this exact old credential won the race and already committed its own
+            // replacement, OR the new credential validated above was itself concurrently revoked,
+            // between that validation and this commit. SaveChangesAsync failing here means NONE of
+            // this call's changes landed - the target rebinds, the old credential's revocation, this
+            // session's CompletedAt, and the audit record all rolled back together - so returning
+            // anything but a clear conflict would misreport what actually happened.
             return new CompleteRepairResult(CompleteRepairOutcome.ConcurrentReplacementConflict);
         }
 

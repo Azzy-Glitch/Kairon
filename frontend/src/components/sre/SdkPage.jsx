@@ -43,7 +43,15 @@ function saveStoredRepair(projectId, repair) {
       sessionStorage.removeItem(REPAIR_STORAGE_KEY);
       return;
     }
-    sessionStorage.setItem(REPAIR_STORAGE_KEY, JSON.stringify({ projectId, ...repair }));
+    // The one-time pairing code itself must NEVER be persisted to any browser storage - it is the
+    // one secret this object ever carries (credentialId/pairingId are opaque identifiers, not
+    // secrets; completionError is already the backend's own scrubbed, safe-to-display message).
+    // Recovery never needs it: the code's only purpose is redemption by the SDK on a different
+    // machine/process, never anything this browser session itself reads back. Kept only in React
+    // state (in memory, for as long as the tab displays it uncopied) - a refresh always loses it,
+    // by design, exactly like it would for any other secret.
+    const { code: _code, ...safeToPersist } = repair;
+    sessionStorage.setItem(REPAIR_STORAGE_KEY, JSON.stringify({ projectId, ...safeToPersist }));
   } catch {
     // Best-effort: a full/blocked sessionStorage must never break the re-pair flow itself.
   }
@@ -215,15 +223,33 @@ function Pairing({ onProjectSelected }) {
         : '';
       toast.addToast(`Re-paired "${current.credentialName}" - the old credential was revoked.${rebindNote}`, 'success');
     } catch (err) {
-      // Never claim the old credential was revoked when this call did not actually succeed - the
-      // backend only revokes it as part of this same request completing successfully.
-      setRepair((prev) => (prev && prev.pairingId === current.pairingId
-        ? { ...prev, status: 'CompletionFailed', completionError: err?.message }
-        : prev));
-      toast.addToast(
-        err?.message || 'The new credential is active, but completing the re-pair failed - the old credential was left untouched. Try again.',
-        'error'
-      );
+      // Distinguish a DEFINITIVE backend answer from a genuinely UNKNOWN outcome. client.js's
+      // toOperatorError already makes this distinction for every request: 'timeout'/'offline' mean
+      // no response was ever received - the request may still have reached the backend and
+      // succeeded before the response was lost (a slow network, a reset connection, a timeout) - so
+      // it would be a lie to claim CompletionFailed ("the old credential was left untouched") here;
+      // we simply do not know. Every OTHER kind means the backend itself responded (its own
+      // CompleteRepair outcomes are all synchronous and transactional - a real response means
+      // nothing was persisted), which is the one case safe to report as a definitive failure.
+      // Route the uncertain case through the exact same read-only recovery this UI already uses
+      // for a refresh mid-completion, rather than inventing a second mechanism - never re-call
+      // completeRepair here, only ask the backend for authoritative status.
+      if (err?.kind === 'timeout' || err?.kind === 'offline') {
+        setRepair((prev) => (prev && prev.pairingId === current.pairingId
+          ? { ...prev, status: 'RecoveringCompletion', recoveryAttempts: 0 }
+          : prev));
+        toast.addToast('Lost the response for that request - checking with the server whether it actually completed...', 'info');
+      } else {
+        // Never claim the old credential was revoked when this call did not actually succeed - the
+        // backend only revokes it as part of this same request completing successfully.
+        setRepair((prev) => (prev && prev.pairingId === current.pairingId
+          ? { ...prev, status: 'CompletionFailed', completionError: err?.message }
+          : prev));
+        toast.addToast(
+          err?.message || 'The new credential is active, but completing the re-pair failed - the old credential was left untouched. Try again.',
+          'error'
+        );
+      }
     } finally {
       completionInFlightRef.current.delete(current.pairingId);
     }
@@ -618,7 +644,7 @@ function Pairing({ onProjectSelected }) {
                   {repair.status === 'Pending' && 'Waiting for the application to redeem this code.'}
                   {repair.status === 'AwaitingConfirmation' && 'Redeemed - waiting for the application to confirm it received and is using the new credential before the old one is touched.'}
                   {repair.status === 'Completing' && 'Confirmed - completing the re-pair...'}
-                  {repair.status === 'RecoveringCompletion' && 'Reconnected - checking whether the re-pair already finished before this page reloaded...'}
+                  {repair.status === 'RecoveringCompletion' && 'Checking whether the re-pair already finished - its response was lost (a refresh, a dropped connection, or a timeout).'}
                   {repair.status === 'Completed' && 'Complete - a fresh credential is active and the old one has been revoked.'}
                   {repair.status === 'CompletionFailed' && 'The application confirmed the new credential, but completing the re-pair failed.'}
                   {repair.status === 'CompletionUnknown' && "Could not confirm whether the re-pair finished before this page reloaded - it may have already succeeded."}
@@ -632,24 +658,39 @@ function Pairing({ onProjectSelected }) {
 
           {(repair.status === 'Pending' || repair.status === 'AwaitingConfirmation') && (
             <>
-              <p className="sdk-step-label">Pairing code (expires {new Date(repair.expiresAt).toLocaleTimeString()})</p>
-              <div className="sdk-code-block sdk-pairing-code">
-                <button
-                  type="button"
-                  className="small-btn sdk-code-copy"
-                  aria-label="Copy re-pairing code"
-                  onClick={() => copy(repair.code, 'repair-code')}
-                >
-                  {copiedKey === 'repair-code' ? <IconCheck className="w-3 h-3" /> : <IconCopy className="w-3 h-3" />}
-                </button>
-                <pre><code>{repair.code}</code></pre>
-              </div>
-              <p className="sdk-hint">
-                Run the application with this code, e.g. <code>Kairon(pairing_code="{repair.code}")</code> (Python) or{' '}
-                <code>new KaironClient(pairingCode: "{repair.code}")</code> (.NET) - it always takes precedence over any
-                credential the application already has stored. The old credential stays active until the application
-                itself confirms the new one is working.
-              </p>
+              {repair.code ? (
+                <>
+                  <p className="sdk-step-label">Pairing code (expires {new Date(repair.expiresAt).toLocaleTimeString()})</p>
+                  <div className="sdk-code-block sdk-pairing-code">
+                    <button
+                      type="button"
+                      className="small-btn sdk-code-copy"
+                      aria-label="Copy re-pairing code"
+                      onClick={() => copy(repair.code, 'repair-code')}
+                    >
+                      {copiedKey === 'repair-code' ? <IconCheck className="w-3 h-3" /> : <IconCopy className="w-3 h-3" />}
+                    </button>
+                    <pre><code>{repair.code}</code></pre>
+                  </div>
+                  <p className="sdk-hint">
+                    Run the application with this code, e.g. <code>Kairon(pairing_code="{repair.code}")</code> (Python) or{' '}
+                    <code>new KaironClient(pairingCode: "{repair.code}")</code> (.NET) - it always takes precedence over any
+                    credential the application already has stored. The old credential stays active until the application
+                    itself confirms the new one is working.
+                  </p>
+                </>
+              ) : (
+                // Recovered after a refresh: the code itself is never persisted (see
+                // saveStoredRepair's remarks), only this session's non-secret status. If the
+                // application already redeemed it before the refresh, polling below still detects
+                // that; if it never got the chance, the code is genuinely gone and a fresh one is
+                // needed - never reconstructed from storage.
+                <p className="sdk-hint">
+                  <IconAlertTriangle className="w-3.5 h-3.5" /> The pairing code isn't shown after a refresh - it is never saved
+                  for security. Still watching this session in case the application already redeemed it; cancel and generate a
+                  new code if it hasn't.
+                </p>
+              )}
               {repair.status === 'AwaitingConfirmation' && (
                 <p className="sdk-hint">Redeemed. Waiting for the application's own confirmation...</p>
               )}

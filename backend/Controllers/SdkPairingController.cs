@@ -119,7 +119,7 @@ public sealed class SdkPairingController : ControllerBase
             }),
             CompleteRepairOutcome.ConcurrentReplacementConflict => Conflict(new
             {
-                error = "Another confirmed session already replaced this credential first. Nothing from this request was changed - reload the current status."
+                error = "Either another confirmed session already replaced this credential, or the new credential was revoked elsewhere while this request was completing. Nothing from this request was changed - reload the current status."
             }),
             _ => NotFound(new { error = "Pairing session not found." })
         };

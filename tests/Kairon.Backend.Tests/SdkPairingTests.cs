@@ -763,6 +763,137 @@ public sealed class SdkPairingTests : IDisposable
         Assert.Null((await _h.Db.ProjectApiCredentials.AsNoTracking().SingleAsync(c => c.Id == losingNewCredentialId)).RevokedAt);
     }
 
+    /// <summary>Race A: a plain operator-driven manual revoke (ProjectCredentialService.RevokeAsync)
+    /// of the OLD credential, genuinely concurrent with a repair completion that is in the middle of
+    /// revoking that exact same credential as part of its own atomic completion. Both contexts
+    /// pre-track the same old-credential row (same original RowVersion) before either commits, so
+    /// the race is deterministic: only the actual database-level concurrency check - not the earlier
+    /// in-memory RevokedAt reads either side performed - decides which one lands. Regardless of
+    /// which one wins, the loser must cleanly detect the conflict (never crash, never silently
+    /// re-apply its own stale values) and the credential must never end up un-revoked again.</summary>
+    [Fact]
+    public async Task ConcurrentManualRevokeOfTheOldCredentialWhileCompletionIsInProgressNeverSilentlyRestoresStaleState()
+    {
+        _h.EnsureProject();
+        var oldCredential = _h.SeedCredential(_h.ProjectId, "old-hash");
+        var machine = _h.SeedMachine();
+        var target = _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName);
+
+        var setupService = Service();
+        var created = (await setupService.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
+        var paired = (await setupService.RedeemAsync(created.Code, "python", "1.0.0", default))!;
+        Assert.True(await setupService.ConfirmAsync(created.PairingId, paired.ApiKey, default));
+
+        using var dbA = _h.CreateAdditionalDbContext();
+        using var dbB = _h.CreateAdditionalDbContext();
+        await dbA.ProjectApiCredentials.SingleAsync(c => c.Id == oldCredential.Id);
+        await dbB.ProjectApiCredentials.SingleAsync(c => c.Id == oldCredential.Id);
+
+        var serviceA = new SdkPairingService(dbA,
+            new ProjectCredentialService(dbA, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System),
+            TimeProvider.System, new ConfigurationBuilder().Build(),
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
+        var credentialsB = new ProjectCredentialService(dbB, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System);
+
+        // Real concurrency: both tasks are created (and therefore started) before either is awaited.
+        var taskA = serviceA.CompleteRepairAsync(created.PairingId, oldCredential.Id, default);
+        var taskB = credentialsB.RevokeAsync(_h.ProjectId, oldCredential.Id, default);
+        await Task.WhenAll(taskA, taskB);
+        var completeResult = await taskA;
+        var revokeOutcome = await taskB;
+
+        var completionWon = completeResult.Outcome == CompleteRepairOutcome.Success;
+        var revokeWon = revokeOutcome == RevokeCredentialOutcome.Revoked;
+        Assert.True(completionWon ^ revokeWon,
+            $"Exactly one of the two racing operations should have committed. complete={completeResult.Outcome} revoke={revokeOutcome}");
+
+        // Regardless of who won, the old credential ends up revoked exactly once - never silently
+        // restored to active by whichever side's transaction rolled back.
+        Assert.NotNull((await _h.Db.ProjectApiCredentials.AsNoTracking().SingleAsync(c => c.Id == oldCredential.Id)).RevokedAt);
+
+        if (completionWon)
+        {
+            Assert.Equal(RevokeCredentialOutcome.ConcurrentConflict, revokeOutcome);
+            Assert.NotEqual(oldCredential.Id, (await _h.Db.RemediationTargets.AsNoTracking().SingleAsync(t => t.Id == target.Id)).TelemetryCredentialId);
+            Assert.NotNull((await _h.Db.SdkPairingSessions.AsNoTracking().SingleAsync(s => s.Id == created.PairingId)).CompletedAt);
+        }
+        else
+        {
+            Assert.Equal(CompleteRepairOutcome.ConcurrentReplacementConflict, completeResult.Outcome);
+            // The completion's own attempt rolled back entirely - never left half-migrated.
+            Assert.Equal(oldCredential.Id, (await _h.Db.RemediationTargets.AsNoTracking().SingleAsync(t => t.Id == target.Id)).TelemetryCredentialId);
+            Assert.Null((await _h.Db.SdkPairingSessions.AsNoTracking().SingleAsync(s => s.Id == created.PairingId)).CompletedAt);
+        }
+    }
+
+    /// <summary>Race B: a plain operator-driven manual revoke of the NEW credential (the one this
+    /// session's completion is about to bind targets onto), genuinely concurrent with that same
+    /// completion. Before this fix, CompleteRepairAsync only ever READ newCredential - never wrote
+    /// to it - so it never participated in any concurrency check, and a revoke landing in the gap
+    /// between that read and the commit would go completely undetected: the completion would still
+    /// "succeed", silently binding remediation targets onto a credential that was actually already
+    /// dead. Both contexts pre-track the same new-credential row before either commits, so the race
+    /// is deterministic.</summary>
+    [Fact]
+    public async Task ConcurrentManualRevokeOfTheNewCredentialWhileCompletionIsInProgressIsDetectedAsAConflict()
+    {
+        _h.EnsureProject();
+        var oldCredential = _h.SeedCredential(_h.ProjectId, "old-hash");
+        var machine = _h.SeedMachine();
+        var target = _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName);
+
+        var setupService = Service();
+        var created = (await setupService.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
+        var paired = (await setupService.RedeemAsync(created.Code, "python", "1.0.0", default))!;
+        Assert.True(await setupService.ConfirmAsync(created.PairingId, paired.ApiKey, default));
+        var newCredentialId = (await _h.Db.SdkPairingSessions.AsNoTracking().SingleAsync(s => s.Id == created.PairingId)).IssuedCredentialId!.Value;
+
+        using var dbA = _h.CreateAdditionalDbContext();
+        using var dbB = _h.CreateAdditionalDbContext();
+        await dbA.ProjectApiCredentials.SingleAsync(c => c.Id == newCredentialId);
+        await dbB.ProjectApiCredentials.SingleAsync(c => c.Id == newCredentialId);
+
+        var serviceA = new SdkPairingService(dbA,
+            new ProjectCredentialService(dbA, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System),
+            TimeProvider.System, new ConfigurationBuilder().Build(),
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
+        var credentialsB = new ProjectCredentialService(dbB, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System);
+
+        var taskA = serviceA.CompleteRepairAsync(created.PairingId, oldCredential.Id, default);
+        var taskB = credentialsB.RevokeAsync(_h.ProjectId, newCredentialId, default);
+        await Task.WhenAll(taskA, taskB);
+        var completeResult = await taskA;
+        var revokeOutcome = await taskB;
+
+        var completionWon = completeResult.Outcome == CompleteRepairOutcome.Success;
+        var revokeWon = revokeOutcome == RevokeCredentialOutcome.Revoked;
+        Assert.True(completionWon ^ revokeWon,
+            $"Exactly one of the two racing operations should have committed. complete={completeResult.Outcome} revoke={revokeOutcome}");
+
+        if (completionWon)
+        {
+            // The manual revoke lost - its own commit was invalidated by completion's rotation of
+            // newCredential.RowVersion, so it never actually landed. The new credential is genuinely
+            // still active, and completion's own rebind/revoke of the OLD credential fully took effect.
+            Assert.Equal(RevokeCredentialOutcome.ConcurrentConflict, revokeOutcome);
+            Assert.Null((await _h.Db.ProjectApiCredentials.AsNoTracking().SingleAsync(c => c.Id == newCredentialId)).RevokedAt);
+            Assert.Equal(newCredentialId, (await _h.Db.RemediationTargets.AsNoTracking().SingleAsync(t => t.Id == target.Id)).TelemetryCredentialId);
+            Assert.NotNull((await _h.Db.ProjectApiCredentials.AsNoTracking().SingleAsync(c => c.Id == oldCredential.Id)).RevokedAt);
+        }
+        else
+        {
+            // The manual revoke of the NEW credential won: completion must NEVER silently bind/use
+            // a credential that was revoked out from under it. The old (still genuinely working)
+            // credential is left completely untouched, the target stays bound to it, and the
+            // session is not falsely marked complete.
+            Assert.Equal(CompleteRepairOutcome.ConcurrentReplacementConflict, completeResult.Outcome);
+            Assert.NotNull((await _h.Db.ProjectApiCredentials.AsNoTracking().SingleAsync(c => c.Id == newCredentialId)).RevokedAt);
+            Assert.Null((await _h.Db.ProjectApiCredentials.AsNoTracking().SingleAsync(c => c.Id == oldCredential.Id)).RevokedAt);
+            Assert.Equal(oldCredential.Id, (await _h.Db.RemediationTargets.AsNoTracking().SingleAsync(t => t.Id == target.Id)).TelemetryCredentialId);
+            Assert.Null((await _h.Db.SdkPairingSessions.AsNoTracking().SingleAsync(s => s.Id == created.PairingId)).CompletedAt);
+        }
+    }
+
     // --- Controller: Confirm/CompleteRepair authorization + outcome mapping -----------------
 
     [Fact]

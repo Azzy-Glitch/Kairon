@@ -39,7 +39,7 @@ VersionInfoVersion={#MyAppVersion}
 [Files]
 ; The desktop shell publishes to the package root; backend/agent/ai each publish to their own
 ; subfolder (matches desktop/Kairon.Desktop/AppPaths.cs's expected layout exactly).
-Source: "{#PackageRoot}\*"; DestDir: "{app}"; Excludes: "backend\*,agent\*,ai\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PackageRoot}\*"; DestDir: "{app}"; Excludes: "backend\*,agent\*,ai\*,useragent\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PackageRoot}\backend\*"; DestDir: "{app}\backend"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PackageRoot}\agent\*"; DestDir: "{app}\agent"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PackageRoot}\useragent\*"; DestDir: "{app}\useragent"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -67,15 +67,16 @@ Filename: "{app}\Kairon.exe"; Description: "Launch Kairon"; Flags: nowait postin
 Filename: "{sys}\sc.exe"; Parameters: "stop Kairon.Agent"; Flags: runhidden waituntilterminated; RunOnceId: "StopAgent"
 Filename: "{sys}\sc.exe"; Parameters: "delete Kairon.Agent"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteAgent"
 
-[UninstallDelete]
-; Remove only database material created inside Kairon's managed local-data layout. Source trees,
-; arbitrary files elsewhere, logs and exported copies downloaded by the user are out of scope.
-Type: files; Name: "{localappdata}\Kairon\data\kairon.db"
-Type: files; Name: "{localappdata}\Kairon\data\kairon.db-wal"
-Type: files; Name: "{localappdata}\Kairon\data\kairon.db-shm"
-Type: files; Name: "{localappdata}\Kairon\backups\kairon-*.db"
-Type: dirifempty; Name: "{localappdata}\Kairon\data"
-Type: dirifempty; Name: "{localappdata}\Kairon\backups"
+; Deliberately no [UninstallDelete] section: a normal uninstall must never delete kairon.db, its
+; WAL/SHM files, or anything under Kairon\backups - those are the user's actual incident/telemetry/
+; remediation history, not installer-owned state. [UninstallDelete] entries run on every ordinary
+; uninstall (Add/Remove Programs, or re-running this same installer to repair/reinstall) with no
+; separate confirmation step, so listing the database here would silently destroy production data
+; on what a user reasonably expects to be a recoverable, undo-able action - reinstalling KAIRON
+; afterward would then start from an empty database instead of picking up where they left off. A
+; genuine "erase all local data" operation already exists in-app (DataManagementController /
+; SettingsPage.jsx's "Delete all data" action) as an explicit, deliberate operator choice - that is
+; where destructive data removal belongs, never bundled into uninstall.
 
 [Code]
 const
