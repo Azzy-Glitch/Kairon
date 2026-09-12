@@ -332,10 +332,12 @@ public sealed class TestHarness : IDisposable
         bool enabled = true)
     {
         EnsureProject();
+        var resolvedEnvironment = environment ?? Environment;
         var target = new RemediationTarget
         {
             ProjectId = projectId ?? ProjectId,
-            Environment = environment ?? Environment,
+            Environment = resolvedEnvironment,
+            EnvironmentNormalized = resolvedEnvironment.ToLowerInvariant(),
             Service = service ?? Service,
             MachineId = machineId,
             TelemetryCredentialId = telemetryCredentialId,

@@ -37,13 +37,19 @@ export function revokePairing(pairingId) {
   return request(client.delete(`/v1/platform/pairing/${pairingId}`));
 }
 
-/** Polled while a pairing code (including a re-pair code) is outstanding. Returns
- * { pairingId, projectId, sdkType, createdAt, expiresAt, redeemedAt, confirmedAt, revokedAt, status }
- * where status is 'Pending' | 'Redeemed' | 'Expired' | 'Cancelled'. redeemedAt means the backend
- * issued a fresh credential; confirmedAt (set later, by the SDK itself) is the only trustworthy
- * proof that the application actually received and is using it - re-pairing must wait for
- * confirmedAt, not redeemedAt, before it is safe to revoke the credential being replaced. Never
- * includes the code, its hash, or any credential secret. */
+/** Polled while a pairing code (including a re-pair code) is outstanding, and also used to
+ * recover a re-pair's completion status after a refresh/navigation/lost response (SdkPage.jsx's
+ * RecoveringCompletion effect). Returns
+ * { pairingId, projectId, sdkType, createdAt, expiresAt, redeemedAt, confirmedAt, completedAt, revokedAt, status }
+ * where status is 'Pending' | 'Redeemed' | 'Confirmed' | 'Completed' | 'Expired' | 'Cancelled'.
+ * redeemedAt means the backend issued a fresh credential; confirmedAt (set later, by the SDK
+ * itself) is the only trustworthy proof that the application actually received and is using it -
+ * re-pairing must wait for confirmedAt, not redeemedAt, before it is safe to revoke the credential
+ * being replaced. completedAt is the ONE authoritative signal that this session's own
+ * complete-repair call actually finished (the old credential was revoked and targets rebound) -
+ * the only thing that safely distinguishes "the completion request succeeded but its response was
+ * lost" from "it never actually completed" after a refresh, without re-calling completeRepair to
+ * find out. Never includes the code, its hash, or any credential secret. */
 export function getPairingStatus(pairingId) {
   return request(client.get(`/v1/platform/pairing/${pairingId}`));
 }

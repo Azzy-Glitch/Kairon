@@ -303,6 +303,10 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Name).HasMaxLength(200);
             entity.Property(e => e.KeyPrefix).HasMaxLength(20).IsRequired();
             entity.Property(e => e.KeyHash).HasMaxLength(200).IsRequired();
+            // See ProjectApiCredential.RowVersion's remarks: a genuine, database-enforced
+            // optimistic-concurrency guard against two confirmed re-pair sessions both completing
+            // against the same old credential.
+            entity.Property(e => e.RowVersion).IsConcurrencyToken();
         });
 
         modelBuilder.Entity<RemediationTarget>(entity =>
@@ -314,9 +318,20 @@ public class AppDbContext : DbContext
             // being deleted. SQLite supports a WHERE-filtered unique index natively; the
             // SQL-Server-flavored EF migration generates the equivalent filtered index for that
             // provider. See SqliteSchemaMigrator for the hand-written SQLite DDL this maps to.
-            entity.HasIndex(e => new { e.ProjectId, e.Environment, e.Service })
+            //
+            // The index is on EnvironmentNormalized, not the raw Environment column: environment
+            // names are resolved case-insensitively everywhere at runtime (RemediationTargetResolver),
+            // so "Production" and "production" must never both be able to exist as distinct enabled
+            // rows. A plain index on Environment itself cannot enforce that - SQLite and SQL Server
+            // both compare TEXT/nvarchar columns by their configured collation, which is not
+            // guaranteed (and for SQLite, never is by default) to treat case variants as equal. A
+            // separate, always-lowercase column gives both providers byte-for-byte identical
+            // uniqueness semantics without depending on either one's collation configuration.
+            entity.HasIndex(e => new { e.ProjectId, e.EnvironmentNormalized, e.Service })
                   .IsUnique()
-                  .HasFilter("Enabled = 1");
+                  .HasFilter("Enabled = 1")
+                  .HasDatabaseName("IX_RemediationTargets_ProjectId_EnvironmentNormalized_Service");
+            entity.Property(e => e.EnvironmentNormalized).HasMaxLength(50).IsRequired();
             // Machine and TelemetryCredentialId are loose Guid references (indexed, not a real
             // FK) - matching this codebase's dominant convention for cross-entity references
             // that are validated at the application layer (active/revoked/heartbeat checks)

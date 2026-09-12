@@ -117,6 +117,10 @@ public sealed class SdkPairingController : ControllerBase
             {
                 error = "The newly issued credential has since been revoked and can no longer be completed onto. The old credential was left untouched."
             }),
+            CompleteRepairOutcome.ConcurrentReplacementConflict => Conflict(new
+            {
+                error = "Another confirmed session already replaced this credential first. Nothing from this request was changed - reload the current status."
+            }),
             _ => NotFound(new { error = "Pairing session not found." })
         };
     }

@@ -16,6 +16,11 @@ export const REPAIR_POLL_INTERVAL_MS = 3000;
 // once the code has already been redeemed.
 export const AWAITING_CONFIRMATION_TIMEOUT_MS = 30 * 60 * 1000;
 
+// Bounds RecoveringCompletion (see its own remarks below): how many read-only status checks to
+// make - immediate, then spaced by REPAIR_POLL_INTERVAL_MS - before giving up and surfacing a
+// safe, explicit Retry rather than checking forever.
+export const COMPLETION_RECOVERY_MAX_ATTEMPTS = 3;
+
 // Session-only (cleared when the tab closes), never localStorage: recovery state must survive a
 // refresh/navigation within the same tab, but this is exactly as sensitive as anything else already
 // visible in this UI while the tab is open - never more. Only non-secret pairing-session metadata is
@@ -34,7 +39,7 @@ function loadStoredRepair() {
 
 function saveStoredRepair(projectId, repair) {
   try {
-    if (!repair || TERMINAL_REPAIR_STATUSES.has(repair.status)) {
+    if (!repair || NON_RECOVERABLE_REPAIR_STATUSES.has(repair.status)) {
       sessionStorage.removeItem(REPAIR_STORAGE_KEY);
       return;
     }
@@ -44,8 +49,29 @@ function saveStoredRepair(projectId, repair) {
   }
 }
 
-const TERMINAL_REPAIR_STATUSES = new Set(['Completed', 'CompletionFailed', 'Expired', 'Cancelled', 'ConfirmationTimedOut']);
+const TERMINAL_REPAIR_STATUSES = new Set(['Completed', 'CompletionFailed', 'CompletionUnknown', 'Expired', 'Cancelled', 'ConfirmationTimedOut']);
+// Unlike TERMINAL_REPAIR_STATUSES (which just means "not actively polling, safe to start another
+// re-pair"), these are the statuses truly worth forgetting entirely on refresh: nothing further can
+// ever happen from here (Completed has nothing left to do; Expired/Cancelled/ConfirmationTimedOut
+// never touched anything). CompletionFailed/CompletionUnknown are deliberately EXCLUDED - both
+// still have a safe, meaningful Retry (completeRepairOnce is idempotent server-side), so losing
+// that banner to an accidental refresh would strand the operator with no way back to it short of
+// starting an entirely new pairing session.
+const NON_RECOVERABLE_REPAIR_STATUSES = new Set(['Completed', 'Expired', 'Cancelled', 'ConfirmationTimedOut']);
 const POLLING_REPAIR_STATUSES = new Set(['Pending', 'AwaitingConfirmation']);
+// A stored session is only ever worth rehydrating across a refresh if something could still
+// legitimately be done about it - see NON_RECOVERABLE_REPAIR_STATUSES above for what's excluded.
+// 'Completing'/'RecoveringCompletion' are included here (unlike POLLING_REPAIR_STATUSES, which
+// only drives the "waiting for redemption/confirmation" poll loop) because losing them on
+// rehydration is exactly the recoverability gap this guards against: the completion request may
+// have already reached the server and succeeded before the refresh, so resuming must always go
+// through a fresh, read-only status check (RecoveringCompletion below), never straight back into
+// 'Completing' as if the page had never reloaded. 'CompletionFailed'/'CompletionUnknown' rehydrate
+// as themselves (no recheck needed - both are already a settled, known local outcome with a
+// meaningful Retry) rather than being routed through RecoveringCompletion.
+const RECOVERABLE_REPAIR_STATUSES = new Set([
+  'Pending', 'AwaitingConfirmation', 'Completing', 'RecoveringCompletion', 'CompletionFailed', 'CompletionUnknown'
+]);
 
 const VIEWS = [
   { id: 'start', label: 'Get Started' },
@@ -125,8 +151,13 @@ function Pairing({ onProjectSelected }) {
   // credential once the fresh code is redeemed AND confirmed - see the polling effect and
   // completeRepairOnce below. Status values: Pending -> AwaitingConfirmation (redeemed, but the
   // application has not yet proven it received/persisted the new credential) -> Completing ->
-  // Completed | CompletionFailed, or Expired | Cancelled at any point before those.
-  const [repair, setRepair] = useState(null); // { credentialId, credentialName, pairingId, code, expiresAt, status, confirmationDeadline?, rebindCount?, completionError? }
+  // Completed | CompletionFailed, or Expired | Cancelled at any point before those. A refresh/
+  // navigation/lost-response while Completing rehydrates as RecoveringCompletion instead (never
+  // straight back into Completing - see the rehydration effect and the RecoveringCompletion
+  // effect below), which itself resolves to Completed | CompletionUnknown (genuinely could not
+  // confirm either way - distinct from CompletionFailed, which means the backend actually said no)
+  // | Expired | Cancelled.
+  const [repair, setRepair] = useState(null); // { credentialId, credentialName, pairingId, code, expiresAt, status, confirmationDeadline?, rebindCount?, completionError?, recoveryAttempts? }
   const { copiedKey, copy } = useCopy();
   // Guards against a re-pair completion running more than once: JavaScript callbacks already
   // queued by a prior interval tick can still execute even after clearInterval, so relying on
@@ -149,9 +180,15 @@ function Pairing({ onProjectSelected }) {
     if (!rehydratedRef.current) {
       rehydratedRef.current = true;
       const stored = loadStoredRepair();
-      if (stored && stored.projectId === selectedId && POLLING_REPAIR_STATUSES.has(stored.status)) {
+      if (stored && stored.projectId === selectedId && RECOVERABLE_REPAIR_STATUSES.has(stored.status)) {
         const { projectId: _projectId, ...rest } = stored;
-        setRepair(rest);
+        // A session that was 'Completing' (or already recovering) before this page loaded must
+        // never resume as if nothing happened - the in-flight completeRepair call from before may
+        // have already reached the server and succeeded, with only its HTTP response lost. Recover
+        // via a fresh, read-only status check (see the RecoveringCompletion effect below) instead
+        // of silently trusting the stale local label or blindly re-invoking completeRepair.
+        const needsRecoveryCheck = rest.status === 'Completing' || rest.status === 'RecoveringCompletion';
+        setRepair(needsRecoveryCheck ? { ...rest, status: 'RecoveringCompletion', recoveryAttempts: 0 } : rest);
         return;
       }
     }
@@ -240,6 +277,67 @@ function Pairing({ onProjectSelected }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repair?.pairingId, repair?.status, repair?.confirmationDeadline]);
+
+  // Recovers a re-pair completion whose outcome is unknown after a refresh/navigation/lost
+  // response (rehydrated above as 'RecoveringCompletion', never straight back into 'Completing').
+  // Only ever calls the read-only status endpoint here - never completeRepair - so a completion
+  // that already succeeded before the refresh is discovered, not repeated, and one that never
+  // actually went through is never silently assumed to have happened either. Bounded: after
+  // COMPLETION_RECOVERY_MAX_ATTEMPTS checks with no definite answer, surfaces a safe, explicit
+  // Retry (completeRepairOnce is itself idempotent server-side - see its own remarks) rather than
+  // checking forever.
+  useEffect(() => {
+    if (!repair || repair.status !== 'RecoveringCompletion') return undefined;
+    let cancelled = false;
+
+    const check = async () => {
+      if (cancelled) return;
+      try {
+        const status = await sdkApi.getPairingStatus(repair.pairingId);
+        if (cancelled) return;
+        if (status.completedAt) {
+          // Authoritative: the backend's own record of THIS session's completion, set only once
+          // (SdkPairingService.CompleteRepairAsync) and never any other way - safe to trust without
+          // re-running anything.
+          setRepair((prev) => (prev && prev.pairingId === repair.pairingId
+            ? { ...prev, status: 'Completed' }
+            : prev));
+          refreshCredentials();
+          toast.addToast(`Re-paired "${repair.credentialName}" - confirmed after reconnecting. The old credential was revoked.`, 'success');
+          return;
+        }
+        if (status.status === 'Expired' || status.status === 'Cancelled') {
+          setRepair((prev) => (prev && prev.pairingId === repair.pairingId ? { ...prev, status: status.status } : prev));
+          return;
+        }
+        setRepair((prev) => {
+          if (!prev || prev.pairingId !== repair.pairingId || prev.status !== 'RecoveringCompletion') return prev;
+          const attempts = (prev.recoveryAttempts || 0) + 1;
+          // Genuinely unresolved, not a known failure: unlike CompletionFailed (where completeRepair
+          // itself returned an error, so the old credential is definitely untouched), here the
+          // backend never said either way - it may already have succeeded. Must never claim the old
+          // credential "was not revoked", which could be false.
+          return attempts >= COMPLETION_RECOVERY_MAX_ATTEMPTS ? { ...prev, status: 'CompletionUnknown' } : { ...prev, recoveryAttempts: attempts };
+        });
+      } catch {
+        // A transient failure to even reach the backend - keep trying within the same bound
+        // rather than immediately treating a lost network blip as a genuine completion failure.
+        setRepair((prev) => {
+          if (!prev || prev.pairingId !== repair.pairingId || prev.status !== 'RecoveringCompletion') return prev;
+          const attempts = (prev.recoveryAttempts || 0) + 1;
+          return attempts >= COMPLETION_RECOVERY_MAX_ATTEMPTS ? { ...prev, status: 'CompletionUnknown' } : { ...prev, recoveryAttempts: attempts };
+        });
+      }
+    };
+
+    check();
+    const id = setInterval(check, REPAIR_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repair?.pairingId, repair?.status]);
 
   const handleStartRepair = async (credential) => {
     if (!selectedId) return;
@@ -520,8 +618,10 @@ function Pairing({ onProjectSelected }) {
                   {repair.status === 'Pending' && 'Waiting for the application to redeem this code.'}
                   {repair.status === 'AwaitingConfirmation' && 'Redeemed - waiting for the application to confirm it received and is using the new credential before the old one is touched.'}
                   {repair.status === 'Completing' && 'Confirmed - completing the re-pair...'}
+                  {repair.status === 'RecoveringCompletion' && 'Reconnected - checking whether the re-pair already finished before this page reloaded...'}
                   {repair.status === 'Completed' && 'Complete - a fresh credential is active and the old one has been revoked.'}
                   {repair.status === 'CompletionFailed' && 'The application confirmed the new credential, but completing the re-pair failed.'}
+                  {repair.status === 'CompletionUnknown' && "Could not confirm whether the re-pair finished before this page reloaded - it may have already succeeded."}
                   {repair.status === 'Expired' && 'This code expired before it was used. Start again to generate a new one.'}
                   {repair.status === 'Cancelled' && 'Cancelled. The old credential was left untouched.'}
                   {repair.status === 'ConfirmationTimedOut' && 'Redeemed, but the application never confirmed it received the new credential. The old credential was left untouched - safe to start again.'}
@@ -561,6 +661,19 @@ function Pairing({ onProjectSelected }) {
               <p className="sdk-hint">
                 <IconAlertTriangle className="w-3.5 h-3.5" /> {repair.completionError || 'The re-pair could not be completed.'} The
                 old credential was NOT revoked - safe to try again.
+              </p>
+              <div className="sdk-pairing-form">
+                <button type="button" className="small-btn" onClick={() => completeRepairOnce(repair)}>Retry</button>
+              </div>
+            </>
+          )}
+
+          {repair.status === 'CompletionUnknown' && (
+            <>
+              <p className="sdk-hint">
+                <IconAlertTriangle className="w-3.5 h-3.5" /> Could not confirm whether this re-pair actually completed - it may have
+                already succeeded, or it may still be waiting to be completed. Retrying is safe either way: completing an
+                already-completed re-pair is a no-op and never creates a duplicate credential or runs the replacement twice.
               </p>
               <div className="sdk-pairing-form">
                 <button type="button" className="small-btn" onClick={() => completeRepairOnce(repair)}>Retry</button>

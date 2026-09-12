@@ -170,6 +170,7 @@ public sealed class SdkPairingTests : IDisposable
     [Theory]
     [InlineData("pending")]
     [InlineData("redeemed")]
+    [InlineData("confirmed")]
     [InlineData("cancelled")]
     [InlineData("expired")]
     public async Task GetStatusReflectsEveryTerminalAndNonTerminalState(string scenario)
@@ -181,13 +182,19 @@ public sealed class SdkPairingTests : IDisposable
         var expected = scenario switch
         {
             "redeemed" => "Redeemed",
+            "confirmed" => "Confirmed",
             "cancelled" => "Cancelled",
             "expired" => "Expired",
             _ => "Pending"
         };
+        PairedSdk? paired = null;
         switch (scenario)
         {
             case "redeemed": await service.RedeemAsync(created.Code, "python", "1.0.0", default); break;
+            case "confirmed":
+                paired = await service.RedeemAsync(created.Code, "python", "1.0.0", default);
+                await service.ConfirmAsync(created.PairingId, paired!.ApiKey, default);
+                break;
             case "cancelled": await service.RevokePairingAsync(created.PairingId, default); break;
             case "expired":
                 _h.Db.SdkPairingSessions.Single(s => s.Id == created.PairingId).ExpiresAt = DateTime.UtcNow.AddMinutes(-1);
@@ -200,6 +207,36 @@ public sealed class SdkPairingTests : IDisposable
         Assert.NotNull(status);
         Assert.Equal(expected, status!.Status);
         Assert.Equal(created.PairingId, status.PairingId);
+        Assert.Null(status.CompletedAt); // none of these scenarios ever run CompleteRepairAsync
+    }
+
+    [Fact]
+    public async Task GetStatusReflectsCompletedAndExposesCompletedAtOnceARepairActuallyCompletes()
+    {
+        // The authoritative signal SdkPage.jsx's refresh-recovery logic depends on (see its own
+        // remarks): CompletedAt/Status="Completed" must be visible from a PLAIN status poll, with
+        // no further mutating call, so a client that lost the CompleteRepairAsync HTTP response can
+        // still learn - without retrying it - that the operation genuinely already happened.
+        _h.EnsureProject();
+        var service = Service();
+        var oldCredential = _h.SeedCredential(_h.ProjectId, "old-hash");
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
+        var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
+        await service.ConfirmAsync(created.PairingId, paired.ApiKey, default);
+
+        var beforeCompletion = await service.GetStatusAsync(created.PairingId, default);
+        Assert.Equal("Confirmed", beforeCompletion!.Status);
+        Assert.Null(beforeCompletion.CompletedAt);
+
+        var completion = await service.CompleteRepairAsync(created.PairingId, oldCredential.Id, default);
+        Assert.Equal(CompleteRepairOutcome.Success, completion.Outcome);
+
+        // Reads back through a brand new status call - exactly what a recovering client does after
+        // a refresh - not merely inspecting the CompleteRepairAsync return value itself.
+        var afterCompletion = await service.GetStatusAsync(created.PairingId, default);
+        Assert.Equal("Completed", afterCompletion!.Status);
+        Assert.NotNull(afterCompletion.CompletedAt);
+        Assert.NotNull(afterCompletion.ConfirmedAt);
     }
 
     [Fact]
@@ -638,6 +675,92 @@ public sealed class SdkPairingTests : IDisposable
         // dead credential, but the old credential remaining active means telemetry/remediation keep
         // working, and an operator can start a fresh re-pair for the same old credential.
         Assert.False(await service.ConfirmAsync(created.PairingId, paired.ApiKey, default)); // the confirmed key is dead too
+    }
+
+    /// <summary>The core Blocker-1 race: TWO different, independently CONFIRMED re-pair sessions
+    /// both bound (at creation) to replace the exact same old credential - a real scenario an
+    /// operator could trigger by starting a second re-pair before noticing the first one is still
+    /// in flight. Genuinely concurrent (Task.WhenAll, neither call awaited before the other starts)
+    /// - not sequential calls dressed up as a race. Both DbContexts pre-track the SAME old-credential
+    /// row before either call runs, with the SAME original RowVersion, so the race is deterministic
+    /// rather than dependent on real thread-scheduling luck: only the actual database-level
+    /// concurrency check at commit time - not the earlier in-memory RevokedAt read, which the race
+    /// can outrun - decides the single winner.</summary>
+    [Fact]
+    public async Task TwoConfirmedSessionsRacingToReplaceTheSameOldCredentialResolveToExactlyOneWinner()
+    {
+        _h.EnsureProject();
+        var oldCredential = _h.SeedCredential(_h.ProjectId, "old-hash");
+        var machine = _h.SeedMachine();
+        var target = _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName);
+
+        var setupService = Service();
+        var createdA = (await setupService.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
+        var pairedA = (await setupService.RedeemAsync(createdA.Code, "python", "1.0.0", default))!;
+        Assert.True(await setupService.ConfirmAsync(createdA.PairingId, pairedA.ApiKey, default));
+
+        var createdB = (await setupService.CreateAsync(_h.ProjectId, "dotnet", default, replacesCredentialId: oldCredential.Id))!;
+        var pairedB = (await setupService.RedeemAsync(createdB.Code, "dotnet", "1.0.0", default))!;
+        Assert.True(await setupService.ConfirmAsync(createdB.PairingId, pairedB.ApiKey, default));
+
+        using var dbA = _h.CreateAdditionalDbContext();
+        using var dbB = _h.CreateAdditionalDbContext();
+        // Pre-track the SAME old-credential row via BOTH contexts, with the SAME original
+        // RowVersion, before either commits - reproduces "both requests read before either writes"
+        // deterministically rather than hoping real thread timing lines up.
+        await dbA.ProjectApiCredentials.SingleAsync(c => c.Id == oldCredential.Id);
+        await dbB.ProjectApiCredentials.SingleAsync(c => c.Id == oldCredential.Id);
+
+        var serviceA = new SdkPairingService(dbA,
+            new ProjectCredentialService(dbA, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System),
+            TimeProvider.System, new ConfigurationBuilder().Build(),
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
+        var serviceB = new SdkPairingService(dbB,
+            new ProjectCredentialService(dbB, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System),
+            TimeProvider.System, new ConfigurationBuilder().Build(),
+            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
+
+        // Real concurrency (neither task is awaited before the other starts).
+        var taskA = serviceA.CompleteRepairAsync(createdA.PairingId, oldCredential.Id, default);
+        var taskB = serviceB.CompleteRepairAsync(createdB.PairingId, oldCredential.Id, default);
+        var results = await Task.WhenAll(taskA, taskB);
+
+        // Exactly one winner - never both, never neither.
+        Assert.Single(results, r => r.Outcome == CompleteRepairOutcome.Success);
+        Assert.Single(results, r => r.Outcome == CompleteRepairOutcome.ConcurrentReplacementConflict);
+
+        // _h.Db already holds tracked (now-stale) instances of these rows from the setup above -
+        // every verification query below reads AsNoTracking() so it reflects what dbA/dbB actually
+        // committed, not _h.Db's own cached pre-race snapshot.
+        var winner = results.Single(r => r.Outcome == CompleteRepairOutcome.Success);
+        var winningNewCredentialId = winner.NewCredentialId!.Value;
+        var issuedCredentialIdA = await _h.Db.SdkPairingSessions.AsNoTracking()
+            .Where(s => s.Id == createdA.PairingId).Select(s => s.IssuedCredentialId).SingleAsync();
+        var winningSessionId = winningNewCredentialId == issuedCredentialIdA ? createdA.PairingId : createdB.PairingId;
+        var losingSessionId = winningSessionId == createdA.PairingId ? createdB.PairingId : createdA.PairingId;
+
+        // Old credential is revoked exactly once, by the winner.
+        Assert.NotNull((await _h.Db.ProjectApiCredentials.AsNoTracking().SingleAsync(c => c.Id == oldCredential.Id)).RevokedAt);
+
+        // The remediation target is bound to the WINNER's newly issued credential - never left
+        // half-migrated, and never bound to the loser's (unused, still-active) credential.
+        Assert.Equal(winningNewCredentialId, (await _h.Db.RemediationTargets.AsNoTracking().SingleAsync(t => t.Id == target.Id)).TelemetryCredentialId);
+
+        // The winning session is marked completed; the losing session is NOT - its own attempt
+        // never actually committed, so it must not be reported (now, or on any future poll) as
+        // having successfully completed.
+        Assert.NotNull((await _h.Db.SdkPairingSessions.AsNoTracking().SingleAsync(s => s.Id == winningSessionId)).CompletedAt);
+        Assert.Null((await _h.Db.SdkPairingSessions.AsNoTracking().SingleAsync(s => s.Id == losingSessionId)).CompletedAt);
+
+        // Exactly one completion audit event was ever recorded - the loser's attempt (audit record
+        // included) rolled back together with everything else in its failed SaveChangesAsync call.
+        Assert.Single(await _h.Db.PlatformAuditEvents.AsNoTracking().Where(e => e.Action == "sdk.repair-completed").ToListAsync());
+
+        // The loser's OWN new credential (still confirmed, still valid) was never touched - it is
+        // simply unused, not revoked, not bound to anything. Only the shared OLD credential and the
+        // shared target were ever contended.
+        var losingNewCredentialId = (await _h.Db.SdkPairingSessions.AsNoTracking().SingleAsync(s => s.Id == losingSessionId)).IssuedCredentialId!.Value;
+        Assert.Null((await _h.Db.ProjectApiCredentials.AsNoTracking().SingleAsync(c => c.Id == losingNewCredentialId)).RevokedAt);
     }
 
     // --- Controller: Confirm/CompleteRepair authorization + outcome mapping -----------------

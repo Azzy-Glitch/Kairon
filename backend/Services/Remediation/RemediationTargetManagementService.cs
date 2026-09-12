@@ -122,6 +122,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         {
             ProjectId = request.ProjectId,
             Environment = request.Environment,
+            EnvironmentNormalized = request.Environment.ToLowerInvariant(),
             Service = request.Service.Trim(),
             MachineId = request.MachineId,
             TelemetryCredentialId = request.TelemetryCredentialId,
@@ -176,6 +177,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         var before = Snapshot(entity);
         entity.ProjectId = request.ProjectId;
         entity.Environment = request.Environment;
+        entity.EnvironmentNormalized = request.Environment.ToLowerInvariant();
         entity.Service = request.Service.Trim();
         entity.MachineId = request.MachineId;
         entity.TelemetryCredentialId = request.TelemetryCredentialId;
@@ -358,7 +360,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
     {
         var normalizedEnvironment = environment.ToLowerInvariant();
         var query = _db.RemediationTargets.AsNoTracking()
-            .Where(t => t.Enabled && t.ProjectId == projectId && t.Environment.ToLower() == normalizedEnvironment && t.Service == service);
+            .Where(t => t.Enabled && t.ProjectId == projectId && t.EnvironmentNormalized == normalizedEnvironment && t.Service == service);
         if (excludeId.HasValue) query = query.Where(t => t.Id != excludeId.Value);
         return await query.AnyAsync(ct);
     }

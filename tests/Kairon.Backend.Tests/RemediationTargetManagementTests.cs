@@ -204,20 +204,21 @@ public sealed class RemediationTargetManagementTests : IDisposable
 
         var uniqueEx = await SaveAndCaptureAsync(new RemediationTarget
         {
-            ProjectId = _h.ProjectId, Environment = _h.Environment, Service = _h.Service, // same key as the seeded target
+            ProjectId = _h.ProjectId, Environment = _h.Environment, EnvironmentNormalized = _h.Environment.ToLowerInvariant(),
+            Service = _h.Service, // same key as the seeded target
             MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = machine.HostName,
             WindowsServiceName = "AnotherSvc", AllowedOperationsJson = "[]", Enabled = true
         });
         var foreignKeyEx = await SaveAndCaptureAsync(new RemediationTarget
         {
             ProjectId = Guid.NewGuid(), // genuinely does not exist
-            Environment = "Staging", Service = "OtherSvc",
+            Environment = "Staging", EnvironmentNormalized = "staging", Service = "OtherSvc",
             MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = machine.HostName,
             WindowsServiceName = "AnotherSvc", AllowedOperationsJson = "[]", Enabled = true
         });
         var notNullEx = await SaveAndCaptureAsync(new RemediationTarget
         {
-            ProjectId = _h.ProjectId, Environment = "Staging", Service = "OtherSvc2",
+            ProjectId = _h.ProjectId, Environment = "Staging", EnvironmentNormalized = "staging", Service = "OtherSvc2",
             MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = machine.HostName,
             WindowsServiceName = null!, AllowedOperationsJson = "[]", Enabled = true
         });
@@ -870,6 +871,92 @@ public sealed class RemediationTargetManagementTests : IDisposable
 
     // --- Phase 10 (via the resolver/tool, not this service): see WindowsServiceRemediationTests
     // for the fingerprint deletion-race and sync-over-async coverage.
+
+    // --- Phase 11 (Blocker 2): case-insensitive environment uniqueness is enforced at the
+    // DATABASE level, not merely by the in-memory pre-check above - KAIRON resolves environment
+    // names case-insensitively everywhere at runtime (RemediationTargetResolver), so "Development"
+    // and "development" must never both exist as distinct ENABLED rows for the same project/service.
+
+    [Theory]
+    [InlineData("development")]
+    [InlineData("DEVELOPMENT")]
+    public async Task CreateRejectsAnEnabledTargetWhenEnvironmentDiffersOnlyByCaseFromAnExistingEnabledTarget(string caseVariantEnvironment)
+    {
+        var machine = _h.SeedMachine();
+        var credential = _h.SeedCredential(_h.ProjectId);
+        // TestHarness.SeedRemediationTarget defaults to Environment = "Development".
+        var existing = _h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName);
+
+        var machine2 = _h.SeedMachine(hostName: "second-host");
+        var request = ValidRequest(machine2, credential);
+        request.Environment = caseVariantEnvironment;
+
+        var result = await Service().CreateAsync(request, "op", default);
+
+        Assert.Equal(RemediationTargetOperationOutcome.Conflict, result.Outcome);
+        Assert.Equal("duplicate-target", result.ErrorCode);
+        var only = Assert.Single(_h.Db.RemediationTargets);
+        Assert.Equal(existing.Id, only.Id);
+    }
+
+    [Fact]
+    public async Task ConcurrentEnabledCreatesForCaseVariantEnvironmentsResolveToExactlyOneWinnerAtTheDatabaseLevel()
+    {
+        var machine = _h.SeedMachine();
+        var machine2 = _h.SeedMachine(hostName: "second-host");
+        var credential = _h.SeedCredential(_h.ProjectId);
+
+        using var dbA = _h.CreateAdditionalDbContext();
+        using var dbB = _h.CreateAdditionalDbContext();
+        var serviceA = new RemediationTargetManagementService(dbA,
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+        var serviceB = new RemediationTargetManagementService(dbB,
+            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+
+        var requestA = ValidRequest(machine, credential);
+        requestA.Environment = "Production";
+        var requestB = ValidRequest(machine2, credential);
+        requestB.Environment = "production"; // differs only by case - each service instance's own
+        // in-memory pre-check independently sees no conflict (neither request has committed yet),
+        // so only the database's own case-insensitive unique index can decide the single winner.
+
+        var taskA = serviceA.CreateAsync(requestA, "operator-a", default);
+        var taskB = serviceB.CreateAsync(requestB, "operator-b", default);
+        var results = await Task.WhenAll(taskA, taskB);
+
+        Assert.Contains(results, r => r.Outcome == RemediationTargetOperationOutcome.Success);
+        Assert.Contains(results, r => r.Outcome == RemediationTargetOperationOutcome.Conflict);
+        Assert.Single(_h.Db.RemediationTargets); // exactly one row ever committed
+
+        // Runtime resolution must never see two candidates for either casing - the entire point of
+        // enforcing this at the database level rather than trusting every caller to normalize first.
+        var byUpper = await _h.Targets.ResolveDetectionTargetAsync(_h.ProjectId, "PRODUCTION", _h.Service, default);
+        var byLower = await _h.Targets.ResolveDetectionTargetAsync(_h.ProjectId, "production", _h.Service, default);
+        Assert.Equal(DetectionTargetOutcome.Unique, byUpper.Outcome);
+        Assert.Equal(DetectionTargetOutcome.Unique, byLower.Outcome);
+    }
+
+    [Fact]
+    public async Task UpdateRejectsRenamingATargetsEnvironmentOntoACaseVariantOfAnotherEnabledTargetsScope()
+    {
+        var machine = _h.SeedMachine();
+        var credential = _h.SeedCredential(_h.ProjectId);
+        _h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName, environment: "Production", service: "SvcA");
+        var toRename = _h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName, environment: "Staging", service: "SvcA");
+
+        var update = new UpdateRemediationTargetRequest
+        {
+            ProjectId = toRename.ProjectId, Environment = "production", Service = "SvcA", // case-variant collision
+            MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = machine.HostName,
+            WindowsServiceName = toRename.WindowsServiceName, AllowedOperations = [ServiceToolNames.RestartService], Enabled = true
+        };
+
+        var result = await Service().UpdateAsync(toRename.Id, update, "op", default);
+
+        Assert.Equal(RemediationTargetOperationOutcome.Conflict, result.Outcome);
+        Assert.Equal("duplicate-target", result.ErrorCode);
+        Assert.Equal("Staging", _h.Db.RemediationTargets.Single(t => t.Id == toRename.Id).Environment); // unchanged
+    }
 
     private sealed class Scm : IWindowsServiceControl
     {

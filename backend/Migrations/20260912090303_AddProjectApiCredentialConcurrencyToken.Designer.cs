@@ -4,6 +4,7 @@ using Kairon.Backend.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
@@ -11,9 +12,11 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace Kairon.Backend.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260912090303_AddProjectApiCredentialConcurrencyToken")]
+    partial class AddProjectApiCredentialConcurrencyToken
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -631,11 +634,6 @@ namespace Kairon.Backend.Migrations
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
 
-                    b.Property<string>("EnvironmentNormalized")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
                     b.Property<string>("ExpectedHostName")
                         .IsRequired()
                         .HasMaxLength(255)
@@ -673,9 +671,8 @@ namespace Kairon.Backend.Migrations
 
                     b.HasIndex("TelemetryCredentialId");
 
-                    b.HasIndex("ProjectId", "EnvironmentNormalized", "Service")
+                    b.HasIndex("ProjectId", "Environment", "Service")
                         .IsUnique()
-                        .HasDatabaseName("IX_RemediationTargets_ProjectId_EnvironmentNormalized_Service")
                         .HasFilter("Enabled = 1");
 
                     b.ToTable("RemediationTargets");

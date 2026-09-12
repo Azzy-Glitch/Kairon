@@ -96,7 +96,7 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
     {
         var normalizedEnvironment = environment.ToLowerInvariant();
         var machineIds = await _db.RemediationTargets.AsNoTracking()
-            .Where(t => t.Enabled && t.ProjectId == projectId && t.Environment.ToLower() == normalizedEnvironment && t.Service == service)
+            .Where(t => t.Enabled && t.ProjectId == projectId && t.EnvironmentNormalized == normalizedEnvironment && t.Service == service)
             .Select(t => t.MachineId)
             .ToListAsync(ct);
 
@@ -113,7 +113,7 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
         var normalizedEnvironment = environment.ToLowerInvariant();
         var credentialIds = await _db.RemediationTargets.AsNoTracking()
             .Where(t => t.Enabled && t.ProjectId == projectId && t.MachineId == machineId &&
-                        t.Environment.ToLower() == normalizedEnvironment && t.Service == service)
+                        t.EnvironmentNormalized == normalizedEnvironment && t.Service == service)
             .Select(t => t.TelemetryCredentialId)
             .ToListAsync(ct);
 
@@ -133,7 +133,7 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
 
         var normalizedEnvironment = environment.ToLowerInvariant();
         var entities = await _db.RemediationTargets.AsNoTracking()
-            .Where(t => t.Enabled && t.ProjectId == projectId && t.Environment.ToLower() == normalizedEnvironment && t.Service == service)
+            .Where(t => t.Enabled && t.ProjectId == projectId && t.EnvironmentNormalized == normalizedEnvironment && t.Service == service)
             .ToListAsync(ct);
         if (entities.Count != 1) return null;
 
@@ -169,13 +169,14 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
         {
             var normalizedEnvironment = legacy.Environment.ToLowerInvariant();
             var exists = await _db.RemediationTargets.AnyAsync(t =>
-                t.ProjectId == legacy.ProjectId && t.Environment.ToLower() == normalizedEnvironment && t.Service == legacy.Service, ct);
+                t.ProjectId == legacy.ProjectId && t.EnvironmentNormalized == normalizedEnvironment && t.Service == legacy.Service, ct);
             if (exists) continue;
 
             _db.RemediationTargets.Add(new RemediationTarget
             {
                 ProjectId = legacy.ProjectId,
                 Environment = legacy.Environment,
+                EnvironmentNormalized = normalizedEnvironment,
                 Service = legacy.Service,
                 MachineId = legacy.MachineId,
                 TelemetryCredentialId = legacy.TelemetryCredentialId,

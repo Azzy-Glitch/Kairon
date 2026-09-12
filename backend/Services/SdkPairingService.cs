@@ -18,14 +18,18 @@ public sealed record PairedSdk(string ApiKey, Guid ProjectId, string Endpoint, G
 /// <summary>Safe, secret-free status projection of an SdkPairingSession - never includes the
 /// pairing code, its hash, or the issued credential's id/secret. Status is computed, not stored,
 /// matching the entity's own nullable-datetime convention (no persisted state enum). ConfirmedAt
-/// is exposed separately from Status: Status stays "Redeemed" the instant the backend issues the
-/// credential (unchanged, existing meaning - a plain first-time pairing has nothing further to
-/// wait for), while ConfirmedAt only becomes non-null once the SDK itself has proven it received
-/// and is using that exact credential - the signal a re-pair completion must wait for before it
-/// is safe to revoke the credential being replaced.</summary>
+/// and CompletedAt are exposed separately from Status, not just folded into it, because a caller
+/// recovering an in-flight re-pair (e.g. the operator UI after a refresh/lost response - see
+/// SdkPage.jsx's recovery effect) needs to tell "the backend actually finished this" apart from
+/// every other state without string-matching Status: CompletedAt is the ONE authoritative signal
+/// that CompleteRepairAsync's own mutation (old-credential revocation + target rebinds) already
+/// happened for THIS session, and is never set any other way. Status itself now distinguishes
+/// Completed and Confirmed as their own values (rather than folding both into "Redeemed", the
+/// original, coarser behavior) so a plain status string is self-describing on its own for any
+/// other caller of this endpoint.</summary>
 public sealed record PairingStatus(
     Guid PairingId, Guid ProjectId, string SdkType, DateTime CreatedAt, DateTime ExpiresAt,
-    DateTime? RedeemedAt, DateTime? ConfirmedAt, DateTime? RevokedAt, string Status);
+    DateTime? RedeemedAt, DateTime? ConfirmedAt, DateTime? CompletedAt, DateTime? RevokedAt, string Status);
 
 public enum CompleteRepairOutcome
 {
@@ -51,7 +55,16 @@ public enum CompleteRepairOutcome
     /// has since been independently revoked (e.g. a second, unrelated re-pair; a direct operator
     /// revocation). Completing now would rebind targets onto a credential that no longer works and
     /// revoke the one they were still relying on - refused instead.</summary>
-    NewCredentialRevoked
+    NewCredentialRevoked,
+
+    /// <summary>A genuinely concurrent completion: another CONFIRMED session, also bound to
+    /// replace this exact old credential, committed its own replacement between this call's own
+    /// read of the old credential and this call's attempt to commit. Detected via
+    /// ProjectApiCredential.RowVersion's optimistic-concurrency check, not merely the earlier
+    /// in-memory RevokedAt read (which a genuine race can outrun) - nothing from this call was
+    /// persisted; the old credential, remediation targets, and this session's own CompletedAt are
+    /// exactly as the winner left them.</summary>
+    ConcurrentReplacementConflict
 }
 
 /// <summary>NewCredentialId/ProjectId are populated on Success (and are needed by the controller
@@ -240,13 +253,18 @@ public sealed class SdkPairingService : ISdkPairingService
         if (session is null) return null;
 
         var now = _time.GetUtcNow().UtcDateTime;
-        var status = session.RedeemedAt is not null ? "Redeemed"
+        // Ordered most-specific-first: a completed/confirmed session is always also redeemed, so
+        // those checks must come before the plain "Redeemed" fallback below or they could never be
+        // reached.
+        var status = session.CompletedAt is not null ? "Completed"
+            : session.ConfirmedAt is not null ? "Confirmed"
+            : session.RedeemedAt is not null ? "Redeemed"
             : session.RevokedAt is not null ? "Cancelled"
             : session.ExpiresAt <= now ? "Expired"
             : "Pending";
 
         return new PairingStatus(session.Id, session.ProjectId, session.SdkType, session.CreatedAt,
-            session.ExpiresAt, session.RedeemedAt, session.ConfirmedAt, session.RevokedAt, status);
+            session.ExpiresAt, session.RedeemedAt, session.ConfirmedAt, session.CompletedAt, session.RevokedAt, status);
     }
 
     public async Task<bool> ConfirmAsync(Guid pairingId, string? apiKey, CancellationToken cancellationToken)
@@ -361,12 +379,26 @@ public sealed class SdkPairingService : ISdkPairingService
         }
 
         oldCredential.RevokedAt = now;
+        oldCredential.RowVersion = Guid.NewGuid();
         session.CompletedAt = now;
         _audit.Record("sdk.repair-completed", actor, "sdk-pairing", pairingId.ToString(), session.ProjectId,
             data: new { OldCredentialId = oldCredentialId, NewCredentialId = newCredentialId, RebindCount = affected.Count });
 
-        await _db.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // Another confirmed session, also bound to replace this exact old credential, won the
+            // race and already committed its own replacement between our read of oldCredential
+            // above and this commit. SaveChangesAsync failing here means NONE of this call's
+            // changes landed - the target rebinds, the revocation, this session's CompletedAt, and
+            // the audit record all rolled back together - so returning anything but a clear
+            // conflict would misreport what actually happened.
+            return new CompleteRepairResult(CompleteRepairOutcome.ConcurrentReplacementConflict);
+        }
 
         return new CompleteRepairResult(CompleteRepairOutcome.Success, affected.Count, newCredentialId, session.ProjectId);
     }

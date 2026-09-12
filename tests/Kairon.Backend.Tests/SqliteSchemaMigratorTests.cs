@@ -137,6 +137,7 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"ConfirmedAt\";"); // version 6
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"ReplacesCredentialId\";"); // version 7
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"CompletedAt\";"); // version 7
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"ProjectApiCredentials\" DROP COLUMN \"RowVersion\";"); // version 8
         // user_version is already 0 by default here - EnsureCreatedAsync never touches the PRAGMA.
 
         await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
@@ -155,7 +156,7 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
 
         db.RemediationTargets.Add(new RemediationTarget
         {
-            ProjectId = project.Id, Environment = "Production", Service = "svc", MachineId = machine.Id,
+            ProjectId = project.Id, Environment = "Production", EnvironmentNormalized = "production", Service = "svc", MachineId = machine.Id,
             TelemetryCredentialId = credential.Id, ExpectedHostName = "legacy-host", WindowsServiceName = "Svc",
             AllowedOperationsJson = "[]", Enabled = true
         });
@@ -173,6 +174,14 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
         session.ConfirmedAt = DateTime.UtcNow;
         session.CompletedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(); // would fail if any of these columns weren't genuinely present/usable
+
+        // ProjectApiCredentials.RowVersion (version 8) genuinely usable as a concurrency token, not
+        // just present: a write that changes it must actually succeed.
+        var originalRowVersion = credential.RowVersion;
+        credential.RevokedAt = DateTime.UtcNow;
+        credential.RowVersion = Guid.NewGuid();
+        await db.SaveChangesAsync();
+        Assert.NotEqual(originalRowVersion, (await db.ProjectApiCredentials.SingleAsync()).RowVersion);
     }
 
     [Fact]
@@ -191,6 +200,7 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"ConfirmedAt\";");
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"ReplacesCredentialId\";");
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"CompletedAt\";");
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"ProjectApiCredentials\" DROP COLUMN \"RowVersion\";");
         await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 4;");
 
         await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
@@ -216,6 +226,7 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"ConfirmedAt\";");
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"ReplacesCredentialId\";");
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"CompletedAt\";");
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"ProjectApiCredentials\" DROP COLUMN \"RowVersion\";");
         await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 5;");
 
         await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
@@ -238,12 +249,151 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"ReplacesCredentialId\";");
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"CompletedAt\";");
         await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"RemediationTargets\" DROP COLUMN \"RowVersion\";");
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"ProjectApiCredentials\" DROP COLUMN \"RowVersion\";");
         await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 6;");
 
         await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
 
         Assert.Equal(SqliteSchemaMigrator.CurrentVersion, await UserVersionAsync(db));
         Assert.Equal("preserve-v6", (await db.Projects.SingleAsync()).Name);
+    }
+
+    [Fact]
+    public async Task ExistingVersion7DatabaseGainsProjectApiCredentialConcurrencyTokenWithoutLosingData()
+    {
+        // Simulates a genuine upgrade from a database already adopted as schema version 7 - it has
+        // the repair-binding columns and RemediationTargets.RowVersion, but from before
+        // ProjectApiCredentials.RowVersion existed.
+        await using var db = CreateContext();
+        await db.Database.EnsureCreatedAsync();
+        var project = new Project { Name = "preserve-v7" };
+        db.Projects.Add(project);
+        await db.SaveChangesAsync();
+
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"ProjectApiCredentials\" DROP COLUMN \"RowVersion\";");
+        await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 7;");
+
+        await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
+
+        Assert.Equal(SqliteSchemaMigrator.CurrentVersion, await UserVersionAsync(db));
+        Assert.Equal("preserve-v7", (await db.Projects.SingleAsync()).Name);
+
+        var credential = new ProjectApiCredential { ProjectId = project.Id, KeyHash = "k" };
+        db.ProjectApiCredentials.Add(credential);
+        await db.SaveChangesAsync(); // would fail if RowVersion weren't genuinely present/usable
+    }
+
+    [Fact]
+    public async Task ExistingVersion8DatabaseGainsEnvironmentNormalizedWithoutLosingData()
+    {
+        // Simulates a genuine upgrade from a database already adopted as schema version 8 - it has
+        // ProjectApiCredentials.RowVersion, but from before RemediationTargets.EnvironmentNormalized
+        // (and the case-insensitive unique index built on it) existed - the raw, case-preserved
+        // Environment column was the unique key back then.
+        await using var db = CreateContext();
+        await db.Database.EnsureCreatedAsync();
+        var project = new Project { Name = "preserve-v8" };
+        db.Projects.Add(project);
+        await db.SaveChangesAsync();
+
+        await db.Database.ExecuteSqlRawAsync(
+            "DROP INDEX \"IX_RemediationTargets_ProjectId_EnvironmentNormalized_Service\";");
+        await db.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"RemediationTargets\" DROP COLUMN \"EnvironmentNormalized\";");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE UNIQUE INDEX "IX_RemediationTargets_ProjectId_Environment_Service"
+            ON "RemediationTargets" ("ProjectId", "Environment", "Service") WHERE "Enabled" = 1;
+            """);
+        await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 8;");
+
+        await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
+
+        Assert.Equal(SqliteSchemaMigrator.CurrentVersion, await UserVersionAsync(db));
+        Assert.Equal("preserve-v8", (await db.Projects.SingleAsync()).Name);
+
+        // Genuinely usable, not just present: EF must be able to write a row through the new
+        // column, and - the entire point of this migration - a real case-variant duplicate must now
+        // be rejected AT THE DATABASE LEVEL, not merely by an in-memory pre-check.
+        var machine = new Machine { HostName = "v8-host", OperatingSystem = "Windows", AgentCredentialHash = "h", LastSeenAt = DateTime.UtcNow };
+        db.Machines.Add(machine);
+        var credential = new ProjectApiCredential { ProjectId = project.Id, KeyHash = "k" };
+        db.ProjectApiCredentials.Add(credential);
+        await db.SaveChangesAsync();
+
+        db.RemediationTargets.Add(new RemediationTarget
+        {
+            ProjectId = project.Id, Environment = "Production", EnvironmentNormalized = "production", Service = "svc",
+            MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = "v8-host",
+            WindowsServiceName = "Svc", AllowedOperationsJson = "[]", Enabled = true
+        });
+        await db.SaveChangesAsync();
+
+        await using var conflictDb = CreateContext();
+        conflictDb.RemediationTargets.Add(new RemediationTarget
+        {
+            ProjectId = project.Id, Environment = "production", EnvironmentNormalized = "production", Service = "svc",
+            MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = "v8-host",
+            WindowsServiceName = "AnotherSvc", AllowedOperationsJson = "[]", Enabled = true
+        });
+        await Assert.ThrowsAsync<DbUpdateException>(() => conflictDb.SaveChangesAsync());
+    }
+
+    [Fact]
+    public async Task MigrationFromVersion8FailsClosedWhenALegacyDatabaseAlreadyHasConflictingCaseVariantEnabledTargets()
+    {
+        // The whole point of failing safely: a legacy database that (before this constraint
+        // existed) already has two ENABLED targets for the same project/service whose Environment
+        // differs only by case must never have this migration silently keep one and destroy the
+        // other. It must refuse to proceed at all, leaving every row and the schema version exactly
+        // as they were, until an operator manually resolves the conflict.
+        //
+        // Built by dropping only the NEW case-insensitive unique index (not the EnvironmentNormalized
+        // column itself) and restoring the OLD raw-Environment index in its place - this reproduces
+        // the actual version-8 constraint shape (two case-variant enabled rows could coexist) while
+        // still inserting both rows through normal EF Add/SaveChangesAsync, exactly as the real
+        // pre-upgrade application code would have.
+        await using var db = CreateContext();
+        await db.Database.EnsureCreatedAsync();
+        var project = new Project { Name = "conflicted-v8" };
+        db.Projects.Add(project);
+        var machine = new Machine { HostName = "conflict-host", OperatingSystem = "Windows", AgentCredentialHash = "h", LastSeenAt = DateTime.UtcNow };
+        db.Machines.Add(machine);
+        var credential = new ProjectApiCredential { ProjectId = project.Id, KeyHash = "k" };
+        db.ProjectApiCredentials.Add(credential);
+        await db.SaveChangesAsync();
+
+        await db.Database.ExecuteSqlRawAsync(
+            "DROP INDEX \"IX_RemediationTargets_ProjectId_EnvironmentNormalized_Service\";");
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE UNIQUE INDEX "IX_RemediationTargets_ProjectId_Environment_Service"
+            ON "RemediationTargets" ("ProjectId", "Environment", "Service") WHERE "Enabled" = 1;
+            """);
+
+        // Two ENABLED rows for the same ProjectId+Service, differing only by Environment case - the
+        // version-8 unique index (on the raw, case-sensitive Environment column) never caught this.
+        foreach (var env in new[] { "Production", "production" })
+        {
+            db.RemediationTargets.Add(new RemediationTarget
+            {
+                ProjectId = project.Id, Environment = env, EnvironmentNormalized = "production", Service = "conflicted-svc",
+                MachineId = machine.Id, TelemetryCredentialId = credential.Id, ExpectedHostName = "conflict-host",
+                WindowsServiceName = "Svc", AllowedOperationsJson = "[]", Enabled = true
+            });
+        }
+        await db.SaveChangesAsync();
+        await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 8;");
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync());
+
+        Assert.Contains("case", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("manually", error.Message, StringComparison.OrdinalIgnoreCase);
+
+        // The schema version must not have advanced - the migration made no lasting change at all,
+        // so a restart will retry (and fail identically) until the conflict is actually resolved.
+        await using var reread = CreateContext();
+        Assert.Equal(8, await UserVersionAsync(reread));
+        Assert.Equal(2, await reread.RemediationTargets.CountAsync());
     }
 
     [Fact]

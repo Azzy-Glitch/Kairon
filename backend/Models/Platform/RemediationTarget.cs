@@ -23,6 +23,18 @@ public sealed class RemediationTarget
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid ProjectId { get; set; }
     public string Environment { get; set; } = "Production";
+
+    /// <summary>Environment.ToLowerInvariant(), kept in sync by every writer (Create/UpdateAsync in
+    /// RemediationTargetManagementService, ImportLegacyConfigurationAsync in
+    /// RemediationTargetResolver) - never computed lazily or derived at read time. This, not the
+    /// raw Environment column, is what AppDbContext's enabled-uniqueness index is actually built on:
+    /// KAIRON treats environment names case-insensitively everywhere they are resolved
+    /// (RemediationTargetResolver's own .ToLower() comparisons), so "Production" and "production"
+    /// must never both be allowed to exist as distinct enabled rows - a plain unique index on the
+    /// raw, case-preserved Environment column would not catch that, since the two strings are
+    /// literally different values as far as the database is concerned.</summary>
+    public string EnvironmentNormalized { get; set; } = "production";
+
     public string Service { get; set; } = string.Empty;
     public Guid MachineId { get; set; }
     public Guid TelemetryCredentialId { get; set; }

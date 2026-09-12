@@ -19,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 7;
+    public const int CurrentVersion = 9;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -164,6 +164,71 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                 _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: pairing repair-binding + RemediationTargets.RowVersion", version);
             }
 
+            // Version 8: adds ProjectApiCredentials.RowVersion - a real concurrency token so two
+            // CONFIRMED re-pair sessions racing to complete against the SAME old credential cannot
+            // both succeed (see ProjectApiCredential.RowVersion's remarks). Same safe all-zero
+            // default as RemediationTargets.RowVersion above - only needs to differ from whatever
+            // the next write produces, and every write that matters here regenerates it fresh.
+            if (version == 7) {
+                var credentialColumns = await ColumnsAsync(connection, transaction, "ProjectApiCredentials", cancellationToken);
+                if (!credentialColumns.Contains("RowVersion"))
+                    await ExecuteAsync(connection, transaction,
+                        "ALTER TABLE \"ProjectApiCredentials\" ADD COLUMN \"RowVersion\" TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000';",
+                        cancellationToken);
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 8;", cancellationToken);
+                version = 8;
+                _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: ProjectApiCredentials.RowVersion", version);
+            }
+
+            // Version 9: adds RemediationTargets.EnvironmentNormalized and moves the enabled-
+            // uniqueness index onto it - see AppDbContext's remarks on why the raw, case-preserved
+            // Environment column was never safe to build that index on. Backfills every existing
+            // row from its own Environment before the new unique index is created; if a legacy
+            // database already has two ENABLED targets for the same project/service whose
+            // Environment differs only by case, creating that index would require silently
+            // keeping one and losing the other - instead this fails loudly (surfacing SQLite's own
+            // "UNIQUE constraint failed" via a clear, explicit check first) and leaves the database
+            // at its previous version until an operator manually disables or re-scopes one of the
+            // conflicting rows.
+            if (version == 8) {
+                var targetColumns = await ColumnsAsync(connection, transaction, "RemediationTargets", cancellationToken);
+                if (!targetColumns.Contains("EnvironmentNormalized"))
+                {
+                    await ExecuteAsync(connection, transaction,
+                        "ALTER TABLE \"RemediationTargets\" ADD COLUMN \"EnvironmentNormalized\" TEXT NOT NULL DEFAULT '';",
+                        cancellationToken);
+                    await ExecuteAsync(connection, transaction,
+                        "UPDATE \"RemediationTargets\" SET \"EnvironmentNormalized\" = lower(\"Environment\");",
+                        cancellationToken);
+                }
+
+                var conflicts = await ScalarIntAsync(connection, transaction, """
+                    SELECT COUNT(*) FROM (
+                        SELECT "ProjectId", "EnvironmentNormalized", "Service"
+                        FROM "RemediationTargets"
+                        WHERE "Enabled" = 1
+                        GROUP BY "ProjectId", "EnvironmentNormalized", "Service"
+                        HAVING COUNT(*) > 1
+                    );
+                    """, cancellationToken);
+                if (conflicts > 0)
+                    throw new InvalidOperationException(
+                        "Cannot enforce case-insensitive RemediationTarget uniqueness: this database has " +
+                        $"{conflicts} project/service pair(s) with two or more ENABLED targets whose Environment " +
+                        "differs only by case (e.g. \"Production\" and \"production\"). Resolve this manually - " +
+                        "disable or re-scope one target in each conflicting pair - then restart KAIRON to retry " +
+                        "this migration. No changes were made to this database.");
+
+                await ExecuteAsync(connection, transaction,
+                    "DROP INDEX IF EXISTS \"IX_RemediationTargets_ProjectId_Environment_Service\";", cancellationToken);
+                await ExecuteAsync(connection, transaction,
+                    """CREATE UNIQUE INDEX IF NOT EXISTS "IX_RemediationTargets_ProjectId_EnvironmentNormalized_Service" ON "RemediationTargets" ("ProjectId", "EnvironmentNormalized", "Service") WHERE "Enabled" = 1;""",
+                    cancellationToken);
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 9;", cancellationToken);
+                version = 9;
+                _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: RemediationTargets.EnvironmentNormalized case-insensitive uniqueness", version);
+            }
+
             if (version != CurrentVersion)
                 throw new InvalidOperationException($"No SQLite migration path exists from version {version}.");
 
@@ -266,6 +331,7 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                     expected.Remove("ReplacesCredentialId");
                     expected.Remove("CompletedAt");
                 }
+                if (table == "ProjectApiCredentials") expected.Remove("RowVersion"); // added at version 8
             }
             var missing = expected.Except(actual, StringComparer.OrdinalIgnoreCase).Order().ToArray();
             if (actual.Count == 0 || missing.Length > 0)
@@ -299,6 +365,21 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+    }
+
+    // Transaction-scoped variant - needed once a step must read back rows an earlier statement in
+    // the SAME transaction already wrote (e.g. the version 9 backfill below), which the
+    // no-transaction overload above cannot see.
+    private static async Task<int> ScalarIntAsync(
+        DbConnection connection,
+        DbTransaction transaction,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = sql;
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
     }
