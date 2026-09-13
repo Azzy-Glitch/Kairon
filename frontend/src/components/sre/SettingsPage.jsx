@@ -76,7 +76,11 @@ export default function SettingsPage() {
         <p className="panel-pending-text">Loading status...</p>
       ) : (
         <div className="settings-grid">
-          <SettingsRow label="AI provider" value={health.aiMode && health.aiMode !== 'unknown' ? health.aiMode : 'unknown'} online={health.aiService} />
+          <SettingsRow
+            label="AI provider"
+            value={health.aiMode === 'unconfigured' ? 'Not configured' : health.aiMode && health.aiMode !== 'unknown' ? health.aiMode : 'unknown'}
+            online={health.aiMode === 'unconfigured' ? false : health.aiService}
+          />
           <SettingsRow label="Detection" value={health.detectionEnabled ? 'Enabled' : 'Disabled'} online={health.detectionEnabled} />
           <SettingsRow label="Remediation" value={health.remediationEnabled ? 'Enabled' : 'Disabled'} online={health.remediationEnabled} />
           <SettingsRow label="Database" value={health.database ? 'Connected' : 'Unavailable'} online={health.database} />

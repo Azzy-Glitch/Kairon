@@ -60,7 +60,16 @@ class AiService:
 
     @property
     def mode(self) -> str:
-        return "mock" if self.provider.name == "mock" else "live"
+        """"mock" (explicitly requested), "unconfigured" (a real provider was selected but has no
+        usable credential - see UnconfiguredProvider), or "live" (a real, usable provider). A
+        production install with no provider configured must be distinguishable from one actually
+        answering with mock output - conflating the two into a single "not live" bucket is exactly
+        the gap this distinction closes."""
+        if self.provider.name == "mock":
+            return "mock"
+        if self.provider.name == "unconfigured":
+            return "unconfigured"
+        return "live"
 
     async def investigate(self, evidence: EvidencePackage) -> InvestigationResult:
         """Full investigation: evidence in, validated structured diagnosis out."""

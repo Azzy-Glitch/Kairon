@@ -97,6 +97,18 @@ public sealed class AiMicroserviceModeTests : IDisposable
         Assert.Equal("mock", await CreateMicroservice(false, "mock").GetModeAsync());
     }
 
+    /// <summary>The production blocker this fixes: the AI service process is up and answering
+    /// (a real HTTP 200 from /health), but it has no usable credential for the provider it was
+    /// asked to use (kairon.providers.UnconfiguredProvider reports mode="unconfigured", never
+    /// "mock" - it never fabricates output). This must surface as its own distinct string, not be
+    /// folded into "live" (which would misreport it as a real, working provider) or "unknown"
+    /// (which would misreport it as an unparsable/unexpected response).</summary>
+    [Fact]
+    public async Task UnconfiguredExternalProviderIsReportedAsUnconfiguredNeverLiveOrUnknown()
+    {
+        Assert.Equal("unconfigured", await CreateMicroservice(false, "unconfigured").GetModeAsync());
+    }
+
     private sealed class ModeHandler(string mode) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

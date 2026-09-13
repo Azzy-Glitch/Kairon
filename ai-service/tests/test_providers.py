@@ -12,6 +12,7 @@ from kairon.providers.base import AIProvider, ProviderError
 from kairon.providers.gemini import GeminiProvider
 from kairon.providers.mock import MockProvider
 from kairon.providers.openai_compatible import GroqProvider, QwenProvider
+from kairon.providers.unconfigured import UnconfiguredProvider
 
 
 class _HttpResponse:
@@ -54,21 +55,37 @@ class TestProviderSelection:
         config = AiConfig(provider=provider, **{f"{provider}_api_key": "real-looking-key-value"})
         assert isinstance(create_provider(config), expected)
 
-    def test_missing_credentials_fall_back_to_mock(self):
+    def test_missing_credentials_do_not_fall_back_to_mock(self):
+        """The production-safety fix: a real provider with no usable credential must never
+        silently become mock - it stays "gemini" and resolves to UnconfiguredProvider, which fails
+        honestly the moment it is actually invoked instead of fabricating an answer."""
         config = AiConfig(provider="gemini", gemini_api_key="")
-        assert config.effective_provider == "mock"
-        assert isinstance(create_provider(config), MockProvider)
+        assert config.effective_provider == "gemini"
+        assert config.is_configured is False
+        assert isinstance(create_provider(config), UnconfiguredProvider)
 
-    def test_placeholder_credentials_fall_back_to_mock(self):
+    def test_placeholder_credentials_do_not_fall_back_to_mock(self):
         config = AiConfig(provider="qwen", qwen_api_key="your-key")
-        assert config.effective_provider == "mock"
+        assert config.effective_provider == "qwen"
+        assert config.is_configured is False
+        assert isinstance(create_provider(config), UnconfiguredProvider)
 
     def test_force_mock_overrides_a_real_key(self):
         config = AiConfig(provider="qwen", qwen_api_key="real-looking-key-value", force_mock=True)
         assert config.effective_provider == "mock"
+        assert config.is_configured is True
 
-    def test_unknown_provider_falls_back_to_mock_rather_than_crashing(self):
+    def test_unknown_provider_resolves_to_unconfigured_rather_than_crashing_or_faking_mock(self):
         config = AiConfig(provider="not-a-provider")
+        assert config.is_configured is False
+        assert isinstance(create_provider(config), UnconfiguredProvider)
+
+    def test_explicit_provider_mock_is_always_configured_even_with_no_credentials(self):
+        """provider="mock" is a deliberate choice, not a fallback - it must never be reported as
+        unconfigured merely because there is (of course) no credential for it."""
+        config = AiConfig(provider="mock")
+        assert config.effective_provider == "mock"
+        assert config.is_configured is True
         assert isinstance(create_provider(config), MockProvider)
 
     def test_switching_provider_needs_no_code_change(self):

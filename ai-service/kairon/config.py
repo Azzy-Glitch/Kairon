@@ -109,20 +109,43 @@ class AiConfig:
 
     @property
     def effective_provider(self) -> str:
-        """The provider that will actually serve requests.
+        """The provider name that will actually serve requests.
 
-        Falling back to mock rather than erroring is what makes the PRD's "tests and demonstrations
-        must work without paid API credentials" true by construction.
+        Mock is selected ONLY when explicitly requested - force_mock (AI__MockMode) or an explicit
+        provider="mock" choice. It is deliberately NOT the answer whenever the selected real
+        provider merely lacks a usable credential: silently substituting mock there is exactly the
+        production-safety gap this property used to have (a fresh install with no provider
+        configured would fabricate AI output with no visible sign anything was wrong). See
+        is_configured for whether the resolved provider can actually be reached - create_provider
+        (kairon.providers) is what turns "selected but not configured" into a provider that fails
+        honestly instead of one that answers with fabricated data.
         """
         if self.force_mock or self.provider == "mock":
             return "mock"
-        return self.provider if self.has_usable_key else "mock"
+        return self.provider
+
+    @property
+    def is_configured(self) -> bool:
+        """Whether effective_provider can actually be reached.
+
+        An explicit mock choice is always considered configured - that is an intentional test/
+        development setup, not a gap to report. A real provider is configured only when it is a
+        known, registered provider (DEFAULT_ENDPOINTS' keys - "mock" and any typo/unknown name are
+        excluded on purpose) AND has a real, non-placeholder credential. False is the signal the
+        rest of the stack (create_provider, AiService.mode, the /health endpoint, the .NET backend
+        consuming it) uses to report AI as unavailable/not-configured rather than quietly answering
+        with mock output.
+        """
+        if self.force_mock or self.provider == "mock":
+            return True
+        return self.provider in DEFAULT_ENDPOINTS and self.has_usable_key
 
     def public_dict(self) -> dict:
         """Safe to return from an endpoint: describes configuration, exposes no secret."""
         return {
             "provider": self.provider,
             "effective_provider": self.effective_provider,
+            "is_configured": self.is_configured,
             "model": self.model,
             "endpoint": self.endpoint or DEFAULT_ENDPOINTS.get(self.provider, ""),
             "timeout_seconds": self.timeout_seconds,

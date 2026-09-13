@@ -185,3 +185,50 @@ class TestSecurityBoundary:
     def test_mock_provider_needs_no_credentials(self):
         provider = MockProvider(AiConfig(provider="mock"))
         assert provider.requires_credentials is False
+
+
+class TestProductionWithNoProviderConfigured:
+    """The actual production blocker this task fixes: MockMode=false (force_mock=False) plus no
+    usable provider credential must never silently answer with mock output - AiService must refuse
+    through its own existing, established error contract instead."""
+
+    async def test_investigation_is_refused_not_fabricated(self, retry_storm_evidence):
+        unconfigured_config = AiConfig(provider="qwen", qwen_api_key="", force_mock=False)
+        service = AiService(unconfigured_config)
+
+        assert service.mode == "unconfigured"
+
+        with pytest.raises(AiServiceError) as exc:
+            await service.investigate(retry_storm_evidence)
+
+        # A controlled, honest refusal - the exact same 503 contract a real provider's own outage
+        # already produces (AiService._complete) - never a 200 with fabricated content.
+        assert exc.value.status_code == 503
+        assert "not configured" in str(exc.value) or "unavailable" in str(exc.value)
+
+    async def test_analyze_error_is_refused_not_fabricated(self):
+        unconfigured_config = AiConfig(provider="gemini", gemini_api_key="your-key", force_mock=False)
+        service = AiService(unconfigured_config)
+
+        with pytest.raises(AiServiceError) as exc:
+            await service.analyze_error("NullReferenceException at line 42")
+
+        assert exc.value.status_code == 503
+
+    async def test_predict_and_recommend_are_refused_not_fabricated(self):
+        unconfigured_config = AiConfig(provider="groq", groq_api_key="", force_mock=False)
+        service = AiService(unconfigured_config)
+
+        with pytest.raises(AiServiceError):
+            await service.predict(["a"], "b")
+        with pytest.raises(AiServiceError):
+            await service.recommend("a busy API")
+
+    async def test_an_unknown_provider_name_is_also_refused_not_silently_mocked(self, retry_storm_evidence):
+        """A typo'd AI__Provider value is a configuration mistake - refuse it the same honest way,
+        never let it quietly resolve to fabricated mock output."""
+        service = AiService(AiConfig(provider="not-a-real-provider"))
+
+        assert service.mode == "unconfigured"
+        with pytest.raises(AiServiceError):
+            await service.investigate(retry_storm_evidence)

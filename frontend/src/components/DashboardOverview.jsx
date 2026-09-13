@@ -68,9 +68,15 @@ export default function DashboardOverview({ onSelectTab }) {
         <HeroStatTile
           icon={<IconServer className="w-5 h-5" />}
           label="AI inference engine"
-          value={health.aiService ? 'Operational' : 'Offline'}
-          sub={health.aiMode && health.aiMode !== 'unknown' ? `Provider: ${health.aiMode}` : ' '}
-          tone={health.aiService ? 'good' : 'urgent'}
+          value={health.aiMode === 'unconfigured' ? 'Not configured' : health.aiService ? 'Operational' : 'Offline'}
+          sub={
+            health.aiMode === 'unconfigured'
+              ? 'No AI provider set up yet'
+              : health.aiMode && health.aiMode !== 'unknown'
+                ? `Provider: ${health.aiMode}`
+                : ' '
+          }
+          tone={health.aiMode === 'unconfigured' ? 'attention' : health.aiService ? 'good' : 'urgent'}
         />
         <HeroStatTile
           icon={<IconSparkles className="w-5 h-5" />}

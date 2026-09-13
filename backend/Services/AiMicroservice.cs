@@ -65,6 +65,12 @@ public class AiMicroservice : IAiMicroservice
             using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
             var mode = body.RootElement.GetProperty("mode").GetString();
             if (mode == "mock") return "mock";
+            // A real provider was selected but the AI service itself has no usable credential for
+            // it (kairon.providers.UnconfiguredProvider) - the process is genuinely up and
+            // reachable, so this must never be conflated with "unknown" (this response was
+            // unparsable/unexpected) or "unavailable" (could not even be reached). Both the
+            // dashboard and the per-incident AiMode field read this exact string.
+            if (mode == "unconfigured") return "unconfigured";
             if (mode == "live") return configured ? selection!.Value.Provider : "live";
             return "unknown";
         } catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }

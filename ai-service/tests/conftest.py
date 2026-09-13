@@ -21,6 +21,24 @@ if str(ROOT) not in sys.path:
 # never rely on a developer credential or a checked-in production secret.
 os.environ.setdefault("KAIRON_AI_API_KEY", "kairon-ai-test-key-not-for-production")
 
+# Hermetic by construction, deliberately overriding (not setdefault) whatever a developer's own
+# ai-service/.env or shell environment happens to have set (a real AI__Provider/*_API_KEY - this
+# machine's own .env is exactly that: untracked, local, and never something a test run should read
+# or depend on). main.py's module-level CONFIG/SERVICE singletons are built once at import time via
+# AiConfig.from_env() -> load_dotenv(), and load_dotenv() never overrides an already-set variable,
+# so setting these here BEFORE any test imports main is what keeps the whole HTTP-level suite
+# (test_api.py, test_configure.py) forced onto the deterministic mock provider - never a live call
+# to a real provider using whatever credential happens to be lying around on the machine running
+# the tests (AI PRD section 18; this task's own "do not use live credentials in tests" rule).
+os.environ["AI__MockMode"] = "true"
+os.environ["AI__Provider"] = "mock"
+# Set (not merely removed) to an empty string: load_dotenv() only fills in a variable that is
+# genuinely ABSENT from os.environ, so simply deleting these would leave the .env file free to
+# populate them right back in. An explicit empty string blocks that and reads as "no credential" to
+# is_placeholder() either way.
+for _provider_key in ("QWEN_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY"):
+    os.environ[_provider_key] = ""
+
 # The whole test session shares one FastAPI app instance (module import is cached), so every
 # HTTP-level test across every test file counts against the same production rate limiter. The
 # default (12/min) is sized for one real desktop process, not a test suite making dozens of calls
@@ -42,8 +60,11 @@ from kairon.schemas import (  # noqa: E402
 
 @pytest.fixture
 def mock_config() -> AiConfig:
-    """Configuration with no credentials, which resolves to the deterministic mock provider."""
-    return AiConfig(provider="qwen", model="qwen-plus", timeout_seconds=5, max_retries=1)
+    """Explicitly mock (force_mock=True), not merely a real provider with no credential - since
+    AiConfig.effective_provider no longer silently substitutes mock for the latter (see
+    kairon.config's own remarks), this fixture must ask for mock on purpose to keep resolving to
+    MockProvider, exactly like any genuine test/development opt-in would."""
+    return AiConfig(provider="qwen", model="qwen-plus", timeout_seconds=5, max_retries=1, force_mock=True)
 
 
 @pytest.fixture

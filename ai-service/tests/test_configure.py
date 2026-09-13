@@ -345,8 +345,22 @@ class TestConfigureTestNeverMutatesLiveConfig:
         # The probe must never leak into the live, already-applied configuration.
         assert main.CONFIG.endpoint == ""
 
-    def test_no_usable_key_honestly_reports_mock(self, client):
+    def test_no_usable_key_reports_failure_not_a_silent_mock_success(self, client):
+        """The production-safety fix: testing a candidate with no usable key must never report
+        success=True by silently substituting the mock provider - that would tell an operator a
+        real connection works when it does not. It must report the honest, actionable failure."""
         response = client.post("/configure/test", json={"provider": "groq"})
+
+        body = response.json()
+        assert body["effective_provider"] == "groq"
+        assert body["success"] is False
+        assert body["error"]
+        assert "credential" in body["error"].lower() or "key" in body["error"].lower()
+
+    def test_explicit_mock_provider_still_reports_success(self, client):
+        """Mock remains fully reachable as an explicit choice - only the SILENT fallback for a
+        real-but-uncredentialed provider was removed."""
+        response = client.post("/configure/test", json={"provider": "mock"})
 
         body = response.json()
         assert body["effective_provider"] == "mock"
@@ -420,3 +434,29 @@ class TestModelDiscovery:
         body = response.json()
         assert body["supported"] is True
         assert body["models"] == ["openai/gpt-oss-120b"]
+
+
+class TestHealthNeverMasqueradesAsConfigured:
+    """Test D: process-alive-but-no-usable-provider must be distinguishable from a genuinely live,
+    configured provider - /health's "mode" is the one field the .NET backend and the dashboard
+    both actually read (AiMicroservice.GetModeAsync), so it is the field that must never lie."""
+
+    def test_configuring_a_real_provider_with_no_key_reports_unconfigured_not_live(self, client):
+        applied = client.post("/configure", json={"provider": "groq"})
+        assert applied.json()["effective_provider"] == "groq"
+        assert applied.json()["is_configured"] is False
+
+        health = client.get("/health").json()
+        assert health["status"] == "healthy"  # the process itself is fine
+        assert health["mode"] == "unconfigured"  # but it cannot actually answer for real
+
+    def test_configuring_a_real_provider_with_a_real_key_reports_live(self, client):
+        applied = client.post("/configure", json={"provider": "groq", "api_key": "gsk_real_looking_key"})
+        assert applied.json()["is_configured"] is True
+
+        assert client.get("/health").json()["mode"] == "live"
+
+    def test_explicit_mock_still_reports_mock(self, client):
+        client.post("/configure", json={"provider": "mock"})
+
+        assert client.get("/health").json()["mode"] == "mock"
