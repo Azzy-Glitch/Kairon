@@ -63,6 +63,45 @@ public class PairingClientTests
     }
 
     [Fact]
+    public async Task PairingRequestOverRemotePlaintextHttpIsRefusedBeforeSending()
+    {
+        // A remote (non-loopback) plain-HTTP target must never even be contacted with a pairing
+        // code - a handler that would throw if invoked proves the request was never actually sent.
+        var handler = new ThrowingHandler();
+
+        var result = await KaironPairingClient.PairAsync("http://8.8.8.8:8000", "pair_x", handler: handler);
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public async Task PairingResponseReturningARemotePlaintextEndpointFailsSafely()
+    {
+        // The backend answers successfully, but the endpoint it hands back for future use is a
+        // remote, non-loopback plain-HTTP address - a compromised or misconfigured backend must
+        // never be able to redirect this SDK onto an insecure address just by returning one.
+        var handler = new StubHandler(HttpStatusCode.OK,
+            """{"apiKey":"krn_abc123","projectId":"11111111-1111-1111-1111-111111111111","pairingId":"22222222-2222-2222-2222-222222222222","endpoint":"http://8.8.8.8:8000"}""");
+
+        var result = await KaironPairingClient.PairAsync("http://localhost:8000", "pair_x", handler: handler);
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public async Task PairingResponseReturningARemoteHttpsEndpointIsAccepted()
+    {
+        // HTTPS is fine for a remote endpoint too - only plain HTTP is restricted to loopback.
+        var handler = new StubHandler(HttpStatusCode.OK,
+            """{"apiKey":"krn_abc123","projectId":"11111111-1111-1111-1111-111111111111","pairingId":"22222222-2222-2222-2222-222222222222","endpoint":"https://kairon.example.com"}""");
+
+        var result = await KaironPairingClient.PairAsync("http://localhost:8000", "pair_x", handler: handler);
+
+        Assert.True(result.Success);
+        Assert.Equal("https://kairon.example.com", result.Endpoint);
+    }
+
+    [Fact]
     public async Task UnreachableBackendReturnsFailureNotAnException()
     {
         var handler = new ThrowingHandler();

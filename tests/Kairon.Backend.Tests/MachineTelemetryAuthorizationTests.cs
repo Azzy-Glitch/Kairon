@@ -3,8 +3,10 @@ using Kairon.Backend.Controllers;
 using Kairon.Backend.DTOs;
 using Kairon.Backend.Models.Platform;
 using Kairon.Backend.Services;
+using Kairon.Backend.Services.Audit;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -23,7 +25,8 @@ public class MachineTelemetryAuthorizationTests
     {
         using var h = new TestHarness();
         var incident = h.SeedIncident();
-        var credentials = new ProjectCredentialService(h.Db, Options.Create(new PlatformSecurityOptions()), TimeProvider.System);
+        var credentials = new ProjectCredentialService(h.Db, Options.Create(new PlatformSecurityOptions()), TimeProvider.System,
+            new PlatformAuditService(h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
         var credential = (await credentials.CreateAsync(incident.ProjectId, "target", default))!;
         var other = (await credentials.CreateAsync(incident.ProjectId, "other", default))!;
         var machine = h.SeedMachine(hostName: "enrolled", agentCredentialHash: "test");

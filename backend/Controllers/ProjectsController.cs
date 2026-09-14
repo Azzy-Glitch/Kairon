@@ -65,12 +65,10 @@ public sealed class ProjectsController : ControllerBase
     public async Task<IActionResult> CreateCredential(Guid projectId, [FromBody] CreateCredentialRequest request,
         CancellationToken cancellationToken)
     {
-        var created = await _credentials.CreateAsync(projectId, request.Name, cancellationToken);
+        // Mutation and its mandatory audit record commit atomically inside CreateAsync itself - see
+        // its own remarks - so nothing further needs to (or should) save separately here.
+        var created = await _credentials.CreateAsync(projectId, request.Name, cancellationToken, Actor());
         if (created is null) return NotFound(new { error = "Project not found." });
-
-        _audit.Record("credential.created", Actor(), "credential", created.Id.ToString(), projectId,
-            data: new { created.Name, created.KeyPrefix });
-        await _db.SaveChangesAsync(cancellationToken);
 
         // The raw key is returned exactly once, here - only the prefix+hash are ever persisted.
         return Ok(new { created.Id, created.Name, created.KeyPrefix, ApiKey = created.ApiKey, created.CreatedAt });
@@ -89,7 +87,9 @@ public sealed class ProjectsController : ControllerBase
     [RequiresOperator]
     public async Task<IActionResult> RevokeCredential(Guid projectId, Guid credentialId, CancellationToken cancellationToken)
     {
-        var outcome = await _credentials.RevokeAsync(projectId, credentialId, cancellationToken);
+        // Mutation and its mandatory audit record commit atomically inside RevokeAsync itself (only
+        // when it actually revokes something on this call) - see its own remarks.
+        var outcome = await _credentials.RevokeAsync(projectId, credentialId, cancellationToken, Actor());
         switch (outcome)
         {
             case RevokeCredentialOutcome.NotFound:
@@ -100,8 +100,6 @@ public sealed class ProjectsController : ControllerBase
                     error = "This credential was modified by something else at the same moment - reload and try again."
                 });
         }
-        _audit.Record("credential.revoked", Actor(), "credential", credentialId.ToString(), projectId);
-        await _db.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
 

@@ -29,9 +29,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from uuid import UUID
-from urllib.parse import urlsplit
 
 from . import _credential_store
+from ._endpoint_security import is_endpoint_allowed
 
 _logger = logging.getLogger("kairon")
 _logger.addHandler(logging.NullHandler())
@@ -69,7 +69,7 @@ def format_exception(exc: BaseException) -> Optional[str]:
         return None
 
 
-def pair(endpoint: str, code: str, version: str = "1.0.1", timeout_seconds: float = 10.0) -> Optional[dict]:
+def pair(endpoint: str, code: str, version: str = "1.1.0", timeout_seconds: float = 10.0) -> Optional[dict]:
     """Redeems a one-time pairing code (minted by an operator in the Kairon UI) for a
     persistent project API key - the Python counterpart to Kairon.SDK's KaironPairingClient
     (docs/DESKTOP_SHELL.md). Returns a dict with "apiKey"/"projectId"/"endpoint"/"pairingId" on
@@ -77,8 +77,10 @@ def pair(endpoint: str, code: str, version: str = "1.0.1", timeout_seconds: floa
     contained here rather than raised, matching every other network path in this client.
     """
     try:
-        parsed = urlsplit(endpoint)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username or parsed.password:
+        # Checked before this SDK ever sends a pairing code anywhere - a caller-supplied endpoint
+        # is exactly as untrusted as one returned in a response (checked again below), and the
+        # pairing code itself is a secret worth protecting in transit.
+        if not is_endpoint_allowed(endpoint):
             return None
         url = endpoint.rstrip("/") + "/api/v1/sdk/pair"
         body = json.dumps({"code": code, "sdkType": "python", "version": version}).encode("utf-8")
@@ -96,8 +98,10 @@ def pair(endpoint: str, code: str, version: str = "1.0.1", timeout_seconds: floa
                 return None
             if not isinstance(result.get("pairingId"), str) or UUID(result["pairingId"]).int == 0:
                 return None
-            address = urlsplit(result.get("endpoint", ""))
-            if address.scheme not in ("http", "https") or not address.netloc or address.username or address.password:
+            # The returned endpoint is exactly as untrusted as any other network input - a
+            # compromised or misconfigured backend must never be able to redirect this SDK onto a
+            # remote plaintext address merely by including one in a pairing response.
+            if not is_endpoint_allowed(result.get("endpoint")):
                 return None
             return result
     except Exception:
@@ -166,7 +170,24 @@ def _resolve_configuration(
 
     stored = _credential_store.load_stored_config(path)
     if stored and stored.get("projectId"):
-        resolved_endpoint = endpoint or os.environ.get("KAIRON_ENDPOINT") or stored.get("endpoint") or DEFAULT_ENDPOINT
+        # Atomic with projectId/apiKey below, not merely "closest available value": a stored
+        # connection is (endpoint, projectId, apiKey) together, from the one pairing that produced
+        # it. Letting an explicit endpoint argument or an ambient KAIRON_ENDPOINT redirect traffic
+        # for this project/key pair to a DIFFERENT backend than the one it was actually paired
+        # against - while still authenticating as this project - is exactly the "hybrid" precedence
+        # this SDK must not have. To point an already-paired application at a different KAIRON
+        # backend, pass a fresh pairing_code (re-pairing) - the one explicit, documented way to
+        # relocate a stored connection - rather than an environment variable or constructor
+        # argument silently overriding half of it.
+        resolved_endpoint = stored.get("endpoint") or DEFAULT_ENDPOINT
+        # Defense in depth: a credential file predating this security policy, or one edited/
+        # corrupted on disk, must fail closed here rather than silently resume sending telemetry
+        # (and API-key-bearing requests) to a remote plaintext address.
+        if not is_endpoint_allowed(resolved_endpoint):
+            raise RuntimeError(
+                "Kairon endpoint rejected: plain HTTP is only allowed to localhost/127.0.0.0/8/::1. "
+                "Use HTTPS for any non-local KAIRON backend."
+            )
         pending_pairing_id = stored.get("pendingConfirmationPairingId")
         if pending_pairing_id and stored.get("apiKey"):
             # Recovers a confirmation whose earlier attempt was lost (network failure, or the
@@ -190,7 +211,13 @@ def _resolve_configuration(
             "configuration can be reused."
         )
 
-    return endpoint or DEFAULT_ENDPOINT, project_id, api_key
+    resolved_endpoint = endpoint or DEFAULT_ENDPOINT
+    if not is_endpoint_allowed(resolved_endpoint):
+        raise RuntimeError(
+            "Kairon endpoint rejected: plain HTTP is only allowed to localhost/127.0.0.0/8/::1. "
+            "Use HTTPS for any non-local KAIRON backend."
+        )
+    return resolved_endpoint, project_id, api_key
 
 
 def _confirm_pairing(
@@ -212,6 +239,12 @@ def _confirm_pairing(
     full process restart to recover from; a longer-lived outage is instead recovered by the pending
     marker _resolve_configuration persists, picked up on a later run.
     """
+    # Never validated only once at the top of the flow - a stored/recovered endpoint reaches this
+    # call independently of pair() (e.g. retrying a pending confirmation on a later run), so it is
+    # re-checked here too rather than trusted because it was checked somewhere earlier.
+    if not is_endpoint_allowed(endpoint):
+        return False
+
     body = json.dumps({"apiKey": api_key}).encode("utf-8")
     url = endpoint.rstrip("/") + f"/api/v1/sdk/pair/{pairing_id}/confirm"
     for attempt in range(max(1, attempts)):
@@ -549,6 +582,11 @@ class Kairon:
     def _send(self, path: str, payload: dict) -> bool:
         if not self.enabled:
             return False
+        # Final defense-in-depth gate, right at actual network egress: self.endpoint is a plain
+        # public attribute (nothing stops host code from reassigning it after construction), so
+        # every send re-checks it rather than trusting whatever validation ran once at __init__.
+        if not is_endpoint_allowed(self.endpoint):
+            return self._delivery_failure("Endpoint rejected: insecure transport")
         try:
             request = urllib.request.Request(
                 f"{self.endpoint}/{path}", data=json.dumps(payload, default=str).encode("utf-8"),

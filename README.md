@@ -8,10 +8,10 @@ operator through approval, remediation, and verification.
 
 | Current release | Platform | Core stack | License |
 |---|---|---|---|
-| **1.0.1** | Windows x64 | .NET 10, React 18/Vite 7, Python/FastAPI | Apache-2.0 |
+| **1.1.0** | Windows x64 | .NET 10, React 18/Vite 7, Python/FastAPI | Apache-2.0 |
 
 Every .NET executable produced from a Git checkout includes the source commit in its product
-version, for example `1.0.1+d8d46f68...`. This distinguishes builds that share the same release
+version, for example `1.1.0+d8d46f68...`. This distinguishes builds that share the same release
 version.
 
 ## What KAIRON does
@@ -133,7 +133,7 @@ The official script performs a clean frontend build, self-contained `win-x64` pu
 PyInstaller packaging, and Inno Setup compilation. The result is:
 
 ```text
-artifacts\installer\Kairon-Setup-1.0.1-win-x64.exe
+artifacts\installer\Kairon-Setup-1.1.0-win-x64.exe
 ```
 
 Pass `-SkipInstallerCompile` to produce only `artifacts\windows-package`. Build dependencies are
@@ -164,16 +164,26 @@ current operating-system user. Later runs load the stored connection automatical
 code should be omitted after it has been redeemed.
 
 The pairing code is single-use, expires after 10 minutes, and is not a telemetry API key. Keep it
-private and never commit it. Pairing defaults to `http://localhost:8000`; supply the constructor's
-`endpoint` argument explicitly when connecting to a non-local KAIRON backend.
+private and never commit it. Pairing defaults to `http://localhost:8000`. Plain HTTP is only ever
+accepted to a loopback destination (`localhost`/`127.0.0.0/8`/`::1`); connecting to any non-local
+KAIRON backend requires HTTPS, and both SDKs refuse a remote plaintext endpoint before sending
+anything — supply the constructor's `endpoint` argument explicitly (as `https://...`) when
+connecting to a non-local KAIRON backend.
 
 Pairing does **not** create or modify environment variables. Application name, service name, and
 environment remain application configuration. Explicit constructor values and
-`KAIRON_ENDPOINT`/`KAIRON_PROJECT_ID`/`KAIRON_API_KEY` take precedence over the stored connection.
+`KAIRON_ENDPOINT`/`KAIRON_PROJECT_ID`/`KAIRON_API_KEY` are used only for first-time onboarding,
+before anything has been stored. Once a pairing has completed, the stored connection —
+endpoint, project ID, and API key together — is used atomically on every later run; it is never
+mixed field-by-field with an explicit value or environment variable from a different source. To
+change an already-paired connection, redeem a fresh pairing code: re-pairing always replaces the
+whole stored connection as one unit.
 
-Until a valid provider connection is configured, KAIRON can use deterministic mock analysis. The
-Settings page labels a mock fallback as **not connected**; it is not proof that the selected
-external provider or key works.
+Until a real AI provider is configured, KAIRON reports an explicit **provider not configured**
+state — it never silently substitutes mock analysis for a missing or unreachable provider, and a
+provider outage is reported distinctly from "not configured". Deterministic mock analysis exists
+only for local development/testing and must be explicitly selected; it is never a hidden
+production fallback.
 
 ## Connect a Python FastAPI application
 
@@ -301,7 +311,7 @@ editing source or restarting KAIRON.
 | Alibaba Qwen / DashScope | `qwen` | `qwen-plus` |
 | Google Gemini | `gemini` | `gemini-2.5-flash-lite` |
 | Groq | `groq` | `openai/gpt-oss-120b` |
-| Deterministic fallback | `mock` | internal |
+| Deterministic mock (explicit selection only) | `mock` | internal |
 
 Provider keys are encrypted at rest with ASP.NET Core Data Protection and are never returned to
 the frontend after saving. A custom endpoint must be an absolute HTTP(S) URL. HTTPS is required
@@ -530,12 +540,17 @@ python -m pip install -e ".[test]"
 pytest -q
 ```
 
-The latest full local run for version 1.0.1 passed **737 tests**:
+The latest full local run for version 1.1.0 passed **1179 tests**:
 
-- 438 .NET tests
-- 121 frontend tests
-- 139 AI-service tests
-- 39 Python SDK tests
+- 722 .NET tests (Backend, .NET SDK, Agent, UserAgent, Desktop) — the Backend suite's two
+  SQL-Server-backed tests require a real SQL Server/LocalDB instance reachable via
+  `KAIRON_TEST_SQLSERVER` (or `(localdb)\MSSQLLocalDB`); they are skipped automatically on a
+  non-Windows machine with neither available.
+- 181 frontend tests
+- 148 AI-service tests
+- 128 Python SDK tests
+
+(Earlier published counts for 1.0.1 - 737 tests - are historical and are not current.)
 
 CI runs the solution tests, frontend tests/build/audit, Python tests/package audit/build, NuGet
 vulnerability inspection, SDK packaging, and both Docker image builds. The Windows installer

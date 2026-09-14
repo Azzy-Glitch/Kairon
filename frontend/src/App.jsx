@@ -18,6 +18,7 @@ import { SourceFilterProvider } from './lib/SourceFilterContext';
 import { ThemeProvider } from './lib/ThemeContext';
 import { PollingPreferenceProvider } from './lib/PollingPreferenceContext';
 import { useHealth } from './hooks/useHealth';
+import { describeAiStatus } from './lib/aiStatus';
 import { useDashboard } from './hooks/useIncidents';
 import { relativeTime } from './services/incidentService';
 import { formatAbsoluteTime } from './lib/labels';
@@ -114,6 +115,7 @@ function AppShell() {
 
   // Component-level health, so the sidebar status block can say *which* subsystem is down.
   const { health } = useHealth();
+  const aiStatus = describeAiStatus(health);
   // Incident-level severity, so the header pill reflects what's actually open rather than just
   // whether the backend/AI/database processes are up.
   const dashboard = useDashboard();
@@ -181,8 +183,8 @@ function AppShell() {
                 <span className="sidebar-status-row-label">AI service</span>
                 <span className={`sidebar-status-row-value ${health.aiService ? 'good' : 'bad'}`}>
                   {health.aiService ? 'Operational' : 'Offline'}
-                  {health.aiService && health.aiMode && (
-                    <span className="sidebar-status-mode">{health.aiMode} mode</span>
+                  {health.aiService && (
+                    <span className="sidebar-status-mode">{aiStatus.short}</span>
                   )}
                 </span>
               </div>

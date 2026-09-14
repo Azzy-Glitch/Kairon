@@ -25,6 +25,12 @@ public static class KaironPairingClient
     public static async Task<KaironPairingResult> PairAsync(string backendEndpoint, string pairingCode,
         CancellationToken cancellationToken = default, HttpMessageHandler? handler = null)
     {
+        // Checked before this SDK ever sends a pairing code anywhere - a caller-supplied endpoint
+        // is exactly as untrusted as one returned in a response (see the check on paired.Endpoint
+        // below), and the pairing code itself is a secret worth protecting in transit.
+        if (!KaironEndpointSecurity.IsAllowed(backendEndpoint))
+            return new KaironPairingResult(false, "Refusing to pair over an insecure endpoint: plain HTTP is only allowed to localhost/127.0.0.0/8/::1. Use HTTPS for a non-local KAIRON backend.");
+
         try
         {
             using var client = new HttpClient(handler ?? new HttpClientHandler(), disposeHandler: true)
@@ -33,7 +39,7 @@ public static class KaironPairingClient
                 Timeout = TimeSpan.FromSeconds(10)
             };
             var version = typeof(KaironPairingClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
-                .InformationalVersion ?? "1.0.1";
+                .InformationalVersion ?? "1.1.0";
 
             var response = await client.PostAsJsonAsync("api/v1/sdk/pair",
                 new { code = pairingCode, sdkType = "dotnet", version }, cancellationToken).ConfigureAwait(false);
@@ -42,10 +48,11 @@ public static class KaironPairingClient
                 return new KaironPairingResult(false, "Pairing code was rejected.");
 
             var paired = await response.Content.ReadFromJsonAsync<PairingWireResponse>(cancellationToken).ConfigureAwait(false);
+            // The returned endpoint is exactly as untrusted as any other network input - a
+            // compromised or misconfigured backend must never be able to redirect this SDK onto a
+            // remote plaintext address merely by including one in a pairing response.
             return paired is null || paired.ProjectId == Guid.Empty || string.IsNullOrWhiteSpace(paired.ApiKey) ||
-                paired.PairingId == Guid.Empty ||
-                !Uri.TryCreate(paired.Endpoint, UriKind.Absolute, out var address) ||
-                (address.Scheme != Uri.UriSchemeHttp && address.Scheme != Uri.UriSchemeHttps) || !string.IsNullOrEmpty(address.UserInfo)
+                paired.PairingId == Guid.Empty || !KaironEndpointSecurity.IsAllowed(paired.Endpoint)
                 ? new KaironPairingResult(false, "Pairing response was invalid.")
                 : new KaironPairingResult(true, null, paired.ProjectId, paired.ApiKey, paired.Endpoint, paired.PairingId);
         }
@@ -72,6 +79,12 @@ public static class KaironPairingClient
     public static async Task<bool> ConfirmAsync(string backendEndpoint, Guid pairingId, string apiKey,
         CancellationToken cancellationToken = default, HttpMessageHandler? handler = null, int attempts = 2)
     {
+        // Never validated only once at the top of the flow - a stored/recovered endpoint reaches
+        // this call independently of PairAsync (e.g. retrying a pending confirmation on a later
+        // run), so it is re-checked here too rather than trusted because it was checked somewhere
+        // earlier.
+        if (!KaironEndpointSecurity.IsAllowed(backendEndpoint)) return false;
+
         using var client = new HttpClient(handler ?? new HttpClientHandler(), disposeHandler: true)
         {
             BaseAddress = new Uri(backendEndpoint.TrimEnd('/') + "/"),

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { devopsApi } from '../api/index';
 import { useHealth } from '../hooks/useHealth';
+import { describeAiStatus } from '../lib/aiStatus';
 import Button from './ui/Button';
 import { IconBug, IconLink, IconPredict, IconSparkles, IconServer, IconShield } from './Icons';
 
@@ -41,6 +42,7 @@ export default function DashboardOverview({ onSelectTab }) {
   // unavailable, or in this case IS available and genuinely zero).
   const [stats, setStats] = useState(null);
   const { health } = useHealth();
+  const aiStatus = describeAiStatus(health);
 
   useEffect(() => {
     devopsApi.getStats().then(setStats).catch(() => setStats(null));
@@ -68,15 +70,9 @@ export default function DashboardOverview({ onSelectTab }) {
         <HeroStatTile
           icon={<IconServer className="w-5 h-5" />}
           label="AI inference engine"
-          value={health.aiMode === 'unconfigured' ? 'Not configured' : health.aiService ? 'Operational' : 'Offline'}
-          sub={
-            health.aiMode === 'unconfigured'
-              ? 'No AI provider set up yet'
-              : health.aiMode && health.aiMode !== 'unknown'
-                ? `Provider: ${health.aiMode}`
-                : ' '
-          }
-          tone={health.aiMode === 'unconfigured' ? 'attention' : health.aiService ? 'good' : 'urgent'}
+          value={aiStatus.short}
+          sub={aiStatus.label}
+          tone={aiStatus.tone}
         />
         <HeroStatTile
           icon={<IconSparkles className="w-5 h-5" />}

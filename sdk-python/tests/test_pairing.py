@@ -104,3 +104,34 @@ def test_valid_json_without_usable_credentials_is_rejected(pairing_server, body)
 
 def test_invalid_endpoint_is_contained_before_request_creation():
     assert pair("http://[broken", "pair_x") is None
+
+
+def test_pairing_request_over_remote_plaintext_http_is_refused_before_sending(pairing_server):
+    # A remote (non-loopback) plain-HTTP target must never even be contacted with a pairing code -
+    # the request itself is refused, not merely the response afterward.
+    assert pair("http://8.8.8.8:8000", "pair_x", timeout_seconds=1.0) is None
+    assert _PairingHandler.received == [], "the pairing code must never have been sent at all"
+
+
+def test_pairing_response_returning_a_remote_plaintext_endpoint_fails_safely(pairing_server):
+    # The backend answers successfully, but the endpoint it hands back for future use is a remote,
+    # non-loopback plain-HTTP address - a compromised or misconfigured backend must never be able
+    # to redirect this SDK onto an insecure address just by returning one.
+    _PairingHandler.body_to_return = (
+        b'{"apiKey": "krn_abc123", "projectId": "11111111-1111-1111-1111-111111111111", '
+        b'"pairingId": "22222222-2222-2222-2222-222222222222", "endpoint": "http://8.8.8.8:8000"}'
+    )
+
+    assert pair(pairing_server, "pair_x") is None
+
+
+def test_pairing_response_returning_a_remote_https_endpoint_is_accepted(pairing_server):
+    # HTTPS is fine for a remote endpoint too - only plain HTTP is restricted to loopback.
+    _PairingHandler.body_to_return = (
+        b'{"apiKey": "krn_abc123", "projectId": "11111111-1111-1111-1111-111111111111", '
+        b'"pairingId": "22222222-2222-2222-2222-222222222222", "endpoint": "https://kairon.example.com"}'
+    )
+
+    result = pair(pairing_server, "pair_x")
+    assert result is not None
+    assert result["endpoint"] == "https://kairon.example.com"

@@ -296,7 +296,7 @@ function PythonGuide({ CodeBlock, projectId, onTelemetry }) {
             <li><code>KAIRON_API_KEY</code> — the project telemetry key.</li>
             <li><code>KAIRON_ENVIRONMENT</code> — your application's environment.</li>
           </ul>
-          <p className="sdk-hint">Explicit values always take priority over a pairing code or a stored connection. Keep your API key private. Never commit it to Git.</p>
+          <p className="sdk-hint">These values are used only the first time this app runs, before it has anything stored. Once a connection is stored — from a pairing code or from these values — the endpoint, project ID and API key are always used together as that one stored connection; they're never mixed with a different explicit value or environment variable afterward. To change a stored connection, redeem a fresh pairing code — that always replaces the whole stored connection. Keep your API key private. Never commit it to Git.</p>
         </details>
       </SubStep>
       <SubStep number="3" title="Add KAIRON to your application">
@@ -324,7 +324,7 @@ function DotNetGuide({ CodeBlock, projectId, onTelemetry }) {
       <p className="sdk-tab-intro">Connect an ASP.NET Core .NET 10 application to KAIRON.</p>
       <SubStep number="1" title="Install">
         <p>From your application's release package source:</p>
-        <CodeBlock copyKey="dotnet-install" code={'dotnet add package Kairon.SDK --version 1.0.1 --source "<package-feed-or-local-nupkg-folder>"'} />
+        <CodeBlock copyKey="dotnet-install" code={'dotnet add package Kairon.SDK --version 1.1.0 --source "<package-feed-or-local-nupkg-folder>"'} />
         <p className="sdk-hint">There is no public NuGet feed for this release — use the package feed or local <code>.nupkg</code> folder your KAIRON release owner supplies. For local development from a source checkout instead, see Advanced.</p>
       </SubStep>
       <SubStep number="2" title="Connect with your pairing code">
@@ -341,7 +341,7 @@ function DotNetGuide({ CodeBlock, projectId, onTelemetry }) {
             <li><code>KAIRON_API_KEY</code> — the project telemetry key.</li>
             <li><code>KAIRON_ENVIRONMENT</code> — your application's environment.</li>
           </ul>
-          <p className="sdk-hint">Explicit values always take priority over a pairing code or a stored connection. Keep your API key private. Never commit it to Git.</p>
+          <p className="sdk-hint">These values are used only the first time this app runs, before it has anything stored. Once a connection is stored — from a pairing code or from these values — the endpoint, project ID and API key are always used together as that one stored connection; they're never mixed with a different explicit value or environment variable afterward. To change a stored connection, redeem a fresh pairing code — that always replaces the whole stored connection. Keep your API key private. Never commit it to Git.</p>
         </details>
       </SubStep>
       <SubStep number="3" title="Add KAIRON to ASP.NET Core">
@@ -432,6 +432,7 @@ function SecurityCard() {
           <li>Never put pairing codes into source code.</li>
           <li>Never use a Groq key as an application telemetry key.</li>
           <li>Never expose project credentials in screenshots or logs.</li>
+          <li>Plain HTTP is only accepted to a loopback backend (<code>localhost</code>/<code>127.0.0.0/8</code>/<code>::1</code>). Connecting to any non-local KAIRON backend requires HTTPS — the SDK refuses a remote plaintext endpoint before sending anything.</li>
         </ul>
         <p>Use environment variables or your deployment's secret manager.</p>
       </div>

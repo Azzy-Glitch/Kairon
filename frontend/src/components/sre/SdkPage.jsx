@@ -28,10 +28,61 @@ export const COMPLETION_RECOVERY_MAX_ATTEMPTS = 3;
 // return from a plain status poll.
 const REPAIR_STORAGE_KEY = 'kairon:activeRepair';
 
+// Every status this UI has ever written to storage - a value outside this set means the blob is
+// foreign/corrupted/from a future version this build does not understand, never a state to trust.
+const KNOWN_REPAIR_STATUSES = new Set([
+  'Pending', 'AwaitingConfirmation', 'Completing', 'RecoveringCompletion',
+  'Completed', 'CompletionFailed', 'CompletionUnknown', 'Expired', 'Cancelled', 'ConfirmationTimedOut',
+]);
+
+/**
+ * Parses and sanitizes whatever is actually in sessionStorage before anything in this component
+ * ever sees it. A legacy write from before the pairing code was excluded from storage (see
+ * saveStoredRepair's own remarks) - or a value tampered with, corrupted, or foreign to this
+ * origin - must never be partially trusted: only an allow-listed set of non-secret fields, each
+ * shape-checked, is ever restored, `code` is explicitly stripped even if present, and every other
+ * unrecognized field is dropped. The sanitized result is written straight back, so the STORED
+ * representation itself stops carrying whatever was rejected, not merely this one in-memory read.
+ */
 function loadStoredRepair() {
   try {
     const raw = sessionStorage.getItem(REPAIR_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+
+    const { projectId, credentialId, credentialName, pairingId, expiresAt, status,
+      confirmationDeadline, rebindCount, completionError, recoveryAttempts } = parsed;
+
+    // The identifiers/status this whole object is keyed on must themselves be well-formed, or the
+    // entire blob is treated as nothing stored - never partially restored around a broken core.
+    if (typeof projectId !== 'string' || !projectId) return null;
+    if (typeof pairingId !== 'string' || !pairingId) return null;
+    if (typeof credentialId !== 'string' || !credentialId) return null;
+    if (typeof status !== 'string' || !KNOWN_REPAIR_STATUSES.has(status)) return null;
+    if (expiresAt !== undefined && typeof expiresAt !== 'string') return null;
+    if (confirmationDeadline !== undefined && typeof confirmationDeadline !== 'number') return null;
+
+    // Explicit allow-list, not "everything except code": an unrecognized field (a stray secret
+    // this build doesn't even know the name of, a future version's field, a tampered addition)
+    // never survives either, exactly like `code` never does - the same standard applied to any
+    // field, named or not.
+    const sanitized = { projectId, credentialId, pairingId, status };
+    if (typeof credentialName === 'string') sanitized.credentialName = credentialName;
+    if (expiresAt !== undefined) sanitized.expiresAt = expiresAt;
+    if (confirmationDeadline !== undefined) sanitized.confirmationDeadline = confirmationDeadline;
+    if (typeof rebindCount === 'number') sanitized.rebindCount = rebindCount;
+    if (typeof completionError === 'string') sanitized.completionError = completionError;
+    if (typeof recoveryAttempts === 'number') sanitized.recoveryAttempts = recoveryAttempts;
+
+    try {
+      sessionStorage.setItem(REPAIR_STORAGE_KEY, JSON.stringify(sanitized));
+    } catch {
+      // Best-effort rewrite - a full/blocked sessionStorage must never block returning the
+      // already-sanitized in-memory value below.
+    }
+    return sanitized;
   } catch {
     return null;
   }

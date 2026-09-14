@@ -12,6 +12,7 @@ import { groupByService, relativeTime } from '../../services/incidentService';
 import { formatAbsoluteTime } from '../../lib/labels';
 import { isTerminal } from '../../types/incident';
 import { IconServer, IconShield, IconZap, IconBug, IconSparkles, IconHistory } from '../Icons';
+import { describeAiStatus } from '../../lib/aiStatus';
 
 /**
  * Overview (Kairon frontend redesign brief, section 8): a real dashboard - four key live numbers,
@@ -26,6 +27,7 @@ export default function SreDashboard({ onOpenIncidents }) {
 
   const summary = dashboard.data;
   const health = summary?.health;
+  const aiStatus = describeAiStatus(health);
   const criticalCount = summary?.severityDistribution?.Critical || 0;
   const highCount = summary?.severityDistribution?.High || 0;
   // Must never read "Healthy" while a critical/high incident is open, even if every subsystem is
@@ -86,9 +88,9 @@ export default function SreDashboard({ onOpenIncidents }) {
         <PrimaryStatCard
           icon={<IconSparkles className="w-5 h-5" />}
           label="AI service"
-          value={health?.aiService ? 'Operational' : 'Offline'}
-          sub={health?.aiMode ? `Provider: ${health.aiMode}` : ' '}
-          tone={health?.aiService ? 'good' : 'urgent'}
+          value={aiStatus.short}
+          sub={aiStatus.label}
+          tone={aiStatus.tone}
         />
       </div>
 

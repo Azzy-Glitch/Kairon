@@ -8,7 +8,7 @@
 ; layout, validate-before-reconfigure, recovery policy, SCM verification at every step) is
 ; unchanged in substance from the source branch - it did not need adapting.
 #define MyAppName "Kairon"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "Kairon"
 #ifndef PackageRoot
   #define PackageRoot "..\artifacts\windows-package"

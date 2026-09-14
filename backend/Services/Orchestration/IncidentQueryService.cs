@@ -349,15 +349,29 @@ public class IncidentQueryService : IIncidentQueryService
                     QueueDepth = m.QueueDepth
                 }).ToList()
             },
-            Health = new SystemHealthDto
-            {
-                Backend = true,
-                Database = databaseHealthy,
-                AiService = _ai.IsAvailable,
-                DetectionEnabled = _detection.Enabled,
-                RemediationEnabled = _remediation.Enabled,
-                AiMode = await _ai.GetModeAsync(cancellationToken)
-            }
+            Health = await BuildHealthAsync(databaseHealthy, cancellationToken)
+        };
+    }
+
+    /// <summary>Builds the SAME SystemHealthDto shape HealthStatusController.Status returns, with
+    /// the SAME processAlive/providerConfigured/providerReachable distinction - this endpoint must
+    /// never conflate them differently than the dedicated health endpoint does. Previously this
+    /// set AiService straight from the provider-reachability circuit breaker (_ai.IsAvailable),
+    /// which defaults to true until a real request fails - meaning a genuinely DOWN AI process
+    /// (GetModeAsync returning "unavailable") could still be reported here as "Operational" simply
+    /// because nothing had been attempted against it yet.</summary>
+    private async Task<SystemHealthDto> BuildHealthAsync(bool databaseHealthy, CancellationToken cancellationToken)
+    {
+        var aiMode = await _ai.GetModeAsync(cancellationToken);
+        return new SystemHealthDto
+        {
+            Backend = true,
+            Database = databaseHealthy,
+            AiService = aiMode != "unavailable",
+            DetectionEnabled = _detection.Enabled,
+            RemediationEnabled = _remediation.Enabled,
+            AiMode = aiMode,
+            AiProviderReachable = _ai.IsAvailable
         };
     }
 

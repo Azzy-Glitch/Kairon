@@ -87,7 +87,13 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         if (filter.ProjectId.HasValue) query = query.Where(t => t.ProjectId == filter.ProjectId.Value);
         if (filter.MachineId.HasValue) query = query.Where(t => t.MachineId == filter.MachineId.Value);
         if (filter.Enabled.HasValue) query = query.Where(t => t.Enabled == filter.Enabled.Value);
-        if (!string.IsNullOrWhiteSpace(filter.Environment)) query = query.Where(t => t.Environment == filter.Environment);
+        // Normalized, not the raw display value: runtime resolution and the enabled-uniqueness
+        // index both key off EnvironmentNormalized (RemediationTargetResolver, AppDbContext's own
+        // filtered index) - filtering this list by the case-sensitive Environment column instead
+        // would let "Production" and "production" behave inconsistently between this management
+        // view and what actually resolves at runtime, exactly the drift Phase 6 closes.
+        if (!string.IsNullOrWhiteSpace(filter.Environment))
+            query = query.Where(t => t.EnvironmentNormalized == filter.Environment.ToLowerInvariant());
 
         var entities = await query.OrderByDescending(t => t.UpdatedAt).ToListAsync(ct);
         return await ToResponsesAsync(entities, ct);

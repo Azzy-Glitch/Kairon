@@ -257,10 +257,30 @@ public class SystemHealthDto
 {
     public bool Backend { get; set; } = true;
     public bool Database { get; set; }
+
+    /// <summary>Process liveness only - the AI FastAPI service answered /health at all. This is
+    /// deliberately independent of whether a real provider is configured or currently reachable
+    /// (AiMode/AiProviderReachable below) - a process that is alive but has no usable provider must
+    /// still report AiService=true here, or a fresh install with no AI configured would look like a
+    /// backend startup failure instead of "AI just isn't set up yet".</summary>
     public bool AiService { get; set; }
+
     public bool DetectionEnabled { get; set; }
     public bool RemediationEnabled { get; set; }
+
+    /// <summary>"mock" (explicit test/dev choice), "unconfigured" (a real provider was selected but
+    /// has no usable credential), a real provider name (configured and was working last time it was
+    /// actually used), "unknown" (the process answered but with an unparseable response), or
+    /// "unavailable" (the process itself could not be reached).</summary>
     public string AiMode { get; set; } = "unknown";
+
+    /// <summary>Whether the configured provider was reachable the last time it was actually
+    /// invoked (AiMicroservice's own circuit breaker) - distinct from AiMode: a provider can be
+    /// fully configured (AiMode names it) yet currently unreachable (a real outage), which is a
+    /// different, actionable state from "no provider configured at all". Always true when AiMode is
+    /// "mock" (nothing to reach) and has no independent meaning when AiMode is "unconfigured"
+    /// (nothing was ever attempted).</summary>
+    public bool AiProviderReachable { get; set; } = true;
 
     // Persistence detail (docs/DESKTOP_SHELL.md) - additive; null/0 under a provider or state
     // where a field genuinely doesn't apply (e.g. DatabaseSizeBytes for SqlServer).

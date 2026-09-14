@@ -27,6 +27,12 @@ public static class KaironExtensions
                         .GetRequiredService<IOptions<KaironOptions>>()
                         .Value;
 
+                // This is a SEPARATE entry point from KaironClient's own ResolveAsync - a host
+                // wiring AddKairon directly from its own configuration never goes through that
+                // resolution path at all, so the endpoint must be validated here too rather than
+                // assumed safe because "some other code path already checks this".
+                KaironEndpointSecurity.EnsureAllowed(options.Endpoint);
+
                 client.BaseAddress =
                     new Uri(
                         options.Endpoint.TrimEnd('/') + "/");

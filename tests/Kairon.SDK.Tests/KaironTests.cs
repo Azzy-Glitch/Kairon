@@ -101,6 +101,53 @@ public class KaironTests : IDisposable
     }
 
     [Fact]
+    public void ExplicitRemotePlaintextHttpConfigurationIsRefused()
+    {
+        // No pairing code involved at all here - a remote plain-HTTP endpoint supplied as ordinary
+        // configuration (not via pairing) must be refused just the same, before it is ever used to
+        // deliver telemetry.
+        var ex = Assert.Throws<InvalidOperationException>(() => new KaironClient(
+            endpoint: "http://8.8.8.8:8000",
+            projectId: Guid.Parse("44444444-4444-4444-4444-444444444444"),
+            apiKey: "krn_x",
+            configPath: ConfigPath));
+
+        Assert.Contains("endpoint rejected", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(ConfigPath));
+    }
+
+    [Fact]
+    public void ExplicitRemoteHttpsConfigurationIsAccepted()
+    {
+        using var kairon = new KaironClient(
+            endpoint: "https://kairon.example.com",
+            projectId: Guid.Parse("44444444-4444-4444-4444-444444444444"),
+            apiKey: "krn_x",
+            configPath: ConfigPath);
+
+        Assert.Equal("https://kairon.example.com", kairon.Endpoint);
+    }
+
+    [Fact]
+    public void EnvironmentRemotePlaintextHttpConfigurationIsRefused()
+    {
+        Environment.SetEnvironmentVariable("KAIRON_ENDPOINT", "http://10.0.0.20:8000");
+        Environment.SetEnvironmentVariable("KAIRON_PROJECT_ID", "55555555-5555-5555-5555-555555555555");
+        Environment.SetEnvironmentVariable("KAIRON_API_KEY", "krn_from_env");
+        try
+        {
+            var ex = Assert.Throws<InvalidOperationException>(() => new KaironClient(configPath: ConfigPath));
+            Assert.Contains("endpoint rejected", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("KAIRON_ENDPOINT", null);
+            Environment.SetEnvironmentVariable("KAIRON_PROJECT_ID", null);
+            Environment.SetEnvironmentVariable("KAIRON_API_KEY", null);
+        }
+    }
+
+    [Fact]
     public void EnvironmentVariablesAreUsedWhenNoExplicitValueIsGiven()
     {
         Environment.SetEnvironmentVariable("KAIRON_ENDPOINT", "http://127.0.0.1:8123");

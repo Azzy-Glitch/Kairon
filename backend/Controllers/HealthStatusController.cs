@@ -59,10 +59,14 @@ public class HealthStatusController : ControllerBase
         {
             Backend = true,
             Database = database,
-            AiService = aiMode is not ("unavailable" or "unknown") && _ai.IsAvailable,
+            // Process liveness only - see AiService's own remarks. "unavailable" is the one AiMode
+            // value that means the AI process itself could not be reached at all; every other
+            // value (including "unconfigured") means it answered.
+            AiService = aiMode != "unavailable",
             DetectionEnabled = _detection.Enabled,
             RemediationEnabled = _remediation.Enabled,
             AiMode = aiMode,
+            AiProviderReachable = _ai.IsAvailable,
             DatabaseProvider = _persistence.Provider,
             DatabaseSizeBytes = DatabaseSizeBytes(),
             MaintenanceStatus = _maintenance.Status,

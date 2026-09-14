@@ -3,6 +3,7 @@ using Kairon.Backend.Configuration;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models.Platform;
 using Kairon.Backend.Services;
+using Kairon.Backend.Services.Audit;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Abstractions;
@@ -217,7 +218,8 @@ public sealed class TelemetryKeyEnforcementTests : IDisposable
     private readonly TestHarness _h = new();
 
     private IProjectCredentialService Service(bool require) => new ProjectCredentialService(
-        _h.Db, TestHarness.Opt(new PlatformSecurityOptions { RequireTelemetryKey = require }), TimeProvider.System);
+        _h.Db, TestHarness.Opt(new PlatformSecurityOptions { RequireTelemetryKey = require }), TimeProvider.System,
+        new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
 
     [Fact]
     public async Task DisabledKeyRequirementStillRejectsAnUnregisteredProject()

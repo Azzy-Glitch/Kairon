@@ -184,6 +184,9 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
             // above) so a LATER run - even with no pairingCode at all - can retry it. Never fatal
             // here: the credential itself is already valid and saved either way.
 
+            // Already validated inside KaironPairingClient.PairAsync - re-checked here too rather
+            // than trusted, matching every other endpoint this method resolves.
+            KaironEndpointSecurity.EnsureAllowed(paired.Endpoint);
             return new KaironOptions { Endpoint = paired.Endpoint!, ProjectId = paired.ProjectId, ApiKey = paired.ApiKey! };
         }
 
@@ -194,7 +197,20 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
         var stored = KaironCredentialStore.Load(path);
         if (stored is { } credential)
         {
-            var storedEndpoint = endpoint ?? Environment.GetEnvironmentVariable("KAIRON_ENDPOINT") ?? credential.Endpoint;
+            // Atomic with ProjectId/ApiKey below, not merely "closest available value": a stored
+            // connection is (Endpoint, ProjectId, ApiKey) together, from the one pairing that
+            // produced it. Letting an explicit endpoint argument or an ambient KAIRON_ENDPOINT
+            // redirect traffic for this project/key pair to a DIFFERENT backend than the one it
+            // was actually paired against - while still authenticating as this project - is
+            // exactly the "hybrid" precedence this SDK must not have. To point an already-paired
+            // application at a different KAIRON backend, pass a fresh pairingCode (re-pairing) -
+            // the one explicit, documented way to relocate a stored connection - rather than an
+            // environment variable or constructor argument silently overriding half of it.
+            var storedEndpoint = credential.Endpoint;
+            // Defense in depth: a credential file predating this security policy, or one edited/
+            // corrupted on disk, must fail closed here rather than silently resume sending
+            // telemetry (and API-key-bearing requests) to a remote plaintext address.
+            KaironEndpointSecurity.EnsureAllowed(storedEndpoint);
 
             if (credential.PendingConfirmationPairingId is { } pendingId)
             {
@@ -229,9 +245,12 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
                 "KAIRON_PROJECT_ID/KAIRON_API_KEY, pass pairingCode from a Kairon-generated pairing " +
                 "code, or pair once so the stored configuration can be reused.");
 
+        var resolvedEndpoint = endpoint ?? "http://localhost:8000";
+        KaironEndpointSecurity.EnsureAllowed(resolvedEndpoint);
+
         return new KaironOptions
         {
-            Endpoint = endpoint ?? "http://localhost:8000",
+            Endpoint = resolvedEndpoint,
             ProjectId = resolvedProjectId.Value,
             ApiKey = apiKey
         };

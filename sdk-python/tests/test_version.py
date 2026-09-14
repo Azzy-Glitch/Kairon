@@ -10,7 +10,7 @@ import kairon
 from kairon.client import pair
 
 
-EXPECTED_RELEASE_VERSION = "1.0.1"
+EXPECTED_RELEASE_VERSION = "1.1.0"
 SDK_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = SDK_ROOT.parent
 

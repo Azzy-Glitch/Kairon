@@ -1,6 +1,7 @@
 import DatabaseSettings from './DatabaseSettings';
 import React, { useEffect, useState } from 'react';
 import { useHealth } from '../../hooks/useHealth';
+import { describeAiStatus } from '../../lib/aiStatus';
 import { useTheme } from '../../lib/ThemeContext';
 import { POLLING_PRESETS, usePollingPreference } from '../../lib/PollingPreferenceContext';
 import Tabs from '../ui/Tabs';
@@ -19,6 +20,7 @@ const THEME_OPTIONS = [
 /** Operator settings. Sensitive provider/database settings are protected server-side. */
 export default function SettingsPage() {
   const { health, isLoading } = useHealth();
+  const aiStatus = describeAiStatus(health);
   const { theme, setTheme } = useTheme();
   const { multiplier, setMultiplier } = usePollingPreference();
 
@@ -76,11 +78,7 @@ export default function SettingsPage() {
         <p className="panel-pending-text">Loading status...</p>
       ) : (
         <div className="settings-grid">
-          <SettingsRow
-            label="AI provider"
-            value={health.aiMode === 'unconfigured' ? 'Not configured' : health.aiMode && health.aiMode !== 'unknown' ? health.aiMode : 'unknown'}
-            online={health.aiMode === 'unconfigured' ? false : health.aiService}
-          />
+          <SettingsRow label="AI provider" value={aiStatus.label} online={aiStatus.tone === 'good'} />
           <SettingsRow label="Detection" value={health.detectionEnabled ? 'Enabled' : 'Disabled'} online={health.detectionEnabled} />
           <SettingsRow label="Remediation" value={health.remediationEnabled ? 'Enabled' : 'Disabled'} online={health.remediationEnabled} />
           <SettingsRow label="Database" value={health.database ? 'Connected' : 'Unavailable'} online={health.database} />

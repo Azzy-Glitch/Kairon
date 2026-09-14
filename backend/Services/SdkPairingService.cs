@@ -220,7 +220,7 @@ public sealed class SdkPairingService : ISdkPairingService
         // window between an operator minting a code and an SDK redeeming it.
         if (!await _db.Projects.AnyAsync(p => p.Id == session.ProjectId && p.IsActive, cancellationToken)) return null;
 
-        var created = await _credentials.CreateAsync(session.ProjectId, $"{normalizedSdk}-sdk", cancellationToken);
+        var created = await _credentials.CreateAsync(session.ProjectId, $"{normalizedSdk}-sdk", cancellationToken, "sdk:" + sdkType);
         if (created is null) return null;
 
         session.RedeemedAt = now;

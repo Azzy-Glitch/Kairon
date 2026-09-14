@@ -194,6 +194,35 @@ public sealed class RePairingTests : IDisposable
     }
 
     [Fact]
+    public async Task StoredConnectionIsFullyAtomicEndpointIncludedNeverMixedWithExplicitOrEnv()
+    {
+        // The complete Phase 5 contract, with deliberately conflicting values on every field: once
+        // a connection is stored, (Endpoint, ProjectId, ApiKey) all come from THAT stored
+        // connection together - an explicit endpoint argument and an ambient KAIRON_ENDPOINT must
+        // not be able to redirect traffic for this project/key pair onto a different backend than
+        // the one it was actually paired against.
+        using var server = new FakeRepairServer();
+        SeedStoredCredential(server, "11111111-1111-1111-1111-111111111111", "krn_stored_key");
+
+        Environment.SetEnvironmentVariable("KAIRON_ENDPOINT", "http://127.0.0.1:1"); // different, unreachable loopback port
+        try
+        {
+            await using var kairon = new KaironClient(
+                endpoint: "http://127.0.0.1:2", // yet another, different loopback port
+                projectId: Guid.Parse("22222222-2222-2222-2222-222222222222"),
+                apiKey: "krn_explicit_key",
+                configPath: ConfigPath);
+
+            Assert.Equal(server.Url, kairon.Endpoint);
+            Assert.Equal(Guid.Parse("11111111-1111-1111-1111-111111111111"), kairon.ProjectId);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("KAIRON_ENDPOINT", null);
+        }
+    }
+
+    [Fact]
     public async Task A401DoesNotDeleteOrModifyTheStoredCredentialFile()
     {
         using var server = new FakeRepairServer();

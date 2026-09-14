@@ -333,6 +333,31 @@ def test_stored_credential_overrides_explicit_configuration_and_is_never_mixed(r
         kairon.stop(timeout_seconds=1)
 
 
+def test_stored_connection_is_fully_atomic_endpoint_included_never_mixed_with_explicit_or_env(
+    repair_server, config_path, monkeypatch,
+):
+    """The complete Phase 5 contract, with deliberately conflicting values on every field: once a
+    connection is stored, (endpoint, projectId, apiKey) all come from THAT stored connection
+    together - an explicit endpoint argument and an ambient KAIRON_ENDPOINT must not be able to
+    redirect traffic for this project/key pair onto a different backend than the one it was
+    actually paired against."""
+    _seed_stored_credential(config_path, repair_server, "11111111-1111-1111-1111-111111111111", "krn_stored_key")
+    monkeypatch.setenv("KAIRON_ENDPOINT", "http://127.0.0.1:1")  # a different (unreachable) loopback port
+
+    kairon = Kairon(
+        endpoint="http://127.0.0.1:2",  # yet another, different loopback port
+        project_id="22222222-2222-2222-2222-222222222222",
+        api_key="krn_explicit_key",
+        config_path=config_path,
+    )
+    try:
+        assert kairon.endpoint == repair_server
+        assert kairon.project_id == "11111111-1111-1111-1111-111111111111"
+        assert kairon.api_key == "krn_stored_key"
+    finally:
+        kairon.stop(timeout_seconds=1)
+
+
 # --- Rule 2/3: no automatic re-pairing, credential.json is never deleted on 401 ------------
 
 

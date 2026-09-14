@@ -128,7 +128,9 @@ def test_backend_unreachable_is_reported_not_thrown():
 
 
 def test_dns_failure_is_reported_not_thrown():
-    client = _client("http://this-host-does-not-exist.invalid", timeout_seconds=1)
+    # https, not http: a remote, non-loopback host is only ever allowed over HTTPS (see the
+    # endpoint-security tests) - this still exercises the same DNS-resolution-failure path.
+    client = _client("https://this-host-does-not-exist.invalid", timeout_seconds=1)
     client._send("api/telemetry/incidents", {"Endpoint": "/x"})  # must not raise
 
 

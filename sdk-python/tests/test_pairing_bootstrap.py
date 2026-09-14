@@ -109,6 +109,32 @@ def test_unavailable_backend_fails_clearly_without_persisting_anything(config_pa
     assert not Path(config_path).exists()
 
 
+def test_explicit_remote_plaintext_http_configuration_is_refused(config_path):
+    # No pairing code involved at all here - a remote plain-HTTP endpoint supplied as ordinary
+    # configuration (not via pairing) must be refused just the same, before it is ever used to
+    # deliver telemetry.
+    with pytest.raises(RuntimeError, match="endpoint rejected"):
+        Kairon(endpoint="http://8.8.8.8:8000", project_id="proj-remote", api_key="krn_x", config_path=config_path)
+
+    assert not Path(config_path).exists()
+
+
+def test_explicit_remote_https_configuration_is_accepted(config_path):
+    kairon = Kairon(endpoint="https://kairon.example.com", project_id="proj-remote", api_key="krn_x", config_path=config_path)
+    try:
+        assert kairon.endpoint == "https://kairon.example.com"
+    finally:
+        kairon.stop(timeout_seconds=1)
+
+
+def test_environment_remote_plaintext_http_configuration_is_refused(monkeypatch, config_path):
+    monkeypatch.setenv("KAIRON_ENDPOINT", "http://10.0.0.20:8000")
+    monkeypatch.setenv("KAIRON_PROJECT_ID", "proj-from-env")
+
+    with pytest.raises(RuntimeError, match="endpoint rejected"):
+        Kairon(config_path=config_path)
+
+
 def test_explicit_configuration_is_used_without_any_pairing_code(config_path):
     kairon = Kairon(endpoint="http://127.0.0.1:9999", project_id="proj-explicit", api_key="krn_explicit",
                      config_path=config_path)

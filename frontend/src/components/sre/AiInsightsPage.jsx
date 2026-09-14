@@ -8,6 +8,7 @@ import { getActionLabel } from '../../lib/labels';
 import HorizontalBarChart from '../ui/charts/HorizontalBarChart';
 import { useIncidents, useIncidentDetails } from '../../hooks/useIncidents';
 import { useHealth } from '../../hooks/useHealth';
+import { describeAiStatus } from '../../lib/aiStatus';
 import { confidenceBand, formatConfidence, formatDateTime } from '../../services/incidentService';
 import { IconSparkles, IconBug } from '../Icons';
 
@@ -23,6 +24,7 @@ export default function AiInsightsPage() {
   const feed = useIncidents({ status: '', pollMs: 10000 });
   const details = useIncidentDetails(feed.incidents, { limit: 20 });
   const { health } = useHealth();
+  const aiStatus = describeAiStatus(health);
 
   const filteredDetails = useFilteredBySource(details.data || [], resolveSource);
 
@@ -86,7 +88,7 @@ export default function AiInsightsPage() {
         <div className="ai-insights-provider">
           <span className="ai-insights-provider-label">AI service</span>
           <span className={`status-dot ${health.aiService ? 'online' : 'offline'}`} />
-          <span>{health.aiMode && health.aiMode !== 'unknown' ? health.aiMode : health.aiService ? 'operational' : 'unavailable'}</span>
+          <span>{aiStatus.label}</span>
         </div>
       </div>
 

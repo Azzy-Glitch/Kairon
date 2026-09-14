@@ -242,6 +242,92 @@ describe('SdkPage re-pairing', () => {
     expect(await screen.findByText(/pairing code isn't shown after a refresh/i)).toBeInTheDocument();
   });
 
+  describe('legacy/tampered sessionStorage is sanitized before it is ever trusted', () => {
+    it('a legacy object still carrying a pairing code has the code stripped, in memory and in storage', async () => {
+      sessionStorage.setItem('kairon:activeRepair', JSON.stringify({
+        projectId: 'proj-1', credentialId: 'cred-1', credentialName: 'orders-sdk',
+        pairingId: 'pair-1', code: 'pair_legacycode', expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        status: 'Pending',
+      }));
+      sdkApi.getPairingStatus.mockResolvedValue({ status: 'Pending' });
+
+      renderSdkPage();
+      await openPairingTab();
+
+      expect(await screen.findByText(/Re-pairing "orders-sdk"/)).toBeInTheDocument();
+      expect(screen.queryByText('pair_legacycode')).not.toBeInTheDocument();
+      // The rewrite happens synchronously on load - the stored blob itself is cleaned up too, not
+      // merely this one in-memory read.
+      expect(sessionStorage.getItem('kairon:activeRepair')).not.toContain('pair_legacycode');
+      expect(JSON.parse(sessionStorage.getItem('kairon:activeRepair'))).not.toHaveProperty('code');
+    });
+
+    it('unrecognized fields on a stored object are dropped, not merely the pairing code', async () => {
+      sessionStorage.setItem('kairon:activeRepair', JSON.stringify({
+        projectId: 'proj-1', credentialId: 'cred-1', credentialName: 'orders-sdk',
+        pairingId: 'pair-1', expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        status: 'Pending', apiKey: 'krn_should_never_be_here', somethingUnexpected: 'x',
+      }));
+      sdkApi.getPairingStatus.mockResolvedValue({ status: 'Pending' });
+
+      renderSdkPage();
+      await openPairingTab();
+
+      expect(await screen.findByText(/Re-pairing "orders-sdk"/)).toBeInTheDocument();
+      const stored = JSON.parse(sessionStorage.getItem('kairon:activeRepair'));
+      expect(stored).not.toHaveProperty('apiKey');
+      expect(stored).not.toHaveProperty('somethingUnexpected');
+    });
+
+    it('malformed JSON in storage is safely ignored, never crashing the page', async () => {
+      sessionStorage.setItem('kairon:activeRepair', '{not valid json');
+
+      renderSdkPage();
+      await openPairingTab();
+
+      expect(screen.queryByText(/Re-pairing/)).not.toBeInTheDocument();
+    });
+
+    it('a stored object missing a real pairing/credential id is safely ignored', async () => {
+      sessionStorage.setItem('kairon:activeRepair', JSON.stringify({
+        projectId: 'proj-1', credentialId: '', credentialName: 'orders-sdk',
+        pairingId: '', status: 'Pending',
+      }));
+
+      renderSdkPage();
+      await openPairingTab();
+
+      expect(screen.queryByText(/Re-pairing/)).not.toBeInTheDocument();
+    });
+
+    it('a stored object with an unrecognized status value is safely ignored', async () => {
+      sessionStorage.setItem('kairon:activeRepair', JSON.stringify({
+        projectId: 'proj-1', credentialId: 'cred-1', credentialName: 'orders-sdk',
+        pairingId: 'pair-1', status: 'SomeFutureStatusThisBuildDoesNotKnow',
+      }));
+
+      renderSdkPage();
+      await openPairingTab();
+
+      expect(screen.queryByText(/Re-pairing/)).not.toBeInTheDocument();
+    });
+
+    it('a genuinely valid legacy-shaped state is restored, without the secret code', async () => {
+      sessionStorage.setItem('kairon:activeRepair', JSON.stringify({
+        projectId: 'proj-1', credentialId: 'cred-1', credentialName: 'orders-sdk',
+        pairingId: 'pair-1', expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        status: 'AwaitingConfirmation', confirmationDeadline: Date.now() + 60000,
+      }));
+      sdkApi.getPairingStatus.mockResolvedValue({ status: 'Redeemed', redeemedAt: '2026-01-01T00:01:00Z', confirmedAt: null });
+
+      renderSdkPage();
+      await openPairingTab();
+
+      expect(await screen.findByText(/Re-pairing "orders-sdk"/)).toBeInTheDocument();
+      expect(await screen.findByText(/waiting for the application to confirm/i)).toBeInTheDocument();
+    });
+  });
+
   it('recovers an in-flight re-pair after a page refresh and resumes polling from where it left off', async () => {
     const { unmount } = renderSdkPage();
     await openPairingTab();

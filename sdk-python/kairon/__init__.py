@@ -3,4 +3,4 @@
 from .client import Kairon, get_default_instance, pair
 
 __all__ = ["Kairon", "get_default_instance", "pair", "__version__"]
-__version__ = "1.0.1"
+__version__ = "1.1.0"

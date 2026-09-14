@@ -275,6 +275,31 @@ public sealed class RemediationTargetManagementTests : IDisposable
         Assert.Null(await service.GetAsync(Guid.NewGuid(), default));
     }
 
+    // --- Phase 6: list/filter must key off EnvironmentNormalized, exactly like runtime
+    // resolution and the enabled-uniqueness index already do - otherwise "Production" and
+    // "production" behave consistently everywhere except this one management-list filter.
+
+    [Theory]
+    [InlineData("Production")]
+    [InlineData("production")]
+    [InlineData("PRODUCTION")]
+    public async Task ListFiltersByEnvironmentCaseInsensitivelyUsingTheNormalizedColumn(string filterEnvironment)
+    {
+        var machine = _h.SeedMachine();
+        var credential = _h.SeedCredential(_h.ProjectId);
+        var production = _h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName, environment: "Production", service: "SvcA");
+        var staging = _h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName, environment: "Staging", service: "SvcB");
+
+        var service = Service();
+        var filtered = await service.ListAsync(new RemediationTargetFilter(null, null, null, filterEnvironment), default);
+
+        var only = Assert.Single(filtered);
+        Assert.Equal(production.Id, only.Id);
+        Assert.DoesNotContain(filtered, t => t.Id == staging.Id);
+        // Display casing is untouched by the normalized-column filter - only comparison changes.
+        Assert.Equal("Production", only.Environment);
+    }
+
     [Fact]
     public async Task ControllerGetMissingReturns404WithoutLeakingInternals()
     {
@@ -654,7 +679,8 @@ public sealed class RemediationTargetManagementTests : IDisposable
         // A real credential (with a real ApiKey/hash) is required to exercise header authorization,
         // unlike the fixed "test-hash" TestHarness.SeedCredential normally seeds.
         var credentials = new Kairon.Backend.Services.ProjectCredentialService(_h.Db,
-            TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System);
+            TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System,
+            new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
         var created = await credentials.CreateAsync(_h.ProjectId, "target-credential", default);
         await Service().CreateAsync(new CreateRemediationTargetRequest
         {
