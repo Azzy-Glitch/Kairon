@@ -1,3 +1,4 @@
+using System.Net;
 using Kairon.Backend.Configuration;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Services;
@@ -44,6 +45,21 @@ public sealed class AiMicroserviceModeTests : IDisposable
             Options.Create(new AiOrchestrationOptions()),
             _configService,
             NullLogger<AiMicroservice>.Instance);
+    }
+
+    private AiMicroservice CreateMicroserviceWithHandler(HttpMessageHandler handler, TimeProvider time)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["AiService:MockMode"] = "false" })
+            .Build();
+
+        return new AiMicroservice(
+            new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:1") },
+            configuration,
+            Options.Create(new AiOrchestrationOptions()),
+            _configService,
+            NullLogger<AiMicroservice>.Instance,
+            time);
     }
 
     [Fact]
@@ -113,5 +129,104 @@ public sealed class AiMicroserviceModeTests : IDisposable
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
             Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("{\"mode\":\"" + mode + "\"}") });
+    }
+
+    // --- RB-007: IsAvailable ("AiProviderReachable") must never become true merely because a
+    // cooldown window elapsed - only a real, successful call may do that. ---
+
+    [Fact]
+    public async Task AFailedCallImmediatelyReportsUnreachable()
+    {
+        var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var ai = CreateMicroserviceWithHandler(new ScriptedHandler(HttpStatusCode.ServiceUnavailable), time);
+
+        Assert.True(ai.IsAvailable); // optimistic default before any call
+        await Assert.ThrowsAnyAsync<Exception>(() => ai.AnalyzeErrorAsync("boom"));
+
+        Assert.False(ai.IsAvailable);
+    }
+
+    [Fact]
+    public async Task CooldownExpiringWithNoNewCallNeverFlipsReachableBackToTrue()
+    {
+        var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var ai = CreateMicroserviceWithHandler(new ScriptedHandler(HttpStatusCode.ServiceUnavailable), time);
+        await Assert.ThrowsAnyAsync<Exception>(() => ai.AnalyzeErrorAsync("boom"));
+        Assert.False(ai.IsAvailable);
+
+        // The cooldown window passes with no further call attempted at all - the bug this fixes
+        // would have reported IsAvailable=true here purely from elapsed time.
+        time.Advance(TimeSpan.FromMinutes(5));
+
+        Assert.False(ai.IsAvailable);
+    }
+
+    [Fact]
+    public async Task ARetryAfterCooldownThatAlsoFailsStillReportsUnreachable()
+    {
+        var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var handler = new ScriptedHandler(HttpStatusCode.ServiceUnavailable, HttpStatusCode.ServiceUnavailable);
+        var ai = CreateMicroserviceWithHandler(handler, time);
+        await Assert.ThrowsAnyAsync<Exception>(() => ai.AnalyzeErrorAsync("boom"));
+        time.Advance(TimeSpan.FromMinutes(5));
+
+        // The half-open probe is allowed through (the handler IS invoked again)...
+        await Assert.ThrowsAnyAsync<Exception>(() => ai.AnalyzeErrorAsync("boom again"));
+
+        Assert.Equal(2, handler.CallCount);
+        // ...but since it failed too, reachability remains false - a real failed retry, not a
+        // timer, is what this reflects.
+        Assert.False(ai.IsAvailable);
+    }
+
+    [Fact]
+    public async Task ARetryAfterCooldownThatSucceedsRestoresReachability()
+    {
+        var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var handler = new ScriptedHandler(HttpStatusCode.ServiceUnavailable, HttpStatusCode.OK);
+        var ai = CreateMicroserviceWithHandler(handler, time);
+        await Assert.ThrowsAnyAsync<Exception>(() => ai.AnalyzeErrorAsync("boom"));
+        Assert.False(ai.IsAvailable);
+        time.Advance(TimeSpan.FromMinutes(5));
+
+        await ai.AnalyzeErrorAsync("recovered now");
+
+        Assert.True(ai.IsAvailable);
+    }
+
+    [Fact]
+    public async Task BeforeCooldownElapsesANewCallIsBlockedWithoutEvenAttemptingTheNetwork()
+    {
+        var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var handler = new ScriptedHandler(HttpStatusCode.ServiceUnavailable);
+        var ai = CreateMicroserviceWithHandler(handler, time);
+        await Assert.ThrowsAnyAsync<Exception>(() => ai.AnalyzeErrorAsync("boom"));
+        time.Advance(TimeSpan.FromSeconds(30)); // well under the 2-minute cooldown
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => ai.AnalyzeErrorAsync("too soon"));
+
+        Assert.Equal(1, handler.CallCount); // the second call never reached the network at all
+    }
+
+    private sealed class ScriptedHandler : HttpMessageHandler
+    {
+        private readonly Queue<HttpStatusCode> _responses;
+        public int CallCount { get; private set; }
+
+        public ScriptedHandler(params HttpStatusCode[] responses) => _responses = new Queue<HttpStatusCode>(responses);
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            CallCount++;
+            var status = _responses.Count > 0 ? _responses.Dequeue() : HttpStatusCode.OK;
+            return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent("{}") });
+        }
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset _now = now;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan by) => _now += by;
     }
 }

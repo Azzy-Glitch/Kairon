@@ -1,0 +1,39 @@
+# RB-008: optional TLS-terminating reverse proxy for docker-compose.cloud.yml.
+#
+# docker-compose.cloud.yml alone publishes the backend to 127.0.0.1 only (plain HTTP is never
+# safe to expose to a real network, and the SDKs refuse it anyway). This overlay adds Caddy in
+# front, which obtains and renews a Let's Encrypt certificate automatically and forwards to the
+# backend over the internal Docker network. This is the supported way to reach a centralized
+# KAIRON deployment remotely; an operator who already runs their own ingress/load balancer can use
+# that instead and skip this file entirely (see README.md's "Centralized deployment" section).
+#
+# Usage:
+#   cp deploy/Caddyfile.cloud.example deploy/Caddyfile.cloud
+#   # edit deploy/Caddyfile.cloud if needed - the example works unmodified for most deployments
+#   echo "KAIRON_PUBLIC_DOMAIN=kairon.example.com" >> .env
+#   docker compose -f docker-compose.cloud.yml -f docker-compose.cloud.tls.yml up -d
+#
+# DNS for KAIRON_PUBLIC_DOMAIN must already point at this host, and ports 80/443 must be reachable
+# from the internet for Let's Encrypt's HTTP-01 challenge to succeed.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      KAIRON_PUBLIC_DOMAIN: ${KAIRON_PUBLIC_DOMAIN:?Set KAIRON_PUBLIC_DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile.cloud:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [kairon]
+
+volumes:
+  caddy_data:
+  caddy_config:

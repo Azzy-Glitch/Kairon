@@ -246,6 +246,21 @@ class TestEndpointMustBeSafe:
     @pytest.mark.parametrize(
         "endpoint",
         [
+            "https://user:password@example.com/v1/chat/completions",
+            "http://user:password@127.0.0.1/v1/chat/completions",
+        ],
+    )
+    def test_endpoint_embedding_credentials_is_rejected(self, client, endpoint):
+        response = client.post(
+            "/configure", json={"provider": "qwen", "api_key": "sk-x", "endpoint": endpoint}
+        )
+
+        assert response.status_code == 400
+        assert response.json()["code"] == "insecure_endpoint"
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
             "http://localhost:8080/v1/chat/completions",
             "http://127.0.0.1:8080/v1/chat/completions",
             "http://[::1]:8080/v1/chat/completions",

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Dict, Type
 
-from ..config import AiConfig
+from ..config import AiConfig, is_endpoint_allowed
 from .base import AIProvider, ProviderError
 from .gemini import GeminiProvider
 from .mock import MockProvider
@@ -47,7 +47,12 @@ def create_provider(config: AiConfig) -> AIProvider:
     if name == "mock":
         return MockProvider(config)
 
-    if not config.is_configured:
+    # Defense in depth: even if some future or alternate code path built an AiConfig whose
+    # endpoint bypassed AiConfig.from_env()'s and /configure's own validation, this is the actual
+    # point a real provider - and therefore a real outbound request - gets constructed. A
+    # disallowed endpoint fails exactly like any other unusable configuration: UnconfiguredProvider,
+    # never a silently-insecure request.
+    if not config.is_configured or not is_endpoint_allowed(config.endpoint):
         return UnconfiguredProvider(config)
 
     return PROVIDERS[name](config)

@@ -131,6 +131,26 @@ describe('App navigation', () => {
     });
   });
 
+  it('RB-007: never shows the AI sidebar row as "Operational" when the provider is not actually reachable', async () => {
+    const { healthApi } = await import('./api/index');
+    healthApi.getHealthStatus.mockResolvedValue({
+      backend: true,
+      database: true,
+      aiService: true, // the process IS alive
+      detectionEnabled: true,
+      remediationEnabled: true,
+      aiMode: 'groq',
+      aiProviderReachable: false // but the configured provider is actually down
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.queryByText('Operational')).not.toBeInTheDocument();
+      expect(screen.getByText(/provider unavailable/i)).toBeInTheDocument();
+    });
+  });
+
   it.each(NAV_TABS)('switches to %s without throwing', async (label) => {
     const user = userEvent.setup();
     render(<App />);

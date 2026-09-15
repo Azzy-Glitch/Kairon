@@ -109,6 +109,15 @@ public class MachineRegistrationService : BackgroundService
 
     private async Task<bool> RegisterAsync(CancellationToken cancellationToken)
     {
+        // The lowest transport boundary before a real network send - validated again here rather
+        // than trusted from Program.cs's DI registration, exactly like KaironTelemetryClient does:
+        // this HttpClient's actual BaseAddress is what governs, regardless of how it was built.
+        if (!AgentEndpointSecurity.IsAllowed(_http.BaseAddress))
+        {
+            _logger.LogWarning("kairon-agent: registration endpoint rejected by transport security policy");
+            return false;
+        }
+
         var registration = new
         {
             machineId = _machineId,
@@ -126,7 +135,17 @@ public class MachineRegistrationService : BackgroundService
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.TimeoutSeconds)));
-            var response = await _http.PostAsJsonAsync("api/agent/register", registration, timeout.Token);
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, "api/agent/register")
+            {
+                Content = JsonContent.Create(registration)
+            };
+            // Only needed against a remote/centralized backend that requires it - a local install
+            // registers over loopback, which that backend trusts without one. See AgentOptions.OperatorKey.
+            if (!string.IsNullOrWhiteSpace(_options.OperatorKey))
+                request.Headers.Add("X-Kairon-Operator-Key", _options.OperatorKey);
+
+            var response = await _http.SendAsync(request, timeout.Token);
             if (response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(_options.PreviousAgentKey))
                 AgentCredentialStore.CompleteRotation();
             return response.IsSuccessStatusCode;
@@ -144,6 +163,12 @@ public class MachineRegistrationService : BackgroundService
 
     private async Task<HttpStatusCode> HeartbeatAsync(CancellationToken cancellationToken)
     {
+        if (!AgentEndpointSecurity.IsAllowed(_http.BaseAddress))
+        {
+            _logger.LogWarning("kairon-agent: heartbeat endpoint rejected by transport security policy");
+            return HttpStatusCode.ServiceUnavailable;
+        }
+
         var processes = new List<object>();
 
         if (_options.EnableProcessWatch && !string.IsNullOrWhiteSpace(_options.TargetProcessName))

@@ -157,10 +157,11 @@ public sealed class AiConfigController : ControllerBase
     }
 
     /// <summary>
-    /// Refuses an endpoint that would carry the provider API key over plain HTTP. The AI service
-    /// enforces the same rule as the authoritative guard (it is what actually sends the key), but
-    /// checking here too means a bad endpoint is rejected with a clear 400 and never persisted.
-    /// Loopback keeps HTTP so a local or self-hosted provider does not need a certificate.
+    /// Refuses an endpoint that would carry the provider API key over plain HTTP, or one that
+    /// embeds credentials in the URL itself. The AI service enforces the same rule as the
+    /// authoritative guard (it is what actually sends the key), but checking here too means a bad
+    /// endpoint is rejected with a clear 400 and never persisted. Loopback keeps HTTP so a local or
+    /// self-hosted provider does not need a certificate.
     /// </summary>
     private static string? ValidateEndpoint(string? endpoint)
     {
@@ -171,6 +172,12 @@ public sealed class AiConfigController : ControllerBase
         {
             return "Endpoint must be an absolute http(s) URL, for example " +
                    "https://host/compatible-mode/v1/chat/completions.";
+        }
+
+        if (!string.IsNullOrEmpty(uri.UserInfo))
+        {
+            return "Endpoint must not embed credentials (user:pass@host) - they would be exposed " +
+                   "in logs, proxies, and shell/browser history.";
         }
 
         if (uri.Scheme == Uri.UriSchemeHttp && !uri.IsLoopback)

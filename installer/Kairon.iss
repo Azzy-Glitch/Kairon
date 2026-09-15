@@ -119,27 +119,36 @@ begin
     Result := Copy(Result, 2, Length(Result) - 2);
 end;
 
-// Runs before the wizard shows its first page - the earliest point to tell the operator about a
-// missing prerequisite, rather than after they have already clicked through the whole install.
-// Deliberately a warning, not a hard block: this is a registry-based heuristic (Microsoft's own
-// documented one, but still a heuristic), and refusing to install outright on a false negative
-// would be worse than letting a genuinely-missing-runtime install finish with a clear warning the
-// operator can act on before first launch.
+// RB-009: runs before the wizard shows its first page - the earliest point to tell the operator
+// about a missing prerequisite, rather than after they have already clicked through the whole
+// install and Setup reports success while the desktop application cannot actually start (it fails
+// opaquely the first time Kairon.exe tries to create the WebView2 environment). This is a
+// registry-based heuristic (Microsoft's own documented one, but still a heuristic), so an
+// unconditional hard block risks refusing an install on a false negative - the runtime installed
+// through some path these three registry checks do not cover. The operator is the one who can
+// actually tell the difference, so on a negative result THEY are asked to confirm before
+// continuing rather than Setup silently deciding either way: OK proceeds anyway (the operator
+// asserts WebView2 really is present, or will install it before first launch), Cancel aborts
+// Setup outright - a genuinely unsuccessful, non-misleading installation result, not a warning
+// that changes nothing.
 function InitializeSetup: Boolean;
 begin
-  Result := True;
-  if not IsWebView2RuntimeInstalled then
+  if IsWebView2RuntimeInstalled then
   begin
-    MsgBox(
-      'Kairon uses the Microsoft Edge WebView2 Runtime to display its interface, and it was not ' +
-      'detected on this machine.'#13#10#13#10 +
-      'Windows 11 and most current Windows 10 installations already include it, so this may be a ' +
-      'false alarm - but if Kairon fails to open its window after installing, install the ' +
-      '"Evergreen Bootstrapper" from Microsoft''s WebView2 download page first, then launch Kairon ' +
-      'again.'#13#10#13#10 +
-      'Setup will continue now.',
-      mbInformation, MB_OK);
+    Result := True;
+    exit;
   end;
+
+  Result := (IDOK = MsgBox(
+    'Kairon uses the Microsoft Edge WebView2 Runtime to display its interface, and it was not ' +
+    'detected on this machine. Without it, Kairon will install but its window will fail to open.' +
+    #13#10#13#10 +
+    'Windows 11 and most current Windows 10 installations already include it, so this may be a ' +
+    'false alarm. If you are not certain it is installed, click Cancel, install the "Evergreen ' +
+    'Bootstrapper" from Microsoft''s WebView2 download page, then run Setup again.' +
+    #13#10#13#10 +
+    'Click OK only if you know WebView2 is already installed on this machine.',
+    mbError, MB_OKCANCEL));
 end;
 
 function RunServiceControl(const Arguments, Action: String; var ResultCode: Integer): Boolean;

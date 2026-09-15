@@ -25,6 +25,15 @@ public class AgentEventClient
 
     public async Task<bool> SendAsync(AgentEventPayload payload, CancellationToken cancellationToken = default)
     {
+        // The lowest transport boundary before a real network send - validated again here rather
+        // than trusted from Program.cs's DI registration; this HttpClient's actual BaseAddress is
+        // what governs, regardless of how it was constructed.
+        if (!AgentEndpointSecurity.IsAllowed(_http.BaseAddress))
+        {
+            _logger.LogDebug("kairon-agent: event endpoint rejected by transport security policy");
+            return false;
+        }
+
         payload.ProjectId = _options.ProjectId;
         payload.Environment = _options.Environment;
         payload.Application ??= _options.Application;

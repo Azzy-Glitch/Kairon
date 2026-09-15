@@ -71,6 +71,15 @@ public sealed class SessionProcessCollector : BackgroundService
 
     private async Task PollAndSendAsync(CancellationToken cancellationToken)
     {
+        // The lowest transport boundary before a real network send - validated again here rather
+        // than trusted from Program.cs's DI registration; this HttpClient's actual BaseAddress is
+        // what governs, regardless of how it was constructed.
+        if (!AgentEndpointSecurity.IsAllowed(_http.BaseAddress))
+        {
+            _logger.LogWarning("kairon-useragent: heartbeat endpoint rejected by transport security policy");
+            return;
+        }
+
         _userAgentKey ??= AgentCredentialStore.TryResolve(_options.AgentKey);
         if (string.IsNullOrWhiteSpace(_userAgentKey))
         {

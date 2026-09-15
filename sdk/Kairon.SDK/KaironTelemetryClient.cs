@@ -54,6 +54,22 @@ public class KaironTelemetryClient
         object payload,
         CancellationToken cancellationToken)
     {
+        // The actual, effective destination - not _options.Endpoint - because this HttpClient may
+        // not have been the one AddKairon/KaironClient configured: this class's constructor is
+        // public and a caller can supply any HttpClient directly, bypassing every endpoint check
+        // upstream of here. This is the lowest public transport boundary before a real network
+        // send, so it is validated on every call rather than trusted because "something else
+        // already checked this" - including the case where BaseAddress and _options.Endpoint
+        // disagree (whichever HttpClient actually resolves is what must be safe).
+        if (!KaironEndpointSecurity.IsAllowed(_http.BaseAddress))
+        {
+            return new TelemetryResponse
+            {
+                Success = false,
+                Message = "Kairon endpoint rejected: plain HTTP is only allowed to localhost/127.0.0.0/8/::1. Use HTTPS for any non-local KAIRON backend."
+            };
+        }
+
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, path)

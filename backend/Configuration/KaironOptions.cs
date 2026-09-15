@@ -172,12 +172,14 @@ public class AiOrchestrationOptions
     public int QueueCapacity { get; set; } = 512;
 }
 
-/// <summary>Authorization for state-changing SRE endpoints (PRD section 19).</summary>
+/// <summary>Authorization for state-changing SRE endpoints (PRD section 19), and (RB-005) the
+/// machine-enrollment bootstrap boundary for POST /api/agent/register.</summary>
 public class SreSecurityOptions
 {
     public const string SectionName = "SreSecurity";
 
-    /// <summary>When true, approve/reject/execute endpoints require a valid operator key.</summary>
+    /// <summary>When true, approve/reject/execute endpoints - and Agent machine registration -
+    /// require a valid operator key.</summary>
     public bool RequireOperatorKey { get; set; } = true;
 
     public string HeaderName { get; set; } = "X-Kairon-Operator-Key";

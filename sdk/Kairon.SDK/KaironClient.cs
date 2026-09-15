@@ -111,7 +111,7 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
         var optionsAccessor = Options.Create(options);
         var metrics = new KaironMetrics();
         _queue = new KaironTelemetryQueue(optionsAccessor);
-        _http = new HttpClient
+        _http = new HttpClient(KaironEndpointSecurity.CreateNonRedirectingHandler(), disposeHandler: true)
         {
             BaseAddress = new Uri(options.Endpoint.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromSeconds(Math.Max(2, options.TimeoutSeconds + 1))

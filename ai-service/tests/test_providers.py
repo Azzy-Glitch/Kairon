@@ -203,6 +203,69 @@ class TestResilience:
         assert "timed out" in str(exc.value)
 
 
+class TestFinalErrorClassificationIsPreserved:
+    """NB-003: the exhausted-retries wrapper at the bottom of complete_json must preserve the
+    ORIGINAL failure's transient/status_code exactly, never relaunder a permanent failure into a
+    transient-looking one or drop the HTTP status. mock_config.max_retries=0 isolates each case to
+    exactly one attempt, so the value under test is unambiguously the wrapper's own behavior."""
+
+    @pytest.mark.parametrize(
+        "status_code,expected_transient",
+        [
+            (401, False),
+            (403, False),
+            (404, False),
+            (429, True),
+            (500, True),
+        ],
+    )
+    async def test_http_status_and_transience_survive_the_wrapper(
+        self, mock_config, status_code, expected_transient
+    ):
+        mock_config.max_retries = 0
+        original = ProviderError(f"HTTP {status_code}", transient=expected_transient, status_code=status_code)
+        provider = _ScriptedProvider(mock_config, [original])
+
+        with pytest.raises(ProviderError) as exc:
+            await provider.complete_json("sys", "user")
+
+        assert exc.value.status_code == status_code
+        assert exc.value.transient is expected_transient
+
+    async def test_a_timeout_remains_transient_through_the_wrapper(self, mock_config):
+        mock_config.max_retries = 0
+        provider = _ScriptedProvider(mock_config, [ProviderError("timed out", transient=True)])
+
+        with pytest.raises(ProviderError) as exc:
+            await provider.complete_json("sys", "user")
+
+        assert exc.value.transient is True
+        assert exc.value.status_code is None
+
+    async def test_a_connection_failure_remains_transient_through_the_wrapper(self, mock_config):
+        mock_config.max_retries = 0
+        provider = _ScriptedProvider(
+            mock_config, [ProviderError("transport error: ConnectError", transient=True)]
+        )
+
+        with pytest.raises(ProviderError) as exc:
+            await provider.complete_json("sys", "user")
+
+        assert exc.value.transient is True
+
+    async def test_invalid_configuration_stays_permanent_through_the_wrapper(self, mock_config):
+        mock_config.max_retries = 3  # would retry plenty if the wrapper mis-set transient=True
+        provider = _ScriptedProvider(
+            mock_config, [ProviderError("groq API key is not configured", transient=False)]
+        )
+
+        with pytest.raises(ProviderError) as exc:
+            await provider.complete_json("sys", "user")
+
+        assert exc.value.transient is False
+        assert provider.calls == 1, "a permanent failure classified correctly must never be retried"
+
+
 class TestNoPaidCredentialsRequired:
     def test_full_provider_registry_instantiates_without_keys(self):
         """Every provider class can be constructed with no credentials at all."""

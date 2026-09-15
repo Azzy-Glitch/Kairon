@@ -10,6 +10,7 @@ public sealed class ProtectedReadEndpointTests
     [Theory]
     [InlineData(typeof(AgentController), nameof(AgentController.Machines))]
     [InlineData(typeof(AgentController), nameof(AgentController.Applications))]
+    [InlineData(typeof(AgentController), nameof(AgentController.Register))] // RB-005: machine-enrollment bootstrap
     [InlineData(typeof(TelemetryController), nameof(TelemetryController.GetIncidents))]
     [InlineData(typeof(TelemetryController), nameof(TelemetryController.GetMetrics))]
     [InlineData(typeof(HealthStatusController), nameof(HealthStatusController.Status))]

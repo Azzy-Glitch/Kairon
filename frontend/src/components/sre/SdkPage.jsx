@@ -321,8 +321,16 @@ function Pairing({ onProjectSelected }) {
       return undefined;
     }
 
+    // NB-002: self-scheduling setTimeout, not setInterval - the next poll is scheduled only after
+    // this one's request (and any awaited completion work) has actually finished, so a slow
+    // response can never overlap with a second, already-fired tick starting a concurrent request
+    // for the same pairing. REPAIR_POLL_INTERVAL_MS is the gap AFTER each attempt finishes, not a
+    // fixed wall-clock cadence - exactly the "request -> wait for result -> wait -> next request"
+    // contract this must follow.
     let cancelled = false;
-    const id = setInterval(async () => {
+    let timeoutId;
+
+    const poll = async () => {
       if (cancelled) return;
       try {
         const status = await sdkApi.getPairingStatus(repair.pairingId);
@@ -345,12 +353,16 @@ function Pairing({ onProjectSelected }) {
         }
       } catch {
         // A transient poll failure is not a terminal state - keep polling until the bound above.
+      } finally {
+        if (!cancelled) timeoutId = setTimeout(poll, REPAIR_POLL_INTERVAL_MS);
       }
-    }, REPAIR_POLL_INTERVAL_MS);
+    };
+
+    timeoutId = setTimeout(poll, REPAIR_POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
-      clearInterval(id);
+      clearTimeout(timeoutId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repair?.pairingId, repair?.status, repair?.confirmationDeadline]);
@@ -366,7 +378,10 @@ function Pairing({ onProjectSelected }) {
   useEffect(() => {
     if (!repair || repair.status !== 'RecoveringCompletion') return undefined;
     let cancelled = false;
+    let timeoutId;
 
+    // NB-002: same self-scheduling setTimeout rationale as the polling effect above - the next
+    // recovery check is scheduled only once this one's request has actually finished.
     const check = async () => {
       if (cancelled) return;
       try {
@@ -404,14 +419,15 @@ function Pairing({ onProjectSelected }) {
           const attempts = (prev.recoveryAttempts || 0) + 1;
           return attempts >= COMPLETION_RECOVERY_MAX_ATTEMPTS ? { ...prev, status: 'CompletionUnknown' } : { ...prev, recoveryAttempts: attempts };
         });
+      } finally {
+        if (!cancelled) timeoutId = setTimeout(check, REPAIR_POLL_INTERVAL_MS);
       }
     };
 
     check();
-    const id = setInterval(check, REPAIR_POLL_INTERVAL_MS);
     return () => {
       cancelled = true;
-      clearInterval(id);
+      clearTimeout(timeoutId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repair?.pairingId, repair?.status]);

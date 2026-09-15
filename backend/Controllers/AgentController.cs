@@ -29,7 +29,22 @@ public sealed class AgentController : ControllerBase
         _time = time;
     }
 
+    /// <summary>
+    /// The machine-enrollment bootstrap boundary (RB-005): without this, any caller able to reach
+    /// this endpoint could register an arbitrary machine identity with attacker-chosen credentials
+    /// merely by supplying two distinct, non-default key strings - there was nothing to prove the
+    /// caller was an actually-authorized Agent installation. Reuses the exact same operator-key
+    /// gate every other sensitive action already goes through (<see cref="RequiresOperatorAttribute"/>):
+    /// a local, single-machine install with no operator key configured is trusted automatically
+    /// (loopback only), while any deployment that has configured one - every real remote/
+    /// centralized deployment - requires it here too, for both first-time registration and later
+    /// re-registration/rotation of an existing machine. This is deliberately not a fresh secret
+    /// invented for this endpoint alone: it is the same server-operator secret an administrator
+    /// already manages for approve/reject/execute actions, so there is nothing new to provision,
+    /// distribute, or accidentally leave unset.
+    /// </summary>
     [HttpPost("register")]
+    [RequiresOperator]
     public async Task<IActionResult> Register(AgentRegistrationDto dto, CancellationToken cancellationToken)
     {
         try

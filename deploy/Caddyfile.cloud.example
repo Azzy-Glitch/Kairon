@@ -1,0 +1,17 @@
+# RB-008: TLS termination for a centralized KAIRON deployment.
+#
+# Used by docker-compose.cloud.tls.yml. Caddy obtains and renews a Let's Encrypt certificate for
+# {$KAIRON_PUBLIC_DOMAIN} automatically - no manual certificate handling required - then forwards
+# to the backend container over the internal Docker network (plain HTTP there is fine: it never
+# leaves the host). This is the ONLY supported path to reach a centralized backend/SDK over a real
+# network; docker-compose.cloud.yml itself publishes the backend to loopback only.
+#
+# Copy this file, set KAIRON_PUBLIC_DOMAIN in your .env, and start with:
+#   docker compose -f docker-compose.cloud.yml -f docker-compose.cloud.tls.yml up -d
+#
+# DNS for KAIRON_PUBLIC_DOMAIN must already point at this host, and ports 80/443 must be reachable
+# from the internet for Let's Encrypt's HTTP-01 challenge to succeed.
+
+{$KAIRON_PUBLIC_DOMAIN} {
+	reverse_proxy backend:8000
+}

@@ -107,7 +107,23 @@ class AIProvider(abc.ABC):
                 # Bounded linear backoff. Never retries indefinitely.
                 await asyncio.sleep(0.25 * attempt)
 
+        # NB-003: the exhausted-retries wrapper must never launder a PERMANENT failure into a
+        # transient-looking one, or lose the HTTP status a caller might act on. A ProviderError
+        # already carries its own correct classification (set where the actual failure happened -
+        # 401/403/invalid model/invalid configuration are transient=False there); that
+        # classification and status_code are preserved exactly, never recomputed from the
+        # exception's mere TYPE.
+        if isinstance(last_error, ProviderError):
+            raise ProviderError(
+                f"{self.name} failed after {attempts} attempt(s): {last_error}",
+                transient=last_error.transient,
+                status_code=last_error.status_code,
+            ) from last_error
+
+        # Any other failure that exhausted the retry budget (malformed model output, an
+        # unexpected/network exception) was never classified as permanent by anything - it is
+        # reasonable to consider retrying again later.
         raise ProviderError(
             f"{self.name} failed after {attempts} attempt(s): {last_error}",
-            transient=isinstance(last_error, (AiResponseError, ProviderError)),
-        )
+            transient=True,
+        ) from last_error

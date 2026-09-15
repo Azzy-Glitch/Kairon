@@ -65,3 +65,26 @@ jobs:
           file: ai-service/Dockerfile
           push: false
           tags: kairon/ai:ci
+
+  # NB-004: the `test` job above tests only one Python version (3.13). sdk-python/pyproject.toml
+  # declares `requires-python = ">=3.9"`, so this covers both ends of that declared range - the
+  # oldest supported version and a current one - without matrixing every point release in between.
+  python-compat:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            ai-service/requirements.txt
+            sdk-python/pyproject.toml
+      - working-directory: ai-service
+        run: pip install -r requirements.txt && pytest -q
+      - working-directory: sdk-python
+        run: pip install -e ".[test]" && pytest -q

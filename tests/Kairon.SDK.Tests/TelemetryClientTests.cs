@@ -15,7 +15,8 @@ public class TelemetryClientTests
 {
     private static KaironTelemetryClient CreateClient(
         HttpMessageHandler handler,
-        Action<KaironOptions>? configure = null)
+        Action<KaironOptions>? configure = null,
+        string? httpClientBaseAddress = null)
     {
         var options = new KaironOptions
         {
@@ -28,7 +29,7 @@ public class TelemetryClientTests
 
         var http = new HttpClient(handler)
         {
-            BaseAddress = new Uri(options.Endpoint.TrimEnd('/') + "/"),
+            BaseAddress = new Uri((httpClientBaseAddress ?? options.Endpoint).TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromSeconds(10)
         };
 
@@ -210,6 +211,80 @@ public class TelemetryClientTests
 
         Assert.NotNull(response);
         Assert.False(response!.Success);
+    }
+
+    // --- RB-002: KaironTelemetryClient is the lowest public transport boundary and must validate
+    // the EFFECTIVE destination itself - a caller can construct this class directly with any
+    // HttpClient, bypassing every check AddKairon/KaironClient would otherwise have performed. ---
+
+    [Fact]
+    public async Task DirectConstructionWithARemoteHttpBaseAddressIsRejectedAndNeverSent()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, """{"success":true}""");
+
+        var response = await CreateClient(handler, httpClientBaseAddress: "http://remote-host:8000").SendAsync(Payload());
+
+        Assert.NotNull(response);
+        Assert.False(response!.Success);
+        Assert.Contains("plain HTTP is only allowed to localhost", response.Message);
+        Assert.Null(handler.LastRequest); // Never actually sent.
+    }
+
+    [Fact]
+    public async Task DirectConstructionWithARemoteHttpsBaseAddressIsAccepted()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, """{"success":true}""");
+
+        var response = await CreateClient(handler, httpClientBaseAddress: "https://remote-host").SendAsync(Payload());
+
+        Assert.NotNull(response);
+        Assert.True(response!.Success);
+        Assert.NotNull(handler.LastRequest);
+    }
+
+    [Fact]
+    public async Task DirectConstructionWithALoopbackHttpBaseAddressIsAccepted()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, """{"success":true}""");
+
+        var response = await CreateClient(handler, httpClientBaseAddress: "http://127.0.0.1:8000").SendAsync(Payload());
+
+        Assert.NotNull(response);
+        Assert.True(response!.Success);
+        Assert.NotNull(handler.LastRequest);
+    }
+
+    [Fact]
+    public async Task SafeOptionsEndpointWithAnUnsafeHttpClientBaseAddressIsStillRejected()
+    {
+        // options.Endpoint says HTTPS, but the HttpClient actually sending the request has a
+        // different, insecure BaseAddress - the effective destination must govern, not the
+        // declared configuration.
+        var handler = new StubHandler(HttpStatusCode.OK, """{"success":true}""");
+
+        var response = await CreateClient(handler,
+            o => o.Endpoint = "https://safe.example",
+            httpClientBaseAddress: "http://remote-host").SendAsync(Payload());
+
+        Assert.NotNull(response);
+        Assert.False(response!.Success);
+        Assert.Null(handler.LastRequest);
+    }
+
+    [Fact]
+    public async Task UnsafeOptionsEndpointWithASafeHttpClientBaseAddressIsAccepted()
+    {
+        // The inverse: options.Endpoint alone never determines the outcome - only where the
+        // request actually goes.
+        var handler = new StubHandler(HttpStatusCode.OK, """{"success":true}""");
+
+        var response = await CreateClient(handler,
+            o => o.Endpoint = "http://remote-host",
+            httpClientBaseAddress: "https://safe.example").SendAsync(Payload());
+
+        Assert.NotNull(response);
+        Assert.True(response!.Success);
+        Assert.NotNull(handler.LastRequest);
     }
 
     // --- Test doubles ---

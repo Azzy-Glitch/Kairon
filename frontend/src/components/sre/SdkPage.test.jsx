@@ -144,6 +144,34 @@ describe('SdkPage re-pairing', () => {
     expect(sdkApi.completeRepair).toHaveBeenCalledTimes(1);
   }, POLL_TEST_TIMEOUT);
 
+  it('NB-002: never has more than one getPairingStatus request in flight, even when a response is slower than the poll interval', async () => {
+    renderSdkPage();
+    await openPairingTab();
+    await startRepair();
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    // Each response takes noticeably longer than REPAIR_POLL_INTERVAL_MS to resolve - a naive
+    // setInterval-based poller would already have fired a second (and third) request before the
+    // first one lands. The self-scheduling poller must never start the next one until this one
+    // has actually finished.
+    sdkApi.getPairingStatus.mockImplementation(() => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          inFlight -= 1;
+          resolve({ status: 'Pending' });
+        }, REPAIR_POLL_INTERVAL_MS * 1.5);
+      });
+    });
+
+    // Long enough to span several would-be overlapping ticks under the old setInterval behavior.
+    await new Promise((resolve) => setTimeout(resolve, REPAIR_POLL_INTERVAL_MS * 4));
+
+    expect(maxInFlight).toBe(1);
+  }, POLL_TEST_TIMEOUT * 2);
+
   it('shows an expired message and stops polling once the code expires', async () => {
     renderSdkPage();
     await openPairingTab();

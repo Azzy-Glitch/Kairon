@@ -127,7 +127,7 @@ public static class AgentCredentialStore
             }
 
             var generated = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
-            File.WriteAllText(credentialPath, JsonSerializer.Serialize(new StoredCredential { AgentKey = generated }));
+            Write(credentialPath, new StoredCredential { AgentKey = generated });
             return generated;
         }
         catch (Exception ex)
@@ -152,8 +152,48 @@ public static class AgentCredentialStore
         return JsonSerializer.Deserialize<StoredCredential>(File.ReadAllText(path));
     }
 
-    private static void Write(string path, StoredCredential credential) =>
-        File.WriteAllText(path, JsonSerializer.Serialize(credential));
+    /// <summary>
+    /// NB-001: writes atomically - a new temp file (in the SAME directory, so it inherits this
+    /// folder's ACL exactly like the file it replaces, and so the final move is a same-volume
+    /// rename rather than a cross-volume copy) is fully written and flushed to disk, THEN moved
+    /// over the real path with File.Move's overwrite, which Windows performs as a single atomic
+    /// rename. An interruption (crash, power loss, disk full) at any point before that final move
+    /// leaves the existing credential file completely untouched - never a truncated or partially
+    /// written one becoming the active credential. The temp file is always cleaned up afterward,
+    /// including on failure, so no stray plaintext credential fragment is left behind.
+    /// </summary>
+    private static void Write(string path, StoredCredential credential)
+    {
+        var directory = Path.GetDirectoryName(path)!;
+        Directory.CreateDirectory(directory);
+        var tempPath = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+
+        try
+        {
+            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(stream))
+            {
+                writer.Write(JsonSerializer.Serialize(credential));
+                writer.Flush();
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(tempPath, path, overwrite: true);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(tempPath)) File.Delete(tempPath);
+            }
+            catch
+            {
+                // Best-effort: the temp file is uniquely named and carries no more exposure than
+                // the folder's own ACL already permits, and the real credential path (untouched
+                // on this path) remains the sole source of truth either way.
+            }
+        }
+    }
 
     private static string Generate() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32));
 

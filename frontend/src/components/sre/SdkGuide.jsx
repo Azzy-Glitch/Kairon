@@ -432,7 +432,7 @@ function SecurityCard() {
           <li>Never put pairing codes into source code.</li>
           <li>Never use a Groq key as an application telemetry key.</li>
           <li>Never expose project credentials in screenshots or logs.</li>
-          <li>Plain HTTP is only accepted to a loopback backend (<code>localhost</code>/<code>127.0.0.0/8</code>/<code>::1</code>). Connecting to any non-local KAIRON backend requires HTTPS — the SDK refuses a remote plaintext endpoint before sending anything.</li>
+          <li>Plain HTTP is only accepted to a loopback backend (<code>localhost</code>/<code>127.0.0.0/8</code>/<code>::1</code>). Connecting to any non-local KAIRON backend requires HTTPS — the SDK refuses a remote plaintext endpoint before sending anything, checked at every point an endpoint can enter the SDK (configuration, pairing, the actual telemetry send itself) rather than once. The SDK also never follows an HTTP redirect, so a compromised or misconfigured backend cannot redirect a request — and the credentials/telemetry on it — onto a different origin.</li>
         </ul>
         <p>Use environment variables or your deployment's secret manager.</p>
       </div>

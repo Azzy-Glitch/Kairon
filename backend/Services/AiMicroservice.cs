@@ -19,25 +19,46 @@ public class AiMicroservice : IAiMicroservice
     private readonly ILogger<AiMicroservice> _logger;
     private readonly IAiProviderConfigService _providerConfig;
     private readonly bool _staticMockModeDefault;
+    private readonly TimeProvider _time;
 
     private bool _isAvailable = true;
     private DateTime _lastFailure = DateTime.MinValue;
     private static readonly TimeSpan RecoveryCooldown = TimeSpan.FromMinutes(2);
 
-    public bool IsAvailable => _isAvailable || (DateTime.UtcNow - _lastFailure) > RecoveryCooldown;
+    /// <summary>
+    /// RB-007: whether the provider is ACTUALLY known to be reachable right now - true from
+    /// process start (an optimistic default, since nothing has failed yet) or after the most
+    /// recent real call attempt succeeded. This is what "AiProviderReachable" reports externally
+    /// (HealthStatusController, IncidentQueryService) and it deliberately never flips back to true
+    /// merely because <see cref="RecoveryCooldown"/> elapsed - a cooldown window expiring proves
+    /// nothing about whether the provider actually came back; only a real, successful call does.
+    /// A provider that is still down keeps reporting unreachable, however long its cooldown has
+    /// been over, until an attempt genuinely succeeds again.
+    /// </summary>
+    public bool IsAvailable => _isAvailable;
+
+    /// <summary>Internal gate only: whether a NEW call attempt should even be tried right now.
+    /// After the cooldown window, exactly one attempt is let through again (a half-open circuit-
+    /// breaker probe) - this does not itself mean the provider is reachable (see
+    /// <see cref="IsAvailable"/>), only that it is worth trying. A failed probe immediately resets
+    /// the cooldown clock, so a still-down provider is retried at most once per window rather than
+    /// on every request.</summary>
+    private bool ShouldAttempt => _isAvailable || (_time.GetUtcNow().UtcDateTime - _lastFailure) > RecoveryCooldown;
 
     public AiMicroservice(
         HttpClient httpClient,
         IConfiguration configuration,
         IOptions<AiOrchestrationOptions> aiOptions,
         IAiProviderConfigService providerConfig,
-        ILogger<AiMicroservice> logger)
+        ILogger<AiMicroservice> logger,
+        TimeProvider? time = null)
     {
         _httpClient = httpClient;
         _configuration = configuration;
         _aiOptions = aiOptions.Value;
         _providerConfig = providerConfig;
         _logger = logger;
+        _time = time ?? TimeProvider.System;
         _staticMockModeDefault = configuration.GetValue<bool>("AiService:MockMode", false);
     }
 
@@ -82,7 +103,7 @@ public class AiMicroservice : IAiMicroservice
         if (await EffectiveMockModeAsync(cancellationToken))
             return GetMockErrorAnalysis();
 
-        if (!IsAvailable)
+        if (!ShouldAttempt)
             throw new InvalidOperationException("AI service is currently unavailable");
 
         try
@@ -96,7 +117,7 @@ public class AiMicroservice : IAiMicroservice
         {
             _logger.LogError(ex, "Failed to call AI service for error analysis");
             _isAvailable = false;
-            _lastFailure = DateTime.UtcNow;
+            _lastFailure = _time.GetUtcNow().UtcDateTime;
             throw;
         }
     }
@@ -106,7 +127,7 @@ public class AiMicroservice : IAiMicroservice
         if (await EffectiveMockModeAsync(cancellationToken))
             return GetMockPrediction();
 
-        if (!IsAvailable)
+        if (!ShouldAttempt)
             throw new InvalidOperationException("AI service is currently unavailable");
 
         try
@@ -120,7 +141,7 @@ public class AiMicroservice : IAiMicroservice
         {
             _logger.LogError(ex, "Failed to call AI service for prediction");
             _isAvailable = false;
-            _lastFailure = DateTime.UtcNow;
+            _lastFailure = _time.GetUtcNow().UtcDateTime;
             throw;
         }
     }
@@ -130,7 +151,7 @@ public class AiMicroservice : IAiMicroservice
         if (await EffectiveMockModeAsync(cancellationToken))
             return GetMockRecommendation();
 
-        if (!IsAvailable)
+        if (!ShouldAttempt)
             throw new InvalidOperationException("AI service is currently unavailable");
 
         try
@@ -144,7 +165,7 @@ public class AiMicroservice : IAiMicroservice
         {
             _logger.LogError(ex, "Failed to call AI service for recommendations");
             _isAvailable = false;
-            _lastFailure = DateTime.UtcNow;
+            _lastFailure = _time.GetUtcNow().UtcDateTime;
             throw;
         }
     }
@@ -154,7 +175,7 @@ public class AiMicroservice : IAiMicroservice
         if (await EffectiveMockModeAsync(cancellationToken))
             return GetMockFixSuggestions();
 
-        if (!IsAvailable)
+        if (!ShouldAttempt)
             throw new InvalidOperationException("AI service is currently unavailable");
 
         try
@@ -168,7 +189,7 @@ public class AiMicroservice : IAiMicroservice
         {
             _logger.LogError(ex, "Failed to call AI service for fix suggestions");
             _isAvailable = false;
-            _lastFailure = DateTime.UtcNow;
+            _lastFailure = _time.GetUtcNow().UtcDateTime;
             throw;
         }
     }
@@ -184,7 +205,7 @@ public class AiMicroservice : IAiMicroservice
         if (await EffectiveMockModeAsync(cancellationToken))
             return GetMockInvestigation(evidence);
 
-        if (!IsAvailable)
+        if (!ShouldAttempt)
             throw new AiUnavailableException("AI service is in a failed state and is cooling down");
 
         var attempts = Math.Max(1, _aiOptions.MaxRetries + 1);
@@ -241,7 +262,7 @@ public class AiMicroservice : IAiMicroservice
         }
 
         _isAvailable = false;
-        _lastFailure = DateTime.UtcNow;
+        _lastFailure = _time.GetUtcNow().UtcDateTime;
 
         throw new AiUnavailableException(
             $"AI investigation failed after {attempts} attempt(s): {Redaction.Describe(last!)}", last!);

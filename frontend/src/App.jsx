@@ -181,11 +181,8 @@ function AppShell() {
 
               <div className="sidebar-status-row">
                 <span className="sidebar-status-row-label">AI service</span>
-                <span className={`sidebar-status-row-value ${health.aiService ? 'good' : 'bad'}`}>
-                  {health.aiService ? 'Operational' : 'Offline'}
-                  {health.aiService && (
-                    <span className="sidebar-status-mode">{aiStatus.short}</span>
-                  )}
+                <span className={`sidebar-status-row-value ${aiStatus.tone === 'good' ? 'good' : 'bad'}`}>
+                  {aiStatus.short}
                 </span>
               </div>
 

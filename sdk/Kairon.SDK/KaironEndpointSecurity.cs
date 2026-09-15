@@ -49,4 +49,21 @@ public static class KaironEndpointSecurity
                 "Kairon endpoint rejected: plain HTTP is only allowed to localhost/127.0.0.0/8/::1. " +
                 "Use HTTPS for any non-local KAIRON backend.");
     }
+
+    /// <summary>Same policy as <see cref="IsAllowed(string?)"/>, applied to an already-parsed
+    /// <see cref="Uri"/> - the form an <c>HttpClient.BaseAddress</c> is stored as. This is what lets
+    /// the actual transport boundary (<see cref="KaironTelemetryClient"/>) validate the EFFECTIVE
+    /// destination it is about to send to, regardless of how that HttpClient was constructed or
+    /// configured - a caller that builds its own HttpClient and passes it directly, bypassing
+    /// AddKairon/KaironClient entirely, must not be able to point this SDK at an insecure endpoint
+    /// merely by never going through either of those.</summary>
+    public static bool IsAllowed(Uri? endpoint) => endpoint is not null && IsAllowed(endpoint.ToString());
+
+    /// <summary>A message handler with automatic redirect-following disabled. Every HttpClient this
+    /// SDK constructs internally (pairing, confirmation, telemetry) uses one of these rather than a
+    /// default handler: a compromised or malicious KAIRON backend must never be able to redirect a
+    /// pairing code, project API key header, or telemetry payload onto a different - possibly
+    /// attacker-controlled or plaintext - origin by returning a 3xx response. A redirect is instead
+    /// surfaced as an ordinary non-success status, exactly like any other rejected request.</summary>
+    public static HttpClientHandler CreateNonRedirectingHandler() => new() { AllowAutoRedirect = false };
 }

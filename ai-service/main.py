@@ -10,7 +10,6 @@ Autonomous SRE backend consumes.
 from __future__ import annotations
 
 import dataclasses
-import ipaddress
 import json
 import logging
 import os
@@ -22,7 +21,13 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from kairon.config import DEFAULT_ENDPOINTS, DEFAULT_MODELS, AiConfig, is_placeholder
+from kairon.config import (
+    DEFAULT_ENDPOINTS,
+    DEFAULT_MODELS,
+    AiConfig,
+    is_endpoint_allowed,
+    is_placeholder,
+)
 from kairon.schemas import (
     ConfigureRequest,
     ContextReq,
@@ -104,27 +109,19 @@ async def providers() -> dict:
 # because these names are rebound, not just mutated.
 
 
-def _is_loopback_host(host: str) -> bool:
-    """localhost and the loopback ranges only - never a hostname that merely looks local."""
-    if host.lower() == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
 def _validate_endpoint(endpoint: str) -> None:
-    """Rejects an endpoint that would send the provider API key somewhere unsafe.
+    """Rejects an endpoint that would send the provider API key somewhere unsafe, using the same
+    is_endpoint_allowed policy AiConfig.from_env() applies at startup - one consistent rule
+    regardless of whether the endpoint arrived via environment configuration or this runtime
+    /configure endpoint.
 
     This runs inside _merge_configured, before any provider is constructed or called, so a rejected
-    endpoint never reaches an outbound request and the key is never transmitted. Plain HTTP is
-    refused because the Authorization header carrying the key would cross the network in clear
-    text; loopback is exempt so a local or self-hosted provider (an on-box proxy, a dev gateway)
-    still works without demanding a certificate for 127.0.0.1.
+    endpoint never reaches an outbound request and the key is never transmitted.
     """
-    parsed = urlparse(endpoint)
+    if is_endpoint_allowed(endpoint):
+        return
 
+    parsed = urlparse(endpoint)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise AiServiceError(
             "Endpoint must be an absolute http(s) URL, for example "
@@ -132,14 +129,19 @@ def _validate_endpoint(endpoint: str) -> None:
             status_code=400,
             code="invalid_endpoint",
         )
-
-    if parsed.scheme == "http" and not _is_loopback_host(parsed.hostname):
+    if parsed.username or parsed.password:
         raise AiServiceError(
-            "Endpoint must use HTTPS. Plain HTTP would send the provider API key in clear text; "
-            "only loopback addresses (localhost, 127.0.0.1, ::1) may use HTTP.",
+            "Endpoint must not embed credentials (user:pass@host) - they would be exposed in "
+            "logs, proxies, and shell/browser history.",
             status_code=400,
             code="insecure_endpoint",
         )
+    raise AiServiceError(
+        "Endpoint must use HTTPS. Plain HTTP would send the provider API key in clear text; "
+        "only loopback addresses (localhost, 127.0.0.1, ::1) may use HTTP.",
+        status_code=400,
+        code="insecure_endpoint",
+    )
 
 
 def _merge_configured(request: ConfigureRequest) -> AiConfig:
@@ -212,9 +214,11 @@ async def configure_test(request: ConfigureRequest) -> dict:
     }
 
     if candidate.effective_provider == "mock":
-        # Same fallback logic every other call path uses (AI PRD section 13): no usable key means
-        # this "succeeds" against the deterministic mock, and the response says so honestly rather
-        # than implying a real provider was reached.
+        # Only true for an EXPLICIT mock choice (force_mock, or provider="mock") - effective_provider
+        # never resolves to "mock" merely because a real provider lacks a usable key; that case
+        # reaches create_provider below instead, which returns UnconfiguredProvider and reports
+        # success=False via the ProviderError branch. This is a real, working connectivity result
+        # for the mock provider itself, not a fallback standing in for an untested real one.
         result.update(success=True, error=None)
         return result
 

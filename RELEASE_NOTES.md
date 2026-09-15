@@ -84,10 +84,6 @@ additive or a same-behavior-contract hardening fix - no existing integration nee
 
 ## Known limitations
 
-- SQLite has no dedicated migration history yet (see `backend/Program.cs`'s database-init block) -
-  `EnsureCreated()` is used instead of `Migrate()` for SQLite today, which is safe because there is
-  no existing SQLite install base yet to upgrade. Before the next schema change ships, a genuine
-  SQLite-specific migration history needs to be built.
 - The published, unsigned Release desktop `Kairon.exe` and the installer's own self-extracting stub
   can both be blocked by Windows Smart App Control on a machine where it's enabled; code-signing
   would resolve this but is not configured in this environment.

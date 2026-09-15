@@ -21,6 +21,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      # NB-004: the only CI job that runs on a real Windows machine - the other (Linux) job builds
+      # every project but cannot execute Kairon.Desktop.Tests, Kairon.Agent.Tests, or
+      # Kairon.UserAgent.Tests at all (WinForms/service-hosting testhosts that only start on
+      # Windows), and skips the SqlServerFact-gated backend tests for want of a SQL Server/LocalDB
+      # instance. windows-latest ships SQL Server LocalDB pre-installed, so this single step
+      # exercises all of that for real before a tagged release is packaged - a genuine test
+      # failure here blocks producing an installer from broken code.
+      - run: dotnet test Kairon.slnx --configuration Release
       # Builds the desktop shell, backend, Windows Service Agent, UserAgent, and the
       # PyInstaller-packaged AI service, then compiles the Inno Setup installer.
       # Runtime and packaging dependencies are both pinned. The same manifest is consumed by the

@@ -33,7 +33,7 @@ public static class KaironPairingClient
 
         try
         {
-            using var client = new HttpClient(handler ?? new HttpClientHandler(), disposeHandler: true)
+            using var client = new HttpClient(handler ?? KaironEndpointSecurity.CreateNonRedirectingHandler(), disposeHandler: true)
             {
                 BaseAddress = new Uri(backendEndpoint.TrimEnd('/') + "/"),
                 Timeout = TimeSpan.FromSeconds(10)
@@ -85,7 +85,7 @@ public static class KaironPairingClient
         // earlier.
         if (!KaironEndpointSecurity.IsAllowed(backendEndpoint)) return false;
 
-        using var client = new HttpClient(handler ?? new HttpClientHandler(), disposeHandler: true)
+        using var client = new HttpClient(handler ?? KaironEndpointSecurity.CreateNonRedirectingHandler(), disposeHandler: true)
         {
             BaseAddress = new Uri(backendEndpoint.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromSeconds(10)

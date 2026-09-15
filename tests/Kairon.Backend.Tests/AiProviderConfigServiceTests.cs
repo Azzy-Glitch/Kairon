@@ -106,6 +106,49 @@ public sealed class AiProviderConfigServiceTests : IDisposable
         Assert.Equal("qwen", summary.Provider);
     }
 
+    // --- RB-001: provider and provider credential are an atomic pair - a key entered for one
+    // provider must never end up associated with a different provider. ---
+
+    [Fact]
+    public async Task ChangingProviderWithoutANewKeyDoesNotCarryOverThePreviousProvidersKey()
+    {
+        await _service.SaveAsync("groq", "gsk_groq_key", "model-a", null);
+
+        var summary = await _service.SaveAsync("qwen", null, null, null);
+
+        Assert.Equal("qwen", summary.Provider);
+        Assert.False(summary.HasApiKey);
+        Assert.Null(await _service.GetDecryptedApiKeyAsync());
+
+        var selection = await _service.GetSelectionAsync();
+        Assert.Equal("qwen", selection!.Value.Provider);
+    }
+
+    [Fact]
+    public async Task ChangingProviderWithANewKeyUsesOnlyTheNewKey()
+    {
+        await _service.SaveAsync("groq", "gsk_groq_key", "model-a", null);
+
+        var summary = await _service.SaveAsync("qwen", "qwen_new_key", null, null);
+
+        Assert.Equal("qwen", summary.Provider);
+        Assert.True(summary.HasApiKey);
+        Assert.Equal("qwen_new_key", await _service.GetDecryptedApiKeyAsync());
+    }
+
+    [Fact]
+    public async Task ChangingProviderTwiceWithoutKeysNeverResurrectsAnEarlierProvidersKey()
+    {
+        await _service.SaveAsync("groq", "gsk_groq_key", null, null);
+        await _service.SaveAsync("qwen", null, null, null);
+
+        var summary = await _service.SaveAsync("gemini", null, null, null);
+
+        Assert.Equal("gemini", summary.Provider);
+        Assert.False(summary.HasApiKey);
+        Assert.Null(await _service.GetDecryptedApiKeyAsync());
+    }
+
     [Fact]
     public async Task BlankProviderIsRejected()
     {

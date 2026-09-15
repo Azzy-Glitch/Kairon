@@ -87,7 +87,7 @@ export default function AiInsightsPage() {
 
         <div className="ai-insights-provider">
           <span className="ai-insights-provider-label">AI service</span>
-          <span className={`status-dot ${health.aiService ? 'online' : 'offline'}`} />
+          <span className={`status-dot ${aiStatus.tone === 'good' ? 'online' : 'offline'}`} />
           <span>{aiStatus.label}</span>
         </div>
       </div>

@@ -26,9 +26,13 @@ public interface IAiProviderConfigService
     Task<AiProviderConfigSummary> GetAsync(CancellationToken cancellationToken = default);
 
     /// <summary>Upserts the singleton row. A null/blank <paramref name="apiKey"/> keeps whatever
-    /// key is already stored (so changing just the model never requires resending a known-good
-    /// key); a null/blank <paramref name="model"/> means "Auto / Recommended"; a null/blank
-    /// <paramref name="endpoint"/> means the provider's default public endpoint.</summary>
+    /// key is already stored, but ONLY when <paramref name="provider"/> is unchanged from the
+    /// stored row (so changing just the model never requires resending a known-good key). If
+    /// <paramref name="provider"/> differs from what is currently stored, an omitted key clears
+    /// the stored key instead of carrying it over - a key must never end up associated with a
+    /// provider other than the one it was entered for. A null/blank <paramref name="model"/>
+    /// means "Auto / Recommended"; a null/blank <paramref name="endpoint"/> means the provider's
+    /// default public endpoint.</summary>
     Task<AiProviderConfigSummary> SaveAsync(
         string provider, string? apiKey, string? model, string? endpoint, CancellationToken cancellationToken = default);
 
@@ -78,6 +82,12 @@ public sealed class AiProviderConfigService : IAiProviderConfigService
         var entity = await FindAsync(cancellationToken);
         var now = _time.GetUtcNow().UtcDateTime;
 
+        // Provider and key must move together: an omitted key only ever means "keep testing/using
+        // the key already on file for THIS provider" - it must never let a previous provider's key
+        // silently become associated with a newly selected one.
+        var providerChanged = entity is not null &&
+            !string.Equals(entity.Provider, normalizedProvider, StringComparison.Ordinal);
+
         if (entity is null)
         {
             entity = new AiProviderConfig { Id = AiProviderConfig.SingletonId, CreatedAt = now };
@@ -92,6 +102,8 @@ public sealed class AiProviderConfigService : IAiProviderConfigService
         var trimmedKey = (apiKey ?? string.Empty).Trim();
         if (trimmedKey.Length > 0)
             entity.EncryptedApiKey = _protector.Protect(trimmedKey);
+        else if (providerChanged)
+            entity.EncryptedApiKey = string.Empty;
 
         await _db.SaveChangesAsync(cancellationToken);
         return ToSummary(entity);

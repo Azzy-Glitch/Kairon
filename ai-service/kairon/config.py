@@ -6,8 +6,10 @@ and nothing here is ever returned by an endpoint or written to a log (AI PRD sec
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 
 def _env(name: str, default: str = "") -> str:
@@ -35,6 +37,47 @@ PLACEHOLDER_KEYS = {"", "your-key", "your-api-key", "changeme", "none", "null", 
 
 def is_placeholder(key: str | None) -> bool:
     return key is None or key.strip().lower() in PLACEHOLDER_KEYS
+
+
+def _is_loopback_host(host: str) -> bool:
+    """localhost and the loopback ranges only - never a hostname that merely looks local."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def is_endpoint_allowed(endpoint: str) -> bool:
+    """The ONE endpoint-validation policy for this service, applied identically wherever a custom
+    AI provider endpoint can enter it: startup environment configuration (AiConfig.from_env,
+    below), the runtime /configure endpoint (main.py), and provider construction. A blank endpoint
+    is always allowed - it means "use this provider's own default", not an override to validate.
+
+    Plain HTTP is refused unless the host is a genuine loopback address (the Authorization/API-key
+    header would otherwise cross a real network in clear text); HTTPS is accepted for any host.
+    Embedded userinfo (https://user:pass@host) is refused on either scheme - it is a credential
+    leak vector of its own (logged URLs, proxies, browser/shell history) that this service never
+    needs.
+    """
+    if not endpoint:
+        return True
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    if parsed.username or parsed.password:
+        return False
+    if parsed.scheme == "http" and not _is_loopback_host(parsed.hostname):
+        return False
+    return True
+
+
+class EndpointNotAllowedError(ValueError):
+    """A supplied AI provider endpoint failed is_endpoint_allowed. Raised directly by
+    AiConfig.from_env() (crashing startup with a clear, actionable message rather than silently
+    starting with an insecure override); main.py's runtime /configure endpoint catches this and
+    reports it as an ordinary 400 AiServiceError instead."""
 
 
 # Default model per provider, so AI__Provider alone is a complete configuration.
@@ -77,7 +120,21 @@ class AiConfig:
         # AI_PROVIDER are accepted, because the same value gets set both ways in practice.
         provider = (_env("AI__Provider") or _env("AI_PROVIDER") or "qwen").lower()
         model = _env("AI__Model") or _env("AI_MODEL") or DEFAULT_MODELS.get(provider, "")
-        endpoint = _env("AI__Endpoint") or _env("AI_ENDPOINT") or DEFAULT_ENDPOINTS.get(provider, "")
+
+        # An explicit override (AI__Endpoint/AI_ENDPOINT) is exactly as untrusted as one supplied
+        # through the runtime /configure endpoint - startup environment configuration must not be
+        # a second, unvalidated path to a remote plaintext endpoint or one carrying embedded
+        # credentials. A provider's own DEFAULT_ENDPOINTS entry is never checked: it is a fixed,
+        # known-safe HTTPS URL baked into this module, not external input.
+        endpoint_override = _env("AI__Endpoint") or _env("AI_ENDPOINT")
+        if endpoint_override and not is_endpoint_allowed(endpoint_override):
+            raise EndpointNotAllowedError(
+                f"AI__Endpoint/AI_ENDPOINT {endpoint_override!r} is not allowed: plain HTTP is "
+                "only allowed to localhost/loopback addresses, and an endpoint embedding "
+                "credentials (user:pass@host) is never allowed. Use an HTTPS endpoint for any "
+                "non-local AI provider."
+            )
+        endpoint = endpoint_override or DEFAULT_ENDPOINTS.get(provider, "")
 
         force_mock = (_env("AI__MockMode") or _env("AI_MOCK_MODE") or "").lower() in {"1", "true", "yes"}
 

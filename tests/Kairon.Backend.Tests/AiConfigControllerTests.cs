@@ -211,6 +211,8 @@ public sealed class AiConfigControllerTests : IDisposable
     [InlineData("://missing-scheme")]
     [InlineData("ftp://example.com/v1")]
     [InlineData("file:///etc/passwd")]
+    [InlineData("https://user:password@example.com/v1/chat/completions")]  // embedded userinfo
+    [InlineData("http://user:password@127.0.0.1/v1/chat/completions")]    // ...on either scheme
     public async Task UnsafeOrMalformedEndpointsAreRejectedWithoutStoringOrSendingAnything(string endpoint)
     {
         var result = await _controller.Save(

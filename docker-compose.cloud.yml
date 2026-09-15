@@ -6,7 +6,10 @@ services:
     image: kairon/ai:${KAIRON_VERSION:-dev}
     restart: unless-stopped
     environment:
-      AI__Provider: ${KAIRON_AI_PROVIDER:-mock}
+      # No default: a forgotten value must fail the deployment closed, never silently start on
+      # mock AI. Set to a real provider (groq, qwen, gemini), or explicitly "mock" only for a
+      # deliberate non-production/test deployment.
+      AI__Provider: ${KAIRON_AI_PROVIDER:?Set KAIRON_AI_PROVIDER (groq, qwen, gemini - or explicitly mock)}
       AI__Model: ${KAIRON_AI_MODEL:-}
       QWEN_API_KEY: ${QWEN_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -23,8 +26,16 @@ services:
     depends_on:
       ai:
         condition: service_healthy
+    # Loopback-only by default: this backend speaks plain HTTP (see backend/Dockerfile), and the
+    # SDKs deliberately refuse a remote plaintext endpoint. Directly publishing this to a public
+    # interface would therefore be both insecure (credentials/telemetry in clear text over a real
+    # network) and unusable (no SDK would connect to it). A TLS-terminating reverse proxy is the
+    # supported way to expose this remotely - see docker-compose.cloud.tls.yml and the
+    # "Centralized deployment" section of README.md. An operator who already runs their own
+    # ingress/load balancer in front of this host can still override KAIRON_HTTP_BIND to publish
+    # on a different interface, with that understanding.
     ports:
-      - "${KAIRON_HTTP_PORT:-8000}:8000"
+      - "${KAIRON_HTTP_BIND:-127.0.0.1}:${KAIRON_HTTP_PORT:-8000}:8000"
     environment:
       Persistence__Provider: SqlServer
       ConnectionStrings__DefaultConnection: ${KAIRON_SQL_CONNECTION:?Set KAIRON_SQL_CONNECTION}

@@ -34,8 +34,9 @@ OBSERVE -> DETECT -> CORRELATE -> INVESTIGATE -> DIAGNOSE -> PREDICT
 
 KAIRON does **not** fabricate telemetry on a clean database. With no connected project there are
 no service metrics or incidents. Agent-discovered processes are shown as machine inventory; they
-are not treated as connected projects and do not create application incidents. The simulator is
-opt-in and runs only when an operator starts it from the Demo page or API.
+are not treated as connected projects and do not create application incidents. The simulator
+(`demo/Kairon.DemoApp`) is opt-in and runs only when an operator starts it directly - see "Optional
+controlled scenario" below.
 
 ## Product surfaces
 
@@ -46,7 +47,7 @@ The desktop dashboard is organized around the operator workflow:
 | Monitor | Overview, Services, Live telemetry, Machines | Health, service telemetry, raw observations, machine/process inventory |
 | Respond | Incidents, Actions, Audit trail | Incident lifecycle, approvals, remediation history, audit evidence |
 | Analyse | Insights, Analytics | Diagnoses, confidence, causes, outcomes, and trends |
-| Build | Connect an app, Diagnostics, Demo, Settings | SDK pairing, API tools, opt-in simulation, AI and data configuration |
+| Build | Connect an app, Remediation Targets, Diagnostics, Settings | SDK pairing, authorized remediation scope, API tools, AI and data configuration |
 
 ## Architecture
 
@@ -427,9 +428,17 @@ still exist and be active, but the project key is not enforced in this mode. The
 configuration sets telemetry-key enforcement to `true`. Do not expose the desktop backend beyond
 loopback or reuse its defaults for an internet-facing deployment.
 
-Agent registration is a bootstrap endpoint; subsequent Agent and UserAgent heartbeats require
-their scoped machine credentials. A centralized deployment should place bootstrap registration
-behind a trusted provisioning/network boundary before exposing the backend.
+Agent registration (`POST /api/agent/register`) is the machine-enrollment bootstrap boundary,
+gated by the same operator-key mechanism as every other operator action
+(`SreSecurity:RequireOperatorKey`/`OperatorKey`): a local, single-machine install registers over
+loopback and is trusted automatically with no operator involvement, exactly like today; any
+deployment that has configured an operator key - every real remote/centralized deployment, since
+`docker-compose.cloud.yml` requires `KAIRON_OPERATOR_KEY` - requires that same key on the
+registration request too, for both first-time enrollment and later re-registration/rotation of an
+existing machine. Set `Agent:OperatorKey` in the Agent's own configuration to the backend's
+operator key when registering against a remote backend. Subsequent Agent and UserAgent heartbeats
+continue to authenticate with their own scoped machine credentials, established at registration
+and never the operator key itself.
 
 ## Remediation deployment boundary
 
@@ -478,7 +487,15 @@ injecting the operator key server-side.
 dotnet run --project demo\Kairon.DemoApp\Kairon.DemoApp.csproj
 ```
 
-Then explicitly start the scenario from the Demo page. It is not seeded or started automatically.
+`Kairon.DemoApp` is itself a real, SDK-instrumented application (paired against a KAIRON project
+like any other); it hosts its own control API, not a dashboard page. Trigger and inspect the
+scenario directly against it - not through KAIRON's own frontend or backend, which have no demo
+control surface:
+
+```powershell
+curl -X POST http://localhost:5080/kairon-control/start-retry-storm
+curl http://localhost:5080/kairon-control/state
+```
 
 ## Configuration
 
@@ -517,7 +534,6 @@ The backend exposes OpenAPI/Swagger in development. Main route groups are:
 | `/api/v1/ai-config/*` | provider configuration, connection testing, model listing |
 | `/api/v1/data/export`, `/api/v1/data` | SQLite export and confirmed global deletion |
 | `/api/analyze-error`, `/api/validate-api`, `/api/predict`, `/api/recommend` | diagnostic utilities |
-| `/api/demo/*` | explicitly controlled simulation endpoints |
 
 Sensitive reads and control-plane writes require the operator key when enforcement is enabled.
 
@@ -564,6 +580,9 @@ workflow runs manually and for `v*` tags.
 - a strong backend-to-AI service key;
 - a strong operator key;
 - an explicit allowed frontend origin;
+- an explicit `KAIRON_AI_PROVIDER` (a real provider, or explicitly `mock` for a deliberate
+  non-production deployment - there is no default, so a forgotten value fails startup closed
+  rather than silently running on mock AI);
 - provider credentials when real AI analysis is enabled.
 
 ```powershell
@@ -572,6 +591,40 @@ docker compose -f docker-compose.cloud.yml up --build
 
 The compose configuration enables telemetry-key enforcement. It does not include a SQL Server
 container; point `KAIRON_SQL_CONNECTION` at a separately managed SQL Server.
+
+### TLS / HTTPS boundary
+
+The backend container itself speaks plain HTTP (`backend/Dockerfile`'s `ASPNETCORE_URLS`) - normal
+for a container that only needs to be reached over Docker's internal network. `docker-compose.cloud.yml`
+reflects this: the backend's port is published to `127.0.0.1` on the host by default
+(`KAIRON_HTTP_BIND`), never directly to a public interface, because both .NET and Python SDKs
+deliberately refuse a remote plaintext endpoint - a directly-exposed plain-HTTP backend would be
+insecure *and* unreachable by any SDK.
+
+```text
+Internet
+   |  HTTPS (public KAIRON_PUBLIC_DOMAIN, port 443)
+   v
+TLS-terminating reverse proxy   (Caddy overlay below, or your own ingress/load balancer)
+   |  plain HTTP, internal Docker network only
+   v
+KAIRON backend (127.0.0.1:8000 on the host, never published publicly)
+```
+
+Bring your own TLS termination if you already run one (nginx, Traefik, a cloud load balancer,
+Kubernetes ingress, ...) - point it at `127.0.0.1:${KAIRON_HTTP_PORT:-8000}` on this host and skip
+the rest of this section. Otherwise, `docker-compose.cloud.tls.yml` adds an optional Caddy service
+that obtains and renews a Let's Encrypt certificate automatically:
+
+```powershell
+Copy-Item deploy\Caddyfile.cloud.example deploy\Caddyfile.cloud
+Add-Content .env "KAIRON_PUBLIC_DOMAIN=kairon.example.com"
+docker compose -f docker-compose.cloud.yml -f docker-compose.cloud.tls.yml up -d --build
+```
+
+This requires DNS for `KAIRON_PUBLIC_DOMAIN` to already point at this host, and ports 80/443
+reachable from the internet for the certificate challenge. Configure every SDK and the frontend's
+public URL against `https://<KAIRON_PUBLIC_DOMAIN>`, never the internal `127.0.0.1:8000` address.
 
 ## Repository layout
 
@@ -599,7 +652,10 @@ tests/                    .NET unit, integration, and acceptance tests
   either port.
 - Local desktop telemetry-key enforcement is disabled by default and is not a safe internet-facing
   configuration.
-- Initial Agent registration assumes a trusted provisioning boundary.
+- Agent registration is gated by the operator key (see "Security model and deployment
+  boundaries"), which for a local single-machine install is satisfied automatically over loopback
+  with no separate provisioning step - that convenience is itself a trust assumption: anything
+  that can reach the backend from this same machine can register a machine identity.
 - Data deletion is global; per-project deletion is not implemented.
 - External AI-provider connectivity still depends on the user's provider account, key, model,
   region, network, and endpoint. Passing mock-mode tests does not verify those external systems.

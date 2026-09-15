@@ -30,9 +30,15 @@ export default function SreDashboard({ onOpenIncidents }) {
   const aiStatus = describeAiStatus(health);
   const criticalCount = summary?.severityDistribution?.Critical || 0;
   const highCount = summary?.severityDistribution?.High || 0;
+  // RB-007: an AI provider that is merely not configured yet (or explicitly running in mock mode)
+  // is a normal, expected state - not a system degradation - so it must not turn the headline
+  // "Overall health" tile red. Only the AI process being offline, or a configured provider being
+  // genuinely unreachable, counts as unhealthy here; describeAiStatus already reserves 'urgent'
+  // for exactly those two cases.
+  const aiHealthy = aiStatus.tone !== 'urgent';
   // Must never read "Healthy" while a critical/high incident is open, even if every subsystem is
   // technically up - a contradicted health pill destroys operator trust (brief section 3).
-  const componentsHealthy = Boolean(health?.backend && health?.database && health?.aiService);
+  const componentsHealthy = Boolean(health?.backend && health?.database && aiHealthy);
   const overallHealthy = componentsHealthy && criticalCount === 0 && highCount === 0;
 
   const filteredIncidents = useFilteredBySource(feed.incidents, resolveSource);

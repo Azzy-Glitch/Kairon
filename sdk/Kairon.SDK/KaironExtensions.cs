@@ -41,7 +41,8 @@ public static class KaironExtensions
                 // actually applies, and the failure is reported rather than thrown by HttpClient.
                 client.Timeout =
                     TimeSpan.FromSeconds(Math.Max(2, options.TimeoutSeconds + 1));
-            });
+            })
+            .ConfigurePrimaryHttpMessageHandler(KaironEndpointSecurity.CreateNonRedirectingHandler);
 
         // The sender drains the queue; the collector emits process metrics. Both are best-effort
         // background services that never propagate a fault to the host.

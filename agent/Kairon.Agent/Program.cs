@@ -25,16 +25,22 @@ builder.Services.PostConfigure<AgentOptions>(options =>
 builder.Services.AddHttpClient<AgentEventClient>((sp, http) =>
 {
     var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentOptions>>().Value;
+    // Validated here (config/environment) AND again at actual send time in AgentEventClient
+    // itself - never trusted only once, matching the SDK's own transport-security contract.
+    AgentEndpointSecurity.EnsureAllowed(options.Endpoint);
     http.BaseAddress = new Uri(options.Endpoint.TrimEnd('/') + "/");
     http.Timeout = TimeSpan.FromSeconds(Math.Max(2, options.TimeoutSeconds + 1));
-});
+})
+    .ConfigurePrimaryHttpMessageHandler(AgentEndpointSecurity.CreateNonRedirectingHandler);
 
 builder.Services.AddHttpClient<MachineRegistrationService>((sp, http) =>
 {
     var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentOptions>>().Value;
+    AgentEndpointSecurity.EnsureAllowed(options.Endpoint);
     http.BaseAddress = new Uri(options.Endpoint.TrimEnd('/') + "/");
     http.Timeout = TimeSpan.FromSeconds(Math.Max(2, options.TimeoutSeconds + 1));
-});
+})
+    .ConfigurePrimaryHttpMessageHandler(AgentEndpointSecurity.CreateNonRedirectingHandler);
 
 builder.Services.AddHostedService<LogTailer>();
 builder.Services.AddHostedService<ProcessWatcher>();
