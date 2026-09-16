@@ -141,12 +141,10 @@ begin
 
   Result := (IDOK = MsgBox(
     'Kairon uses the Microsoft Edge WebView2 Runtime to display its interface, and it was not ' +
-    'detected on this machine. Without it, Kairon will install but its window will fail to open.' +
-    #13#10#13#10 +
+    'detected on this machine. Without it, Kairon will install but its window will fail to open.'#13#10#13#10 +
     'Windows 11 and most current Windows 10 installations already include it, so this may be a ' +
     'false alarm. If you are not certain it is installed, click Cancel, install the "Evergreen ' +
-    'Bootstrapper" from Microsoft''s WebView2 download page, then run Setup again.' +
-    #13#10#13#10 +
+    'Bootstrapper" from Microsoft''s WebView2 download page, then run Setup again.'#13#10#13#10 +
     'Click OK only if you know WebView2 is already installed on this machine.',
     mbError, MB_OKCANCEL));
 end;
