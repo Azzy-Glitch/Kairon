@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Sockets;
 using Xunit;
 
 namespace Kairon.SDK.Tests;
@@ -62,26 +61,46 @@ public sealed class RedirectSecurityTests
 
     private sealed class LoopbackRedirectServer : IDisposable
     {
-        private readonly HttpListener _listener = new();
-        private readonly int _port;
+        private HttpListener _listener = new();
+        private int _port;
         private volatile bool _running;
 
         public int OriginHitCount;
         public int TargetHitCount;
         public bool TargetSawApiKeyHeader;
 
-        public LoopbackRedirectServer()
-        {
-            _port = GetFreeLoopbackPort();
-            _listener.Prefixes.Add($"http://127.0.0.1:{_port}/");
-        }
-
         public string OriginUrl => $"http://127.0.0.1:{_port}/origin";
         private string TargetUrl => $"http://127.0.0.1:{_port}/target";
 
         public void Start()
         {
-            _listener.Start();
+            // Retries with a fresh port on failure rather than pre-checking availability via a
+            // throwaway TcpListener: HttpListener claims a port through http.sys's own URL
+            // registration on Windows, a genuinely separate namespace from a raw TCP socket bind,
+            // so a port TcpListener reported as free can still fail to register here (observed for
+            // real on a shared CI runner: "conflicts with an existing registration on the
+            // machine"). Attempting the actual resource being claimed, with a retry, removes that
+            // gap entirely instead of only narrowing it.
+            HttpListenerException? last = null;
+            for (var attempt = 0; attempt < 10; attempt++)
+            {
+                _port = Random.Shared.Next(20000, 60000);
+                _listener = new HttpListener();
+                _listener.Prefixes.Add($"http://127.0.0.1:{_port}/");
+                try
+                {
+                    _listener.Start();
+                    last = null;
+                    break;
+                }
+                catch (HttpListenerException ex)
+                {
+                    last = ex;
+                    _listener.Close();
+                }
+            }
+            if (last is not null) throw last;
+
             _running = true;
             _ = Task.Run(AcceptLoopAsync);
         }
@@ -116,15 +135,6 @@ public sealed class RedirectSecurityTests
                     ctx.Response.Close();
                 }
             }
-        }
-
-        private static int GetFreeLoopbackPort()
-        {
-            using var listener = new TcpListener(IPAddress.Loopback, 0);
-            listener.Start();
-            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            listener.Stop();
-            return port;
         }
 
         public void Dispose()
