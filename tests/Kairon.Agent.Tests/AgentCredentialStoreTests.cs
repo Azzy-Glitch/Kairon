@@ -98,7 +98,7 @@ public sealed class AgentCredentialStoreTests : IDisposable
         Assert.Empty(strayTempFiles);
     }
 
-    [Fact]
+    [WindowsOnlyFact]
     public void AFailedRotationLeavesThePreviousValidCredentialFileCompletelyUnchanged()
     {
         // Seed a legacy v1 credential - exactly the shape ResolveCredentials rewrites to v2 on its
@@ -111,7 +111,10 @@ public sealed class AgentCredentialStoreTests : IDisposable
 
         // A real, unmocked failure: an open handle without FileShare.Delete prevents Windows from
         // completing the atomic rename over this exact path, exactly like a genuine interruption
-        // (another process briefly holding the file, an AV scanner, a backup tool) would.
+        // (another process briefly holding the file, an AV scanner, a backup tool) would. This is
+        // a Windows-specific mandatory-locking behavior - POSIX filesystems (Linux CI) allow a
+        // rename over an open file descriptor, so this exact technique cannot apply there; Agent
+        // only ever ships as a Windows Service in production (see WindowsOnlyFactAttribute below).
         using (new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
             Assert.ThrowsAny<Exception>(() => AgentCredentialStore.ResolveCredentials(
@@ -141,5 +144,17 @@ public sealed class AgentCredentialStoreTests : IDisposable
     {
         var directory = Path.GetDirectoryName(_path);
         if (directory is not null && Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+    }
+}
+
+/// <summary>Skips on non-Windows CI (mirrors SqlServerFactAttribute's established pattern in
+/// Kairon.Backend.Tests) - for a behavior that is genuinely Windows-specific, not a stand-in for
+/// "this is slow" or "this is flaky".</summary>
+public sealed class WindowsOnlyFactAttribute : FactAttribute
+{
+    public WindowsOnlyFactAttribute()
+    {
+        if (!OperatingSystem.IsWindows())
+            Skip = "Exercises a Windows-specific mandatory file-locking behavior; Kairon.Agent only ships as a Windows Service.";
     }
 }

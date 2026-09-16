@@ -69,6 +69,11 @@ jobs:
   # NB-004: the `test` job above tests only one Python version (3.13). sdk-python/pyproject.toml
   # declares `requires-python = ">=3.9"`, so this covers both ends of that declared range - the
   # oldest supported version and a current one - without matrixing every point release in between.
+  # ai-service is deliberately NOT included here: it has no declared supported-Python-version
+  # range of its own, and its requirements.txt pins fastapi==0.141.1, which itself requires
+  # Python >=3.10 - a real floor for ai-service, not a gap in ITS coverage. sdk-python's own
+  # dependencies (including its `test` extra's fastapi>=0.100) resolve to a compatible version on
+  # any Python in its declared range, which is what this matrix actually verifies.
   python-compat:
     runs-on: ubuntu-latest
     strategy:
@@ -81,10 +86,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: |
-            ai-service/requirements.txt
-            sdk-python/pyproject.toml
-      - working-directory: ai-service
-        run: pip install -r requirements.txt && pytest -q
+          cache-dependency-path: sdk-python/pyproject.toml
       - working-directory: sdk-python
         run: pip install -e ".[test]" && pytest -q
