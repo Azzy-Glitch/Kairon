@@ -29,6 +29,18 @@ public sealed class OperatorAuthorizationFilterTests
         Assert.True(new SreSecurityOptions().RequireOperatorKey);
     }
 
+    [Fact]
+    public void EnrollmentAuthorizationIsRequiredByDefaultAndShipsNoKeyAndItsOwnHeader()
+    {
+        var defaults = new AgentEnrollmentSecurityOptions();
+
+        Assert.True(defaults.RequireEnrollmentKey);
+        Assert.Empty(defaults.EnrollmentKeys);
+        // A distinct header, so an operator key forwarded by a proxy can never be read as an
+        // enrollment credential by header name alone.
+        Assert.NotEqual(new SreSecurityOptions().HeaderName, defaults.HeaderName);
+    }
+
     private static ActionExecutingContext Context(
         bool requiresOperator, string? providedHeader, string headerName, IPAddress? remoteIp = null)
     {

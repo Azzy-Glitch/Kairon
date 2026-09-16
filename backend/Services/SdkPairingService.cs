@@ -1,10 +1,12 @@
 using System.Data;
 using System.Security.Cryptography;
 using System.Text;
+using Kairon.Backend.Configuration;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models.Platform;
 using Kairon.Backend.Services.Audit;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace Kairon.Backend.Services;
 
@@ -144,17 +146,19 @@ public sealed class SdkPairingService : ISdkPairingService
     private readonly AppDbContext _db;
     private readonly IProjectCredentialService _credentials;
     private readonly TimeProvider _time;
-    private readonly IConfiguration _configuration;
+    private readonly ProductOptions _product;
     private readonly IPlatformAuditService _audit;
+    private readonly ILogger<SdkPairingService> _logger;
 
     public SdkPairingService(AppDbContext db, IProjectCredentialService credentials, TimeProvider time,
-        IConfiguration configuration, IPlatformAuditService audit)
+        IOptions<ProductOptions> product, IPlatformAuditService audit, ILogger<SdkPairingService> logger)
     {
         _db = db;
         _credentials = credentials;
         _time = time;
-        _configuration = configuration;
+        _product = product.Value;
         _audit = audit;
+        _logger = logger;
     }
 
     public async Task<CreatedPairing?> CreateAsync(Guid projectId, string sdkType, CancellationToken cancellationToken,
@@ -207,6 +211,17 @@ public sealed class SdkPairingService : ISdkPairingService
         var normalizedSdk = NormalizeSdk(sdkType);
         if (normalizedSdk is null) return null;
 
+        // Resolved BEFORE the transaction opens, before the one-time code is marked redeemed, and
+        // before any credential is minted. A pairing code is single-use and a credential is real
+        // state; a deployment that cannot say where SDKs should send telemetry must burn neither.
+        // Failing here leaves the session untouched, so the same code still works once the
+        // configuration is fixed.
+        if (!PairingEndpointPolicy.TryResolve(_product, out var endpoint, out var endpointFailure))
+        {
+            _logger.LogError("Refusing to redeem a pairing code: {Reason}", PairingEndpointPolicy.Explain(endpointFailure));
+            return null;
+        }
+
         var now = _time.GetUtcNow().UtcDateTime;
         await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
 
@@ -230,8 +245,7 @@ public sealed class SdkPairingService : ISdkPairingService
         await _db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        var endpoint = _configuration["Product:BackendUrl"] ?? "http://127.0.0.1:8000";
-        return new PairedSdk(created.ApiKey, session.ProjectId, endpoint.TrimEnd('/'), session.Id);
+        return new PairedSdk(created.ApiKey, session.ProjectId, endpoint, session.Id);
     }
 
     public async Task<bool> RevokePairingAsync(Guid pairingId, CancellationToken cancellationToken, string actor = "local-operator")

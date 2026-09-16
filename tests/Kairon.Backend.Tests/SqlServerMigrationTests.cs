@@ -55,7 +55,6 @@ public sealed class SqlServerFactAttribute : FactAttribute
 {
     public SqlServerFactAttribute()
     {
-        if(!OperatingSystem.IsWindows() && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("KAIRON_TEST_SQLSERVER")))
-            Skip="Requires Windows SQL Server LocalDB or an explicit KAIRON_TEST_SQLSERVER test server.";
+        if (SqlServerAvailability.SkipReason is { } reason) Skip = reason;
     }
 }

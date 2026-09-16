@@ -141,9 +141,10 @@ public class MachineRegistrationService : BackgroundService
                 Content = JsonContent.Create(registration)
             };
             // Only needed against a remote/centralized backend that requires it - a local install
-            // registers over loopback, which that backend trusts without one. See AgentOptions.OperatorKey.
-            if (!string.IsNullOrWhiteSpace(_options.OperatorKey))
-                request.Headers.Add("X-Kairon-Operator-Key", _options.OperatorKey);
+            // registers over loopback, which that backend accepts without one. See
+            // AgentOptions.EnrollmentKey: this is the enrollment credential, never the operator key.
+            if (!string.IsNullOrWhiteSpace(_options.EnrollmentKey))
+                request.Headers.Add("X-Kairon-Enrollment-Key", _options.EnrollmentKey);
 
             var response = await _http.SendAsync(request, timeout.Token);
             if (response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(_options.PreviousAgentKey))

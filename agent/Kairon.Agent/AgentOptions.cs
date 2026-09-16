@@ -68,12 +68,17 @@ public class AgentOptions
     /// <summary>Previous machine key used only to authenticate a one-time v1-to-v2 rotation.</summary>
     public string? PreviousAgentKey { get; set; }
 
-    /// <summary>RB-005: the backend's own operator key (SreSecurity:OperatorKey), presented on the
-    /// machine-registration request only. A local, single-machine install never needs this - the
-    /// backend trusts a loopback registration request automatically when no operator key is
-    /// configured there. Set this only when registering against a remote/centralized backend that
-    /// has SreSecurity:RequireOperatorKey enabled with a configured key.</summary>
-    public string? OperatorKey { get; set; }
+    /// <summary>
+    /// Enrollment credential presented on the machine-registration request only, matching one of
+    /// the backend's AgentEnrollmentSecurity:EnrollmentKeys. It authorizes exactly one thing -
+    /// introducing this machine - and is deliberately NOT the backend's operator key: an Agent must
+    /// never hold the credential that approves and executes remediation.
+    ///
+    /// A local, single-machine install leaves this unset: it registers over loopback, which a
+    /// backend with no enrollment key configured accepts. Set it only when registering against a
+    /// remote/centralized backend.
+    /// </summary>
+    public string? EnrollmentKey { get; set; }
 
     public int HeartbeatIntervalSeconds { get; set; } = 20;
 }

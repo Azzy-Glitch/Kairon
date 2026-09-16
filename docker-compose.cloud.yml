@@ -43,8 +43,19 @@ services:
       AiService__MockMode: ${KAIRON_AI_MOCK_MODE:-false}
       AiService__ApiKey: ${KAIRON_AI_SERVICE_KEY:?Set KAIRON_AI_SERVICE_KEY}
       PlatformSecurity__RequireTelemetryKey: "true"
+      # The address pairing hands to SDKs. A centralized deployment must say what it actually is:
+      # the loopback default only ever names the SDK's own machine, so an application would pair
+      # successfully and then report telemetry into itself forever.
+      Product__RequirePublicBackendUrl: "true"
+      Product__BackendUrl: ${KAIRON_PUBLIC_BACKEND_URL:?Set KAIRON_PUBLIC_BACKEND_URL}
       SreSecurity__RequireOperatorKey: "true"
       SreSecurity__OperatorKey: ${KAIRON_OPERATOR_KEY:?Set KAIRON_OPERATOR_KEY}
+      # Machine enrollment credential - a DIFFERENT secret from the operator key above, and
+      # mandatory here: in a centralized deployment no Agent reaches the backend over loopback, so
+      # without this nothing can ever enroll. Rotate by adding __1 alongside __0, moving the fleet
+      # over, then dropping the old one.
+      AgentEnrollmentSecurity__RequireEnrollmentKey: "true"
+      AgentEnrollmentSecurity__EnrollmentKeys__0: ${KAIRON_AGENT_ENROLLMENT_KEY:?Set KAIRON_AGENT_ENROLLMENT_KEY}
       Cors__AllowedOrigins__0: ${KAIRON_ALLOWED_ORIGIN:?Set KAIRON_ALLOWED_ORIGIN}
     networks: [kairon]
 

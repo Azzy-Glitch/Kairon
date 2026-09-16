@@ -44,6 +44,7 @@ public sealed class CloudDeploymentConfigurationTests
     [Theory]
     [InlineData("KAIRON_SQL_CONNECTION")]
     [InlineData("KAIRON_OPERATOR_KEY")]
+    [InlineData("KAIRON_AGENT_ENROLLMENT_KEY")]
     [InlineData("KAIRON_AI_SERVICE_KEY")]
     [InlineData("KAIRON_ALLOWED_ORIGIN")]
     [InlineData("KAIRON_AI_PROVIDER")]
@@ -53,6 +54,18 @@ public sealed class CloudDeploymentConfigurationTests
 
         Assert.Contains($"${{{variable}:?", content);
         Assert.DoesNotContain($"${{{variable}:-", content);
+    }
+
+    [Fact]
+    public void MachineEnrollmentUsesItsOwnSecretNotTheOperatorKey()
+    {
+        var content = ComposeFileContent();
+
+        Assert.Contains("AgentEnrollmentSecurity__EnrollmentKeys__0: ${KAIRON_AGENT_ENROLLMENT_KEY", content);
+        // The whole point of the boundary is that the two credentials are different values. Wiring
+        // the operator key into the enrollment setting would quietly restore the old conflation.
+        Assert.DoesNotContain("AgentEnrollmentSecurity__EnrollmentKeys__0: ${KAIRON_OPERATOR_KEY", content);
+        Assert.DoesNotContain("SreSecurity__OperatorKey: ${KAIRON_AGENT_ENROLLMENT_KEY", content);
     }
 
     // --- RB-008: the backend speaks plain HTTP (backend/Dockerfile's ASPNETCORE_URLS); it must
@@ -90,6 +103,26 @@ public sealed class CloudDeploymentConfigurationTests
 
         // "backend" (the compose service name) resolves only on the internal Docker network -
         // never a host-published port, which the backend service deliberately no longer exposes.
-        Assert.Contains("backend:8000", caddyfile);
+        // The env-var form lets CaddyGatewayIntegrationTests point a real Caddy process at a stub
+        // backend without editing (or copying) the file that actually ships.
+        Assert.Contains("{$KAIRON_BACKEND_UPSTREAM:backend:8000}", caddyfile);
+    }
+
+    [Fact]
+    public void TheTlsOverlayRequiresTheDashboardLoginItDependsOn()
+    {
+        var overlay = File.ReadAllText(FindRepositoryFile("docker-compose.cloud.tls.yml"));
+
+        // Caddy is the only thing authenticating humans in a centralized deployment. Starting it
+        // without a configured login would publish the dashboard - and the operator key it injects
+        // - to anyone who can reach port 443.
+        foreach (var variable in new[]
+                 {
+                     "KAIRON_DASHBOARD_USER", "KAIRON_DASHBOARD_PASSWORD_HASH", "KAIRON_OPERATOR_KEY"
+                 })
+        {
+            Assert.Contains($"${{{variable}:?", overlay);
+            Assert.DoesNotContain($"${{{variable}:-", overlay);
+        }
     }
 }

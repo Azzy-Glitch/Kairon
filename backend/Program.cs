@@ -17,6 +17,14 @@ if (builder.Environment.IsProduction() &&
      !builder.Configuration.GetValue("SreSecurity:RequireOperatorKey", true)))
     throw new InvalidOperationException("Production requires telemetry and operator authentication.");
 
+// Fail fast rather than at the first pairing attempt: a deployment that declares itself publicly
+// reachable but cannot name a usable address would otherwise look healthy right up until an
+// operator mints a code and an SDK burns it. RedeemAsync re-checks this on every redemption too -
+// configuration can be reloaded at runtime, and the code is single-use.
+var productOptions = builder.Configuration.GetSection(ProductOptions.SectionName).Get<ProductOptions>() ?? new ProductOptions();
+if (!PairingEndpointPolicy.TryResolve(productOptions, out _, out var backendUrlFailure))
+    throw new InvalidOperationException(PairingEndpointPolicy.Explain(backendUrlFailure));
+
 // Resolve the same writable runtime-data layout used by SQLite before Serilog opens its file
 // sink. The installed desktop backend runs as the interactive user and cannot write beneath
 // Program Files; %LOCALAPPDATA%\Kairon\logs (or the explicit database path's sibling logs folder)
@@ -67,6 +75,9 @@ builder.Services.AddControllers(options =>
     options.Filters.Add<ValidationFilter>();
     // Gates the approve/reject/cancel endpoints when SreSecurity:RequireOperatorKey is enabled.
     options.Filters.Add<OperatorAuthorizationFilter>();
+    // Gates machine enrollment against its OWN credential (AgentEnrollmentSecurity:EnrollmentKeys).
+    // Separate filter, separate key, separate header: neither boundary can satisfy the other.
+    options.Filters.Add<AgentEnrollmentAuthorizationFilter>();
 }).AddJsonOptions(options =>
 {
     // SQLite returns stored UTC DateTimes as Kind=Unspecified. Always include the UTC marker so

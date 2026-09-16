@@ -455,7 +455,7 @@ public sealed class RePairingTests : IDisposable
 
     private sealed class FakeRepairServer : IDisposable
     {
-        private readonly HttpListener _listener = new();
+        private readonly HttpListener _listener;
         private readonly CancellationTokenSource _cts = new();
         public string Url { get; }
         public string AcceptedApiKey = "krn_old_key";
@@ -468,10 +468,10 @@ public sealed class RePairingTests : IDisposable
 
         public FakeRepairServer()
         {
-            var port = GetFreePort();
-            Url = $"http://127.0.0.1:{port}";
-            _listener.Prefixes.Add(Url + "/");
-            _listener.Start();
+            // ConcurrentCredentialWritesNeverCorruptTheStoredFile starts twelve of these at once,
+            // and a full-solution run has other suites claiming ports at the same time. See
+            // LoopbackListener for why that cannot be a probe-then-bind.
+            (_listener, Url) = LoopbackListener.Claim();
             _ = AcceptLoop(_cts.Token);
         }
 
@@ -538,15 +538,6 @@ public sealed class RePairingTests : IDisposable
             context.Response.ContentLength64 = bytes.Length;
             if (bytes.Length > 0) await context.Response.OutputStream.WriteAsync(bytes, token);
             context.Response.Close();
-        }
-
-        private static int GetFreePort()
-        {
-            var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-            listener.Start();
-            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            listener.Stop();
-            return port;
         }
 
         public void Dispose()

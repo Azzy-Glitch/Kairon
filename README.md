@@ -428,17 +428,25 @@ still exist and be active, but the project key is not enforced in this mode. The
 configuration sets telemetry-key enforcement to `true`. Do not expose the desktop backend beyond
 loopback or reuse its defaults for an internet-facing deployment.
 
-Agent registration (`POST /api/agent/register`) is the machine-enrollment bootstrap boundary,
-gated by the same operator-key mechanism as every other operator action
-(`SreSecurity:RequireOperatorKey`/`OperatorKey`): a local, single-machine install registers over
-loopback and is trusted automatically with no operator involvement, exactly like today; any
-deployment that has configured an operator key - every real remote/centralized deployment, since
-`docker-compose.cloud.yml` requires `KAIRON_OPERATOR_KEY` - requires that same key on the
-registration request too, for both first-time enrollment and later re-registration/rotation of an
-existing machine. Set `Agent:OperatorKey` in the Agent's own configuration to the backend's
-operator key when registering against a remote backend. Subsequent Agent and UserAgent heartbeats
-continue to authenticate with their own scoped machine credentials, established at registration
-and never the operator key itself.
+Agent registration (`POST /api/agent/register`) is the machine-enrollment bootstrap boundary, and
+it is a **separate trust boundary from the operator key**, with its own credential and its own
+header (`AgentEnrollmentSecurity:EnrollmentKeys`, `X-Kairon-Enrollment-Key`). The separation is
+deliberate in both directions: enrolling a machine and approving remediation are different
+privileges, so an enrollment key never opens an operator endpoint and an operator key never enrolls
+a machine.
+
+- **Local, single-machine install:** nothing is configured, and registration is accepted over
+  loopback only. This is the only arrangement that can work in the packaged desktop, which mints a
+  fresh operator key per launch and hands it exclusively to the backend - the installed Agent has
+  no way to learn it.
+- **Remote/centralized deployment:** configure `AgentEnrollmentSecurity:EnrollmentKeys`
+  (`docker-compose.cloud.yml` requires `KAIRON_AGENT_ENROLLMENT_KEY`) and set `Agent:EnrollmentKey`
+  in each Agent's own configuration. The key is required for first-time enrollment and for later
+  re-registration/rotation alike. Rotate by publishing the new key alongside the previous one,
+  moving the fleet over, then dropping the old entry.
+
+Subsequent Agent and UserAgent heartbeats continue to authenticate with their own scoped machine
+credentials, established at registration - never the enrollment key and never the operator key.
 
 ## Remediation deployment boundary
 
@@ -579,6 +587,10 @@ workflow runs manually and for `v*` tags.
 - a SQL Server connection string;
 - a strong backend-to-AI service key;
 - a strong operator key;
+- a strong, *different* machine-enrollment key (`KAIRON_AGENT_ENROLLMENT_KEY`);
+- the public HTTPS address SDKs should send telemetry to (`KAIRON_PUBLIC_BACKEND_URL`) - the
+  backend refuses to start, and refuses to redeem a pairing code, rather than handing an SDK the
+  loopback address, which would only ever name the SDK's own machine;
 - an explicit allowed frontend origin;
 - an explicit `KAIRON_AI_PROVIDER` (a real provider, or explicitly `mock` for a deliberate
   non-production deployment - there is no default, so a forgotten value fails startup closed
@@ -618,13 +630,42 @@ that obtains and renews a Let's Encrypt certificate automatically:
 
 ```powershell
 Copy-Item deploy\Caddyfile.cloud.example deploy\Caddyfile.cloud
+docker run --rm caddy:2-alpine caddy hash-password --plaintext 'your-dashboard-password'
 Add-Content .env "KAIRON_PUBLIC_DOMAIN=kairon.example.com"
+Add-Content .env "KAIRON_DASHBOARD_USER=operator"
+Add-Content .env "KAIRON_DASHBOARD_PASSWORD_HASH=<the hash printed above>"
 docker compose -f docker-compose.cloud.yml -f docker-compose.cloud.tls.yml up -d --build
 ```
 
 This requires DNS for `KAIRON_PUBLIC_DOMAIN` to already point at this host, and ports 80/443
 reachable from the internet for the certificate challenge. Configure every SDK and the frontend's
 public URL against `https://<KAIRON_PUBLIC_DOMAIN>`, never the internal `127.0.0.1:8000` address.
+
+### The human-authentication boundary
+
+The backend has no login of its own. Its only human credential is the operator key, and that is a
+*server* secret: it approves remediation, manages projects and credentials, and configures AI, so it
+must never be typed into a browser, stored in one, or shipped inside the SPA bundle. Something in
+front therefore has to establish who the human is and only then speak for them. In this deployment
+that something is Caddy, and it does three separate things:
+
+1. **Strips `X-Kairon-Operator-Key` from every inbound request, on every route, first.** Without
+   this, simply sending the header would bypass the login entirely and make it decorative.
+2. **Authenticates the person on the dashboard surface**, and injects the operator key upstream only
+   once that has succeeded. The key never reaches the browser in either direction, and the dashboard
+   password is never forwarded to the backend.
+3. **Leaves the SDK/Agent surface alone.** Those endpoints carry their own credentials (project API
+   key, installation key, agent key, enrollment key, one-time pairing code), are called by software
+   rather than people, and are given no human login *and no injected operator key* - being an SDK
+   must never be a route to an operator action. Because several paths are an SDK ingest under POST
+   and an operator read under GET (`/api/telemetry/incidents`), the rules are method-scoped, not
+   path-only.
+
+`tests/Kairon.Backend.Tests/CaddyGatewayIntegrationTests.cs` proves all three against a real Caddy
+process running this exact file, with a stub backend reporting which headers actually arrived.
+
+If you bring your own ingress instead, it must reproduce these three properties - stripping the
+inbound operator key is the one most easily missed, and the one that makes the rest meaningful.
 
 ## Repository layout
 

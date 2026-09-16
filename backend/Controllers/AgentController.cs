@@ -30,21 +30,24 @@ public sealed class AgentController : ControllerBase
     }
 
     /// <summary>
-    /// The machine-enrollment bootstrap boundary (RB-005): without this, any caller able to reach
-    /// this endpoint could register an arbitrary machine identity with attacker-chosen credentials
-    /// merely by supplying two distinct, non-default key strings - there was nothing to prove the
-    /// caller was an actually-authorized Agent installation. Reuses the exact same operator-key
-    /// gate every other sensitive action already goes through (<see cref="RequiresOperatorAttribute"/>):
-    /// a local, single-machine install with no operator key configured is trusted automatically
-    /// (loopback only), while any deployment that has configured one - every real remote/
-    /// centralized deployment - requires it here too, for both first-time registration and later
-    /// re-registration/rotation of an existing machine. This is deliberately not a fresh secret
-    /// invented for this endpoint alone: it is the same server-operator secret an administrator
-    /// already manages for approve/reject/execute actions, so there is nothing new to provision,
-    /// distribute, or accidentally leave unset.
+    /// The machine-enrollment bootstrap boundary: without it, any caller able to reach this
+    /// endpoint could register an arbitrary machine identity with attacker-chosen credentials
+    /// merely by supplying two distinct, non-default key strings - nothing proved the caller was
+    /// an authorized Agent installation.
+    ///
+    /// The gate is <see cref="RequiresAgentEnrollmentAttribute"/>, NOT the operator key. Enrolling
+    /// a machine and approving remediation are different privileges and must not share a
+    /// credential: an Agent needs to introduce a machine, never to execute against one. Reusing
+    /// the operator key here also could not work at all in the packaged desktop, which mints a
+    /// fresh operator key per launch and gives it only to the backend - the installed Agent had no
+    /// way to learn it and looped on 401 forever.
+    ///
+    /// A local install therefore enrolls over loopback with no key configured; any centralized
+    /// deployment configures AgentEnrollmentSecurity:EnrollmentKeys and every Agent - first
+    /// registration, re-registration and rotation alike - presents one.
     /// </summary>
     [HttpPost("register")]
-    [RequiresOperator]
+    [RequiresAgentEnrollment]
     public async Task<IActionResult> Register(AgentRegistrationDto dto, CancellationToken cancellationToken)
     {
         try

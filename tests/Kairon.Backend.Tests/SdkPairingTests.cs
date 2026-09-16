@@ -28,8 +28,9 @@ public sealed class SdkPairingTests : IDisposable
 
     private SdkPairingService Service() => new(_h.Db,
         new ProjectCredentialService(_h.Db, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System, new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance)),
-        TimeProvider.System, new ConfigurationBuilder().Build(),
-        new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
+        TimeProvider.System, TestHarness.Opt(new ProductOptions()),
+        new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance),
+        NullLogger<SdkPairingService>.Instance);
 
     [Theory]
     [InlineData("dotnet")]
@@ -713,12 +714,14 @@ public sealed class SdkPairingTests : IDisposable
 
         var serviceA = new SdkPairingService(dbA,
             new ProjectCredentialService(dbA, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System, new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance)),
-            TimeProvider.System, new ConfigurationBuilder().Build(),
-            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
+            TimeProvider.System, TestHarness.Opt(new ProductOptions()),
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance),
+            NullLogger<SdkPairingService>.Instance);
         var serviceB = new SdkPairingService(dbB,
             new ProjectCredentialService(dbB, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System, new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance)),
-            TimeProvider.System, new ConfigurationBuilder().Build(),
-            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
+            TimeProvider.System, TestHarness.Opt(new ProductOptions()),
+            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance),
+            NullLogger<SdkPairingService>.Instance);
 
         // Real concurrency (neither task is awaited before the other starts).
         var taskA = serviceA.CompleteRepairAsync(createdA.PairingId, oldCredential.Id, default);
@@ -791,8 +794,9 @@ public sealed class SdkPairingTests : IDisposable
 
         var serviceA = new SdkPairingService(dbA,
             new ProjectCredentialService(dbA, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System, new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance)),
-            TimeProvider.System, new ConfigurationBuilder().Build(),
-            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
+            TimeProvider.System, TestHarness.Opt(new ProductOptions()),
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance),
+            NullLogger<SdkPairingService>.Instance);
         var credentialsB = new ProjectCredentialService(dbB, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System, new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
 
         // Real concurrency: both tasks are created (and therefore started) before either is awaited.
@@ -855,8 +859,9 @@ public sealed class SdkPairingTests : IDisposable
 
         var serviceA = new SdkPairingService(dbA,
             new ProjectCredentialService(dbA, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System, new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance)),
-            TimeProvider.System, new ConfigurationBuilder().Build(),
-            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
+            TimeProvider.System, TestHarness.Opt(new ProductOptions()),
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance),
+            NullLogger<SdkPairingService>.Instance);
         var credentialsB = new ProjectCredentialService(dbB, TestHarness.Opt(new PlatformSecurityOptions()), TimeProvider.System, new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance));
 
         var taskA = serviceA.CompleteRepairAsync(created.PairingId, oldCredential.Id, default);

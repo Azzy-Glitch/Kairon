@@ -135,19 +135,19 @@ def test_dns_failure_is_reported_not_thrown():
 
 
 def test_timeout_is_reported_not_thrown():
-    with patch("kairon.client.urllib.request.urlopen", side_effect=socket.timeout("timed out")):
+    with patch("kairon.client._open", side_effect=socket.timeout("timed out")):
         client = _client("http://127.0.0.1:9", timeout_seconds=1)
         client._send("api/telemetry/incidents", {"Endpoint": "/x"})  # must not raise
 
 
 def test_unexpected_transport_fault_is_contained():
-    with patch("kairon.client.urllib.request.urlopen", side_effect=RuntimeError("boom")):
+    with patch("kairon.client._open", side_effect=RuntimeError("boom")):
         client = _client("http://127.0.0.1:9", timeout_seconds=1)
         client._send("api/telemetry/incidents", {"Endpoint": "/x"})  # must not raise
 
 
 def test_disabled_client_skips_the_send_entirely():
-    with patch("kairon.client.urllib.request.urlopen") as mock_urlopen:
+    with patch("kairon.client._open") as mock_urlopen:
         client = _client("http://127.0.0.1:9", enabled=False)
         client._send("api/telemetry/incidents", {"Endpoint": "/x"})
 

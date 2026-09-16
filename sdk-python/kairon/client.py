@@ -36,6 +36,49 @@ from ._endpoint_security import is_endpoint_allowed
 _logger = logging.getLogger("kairon")
 _logger.addHandler(logging.NullHandler())
 
+
+class RedirectNotAllowedError(urllib.error.URLError):
+    """A Kairon endpoint answered a pairing, confirmation or telemetry request with a redirect."""
+
+    def __init__(self, status: int, location: object) -> None:
+        # The Location value is attacker-controlled and may be absent or malformed; it is recorded
+        # only as a repr for diagnostics and never parsed, resolved or requested.
+        super().__init__(f"Refused to follow an HTTP {status} redirect to {location!r}")
+        self.status = status
+        self.location = location
+
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Fails every 3xx instead of following it, for every status urllib would redirect on
+    (301, 302, 303, 307, 308)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102 - urllib hook
+        raise RedirectNotAllowedError(code, newurl)
+
+
+# A PRIVATE opener, never installed globally with urllib.request.install_opener(): this SDK's
+# transport policy is its own business and must not change how the host application's own urllib
+# calls behave.
+#
+# Redirects are refused outright rather than filtered, because following one is never safe here and
+# never necessary. urllib's default opener replays the original request - including headers - at
+# whatever address the response's Location names, so a compromised or misconfigured backend could
+# harvest X-Kairon-API-Key simply by answering "302 Location: http://attacker/". Filtering by scheme
+# or origin would still leave the credential one bug away from the wire; not following at all means
+# the key can only ever reach the endpoint this SDK already validated. It also removes the
+# downgrade path entirely: an HTTPS endpoint cannot be walked down to plaintext by redirect, and a
+# same-origin redirect gets no more trust than a cross-origin one.
+#
+# Every Kairon endpoint answers these calls directly, so a redirect is a misconfiguration or an
+# attack either way - reported as a delivery failure, never followed.
+_opener = urllib.request.build_opener(_RefuseRedirects)
+
+
+def _open(request: urllib.request.Request, timeout: float):
+    """The single network entry point for this module. Goes through the private, non-redirecting
+    opener above - never urllib.request.urlopen, which follows redirects by default."""
+    return _opener.open(request, timeout=timeout)
+
 DEFAULT_IGNORED_PATH_PREFIXES = ("/health", "/healthz", "/metrics", "/favicon.ico")
 
 # Matches the .NET SDK's KaironOptions.Endpoint default exactly - the same address the installed
@@ -85,7 +128,7 @@ def pair(endpoint: str, code: str, version: str = "1.1.0", timeout_seconds: floa
         url = endpoint.rstrip("/") + "/api/v1/sdk/pair"
         body = json.dumps({"code": code, "sdkType": "python", "version": version}).encode("utf-8")
         request = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=max(1.0, timeout_seconds)) as response:
+        with _open(request, timeout=max(1.0, timeout_seconds)) as response:
             if not 200 <= response.status < 300:
                 return None
             raw = response.read(65537)
@@ -250,7 +293,7 @@ def _confirm_pairing(
     for attempt in range(max(1, attempts)):
         try:
             request = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(request, timeout=max(1.0, timeout_seconds)):
+            with _open(request, timeout=max(1.0, timeout_seconds)):
                 return True
         except Exception:
             if attempt + 1 < attempts:
@@ -593,7 +636,7 @@ class Kairon:
                 method="POST", headers={"Content-Type": "application/json"})
             if self.api_key:
                 request.add_header("X-Kairon-API-Key", self.api_key)
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with _open(request, timeout=self.timeout_seconds) as response:
                 if not 200 <= response.status < 300:
                     return self._delivery_failure("HTTP " + str(response.status))
                 try:
@@ -605,6 +648,10 @@ class Kairon:
                 except (ValueError, UnicodeError):
                     self.last_delivery_error = None
                     return True  # HTTP acceptance; informational body is not database proof.
+        except RedirectNotAllowedError as exc:
+            # Fixed category only - the redirect target is attacker-controlled and never recorded
+            # here, exactly like every other value kept out of last_delivery_error.
+            return self._delivery_failure("Endpoint rejected: HTTP " + str(exc.status) + " redirect not followed")
         except urllib.error.HTTPError as exc:
             status = exc.code
             exc.close()

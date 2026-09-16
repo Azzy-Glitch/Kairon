@@ -234,16 +234,13 @@ public class KaironTests : IDisposable
 
     private sealed class FakePairingServer : IDisposable
     {
-        private readonly HttpListener _listener = new();
+        private readonly HttpListener _listener;
         private readonly CancellationTokenSource _cts = new();
         public string Url { get; }
 
         public FakePairingServer(HttpStatusCode status, string body)
         {
-            var port = GetFreePort();
-            Url = $"http://127.0.0.1:{port}";
-            _listener.Prefixes.Add(Url + "/");
-            _listener.Start();
+            (_listener, Url) = LoopbackListener.Claim();
             _ = AcceptLoop(status, body, _cts.Token);
         }
 
@@ -265,15 +262,6 @@ public class KaironTests : IDisposable
             catch (OperationCanceledException) { }
             catch (ObjectDisposedException) { }
             catch (HttpListenerException) { }
-        }
-
-        private static int GetFreePort()
-        {
-            var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
-            listener.Start();
-            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            listener.Stop();
-            return port;
         }
 
         public void Dispose()

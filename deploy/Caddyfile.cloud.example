@@ -1,4 +1,4 @@
-# RB-008: TLS termination for a centralized KAIRON deployment.
+# TLS termination AND the human-authentication boundary for a centralized KAIRON deployment.
 #
 # Used by docker-compose.cloud.tls.yml. Caddy obtains and renews a Let's Encrypt certificate for
 # {$KAIRON_PUBLIC_DOMAIN} automatically - no manual certificate handling required - then forwards
@@ -6,12 +6,89 @@
 # leaves the host). This is the ONLY supported path to reach a centralized backend/SDK over a real
 # network; docker-compose.cloud.yml itself publishes the backend to loopback only.
 #
-# Copy this file, set KAIRON_PUBLIC_DOMAIN in your .env, and start with:
+# WHY THIS FILE ALSO HANDLES AUTHENTICATION
+# -----------------------------------------
+# The backend has exactly one human credential - the operator key - and it is a SERVER secret, not
+# a login. It gates project/credential management, remediation approval and AI configuration, so it
+# must never be typed into a browser, stored in one, or shipped inside the SPA bundle. That leaves
+# a gap the backend cannot close on its own: something in front has to establish WHO the human is
+# and only then speak for them.
+#
+# Caddy is that something, and it does three separate things here:
+#
+#   1. It STRIPS X-Kairon-Operator-Key from every inbound request, on every route, before anything
+#      else runs. Without this, holding the key would be enough - any caller could simply send the
+#      header and skip the login entirely, which would make the login decorative.
+#   2. It AUTHENTICATES the human on the dashboard surface, and injects the operator key upstream
+#      only once that has succeeded. The key never reaches the browser in either direction.
+#   3. It leaves the SDK/Agent surface alone. Those endpoints carry their own credentials (project
+#      API key, installation key, agent key, enrollment key, one-time pairing code) and are called
+#      by software, not people - so they get no human login and, critically, no injected operator
+#      key. An SDK must never be able to reach an operator action just by being an SDK.
+#
+# Authorization is never forwarded upstream on any route. The backend does not use it, and the
+# dashboard password has no business crossing that boundary.
+#
+# SETUP
+#   cp deploy/Caddyfile.cloud.example deploy/Caddyfile.cloud
+#   docker run --rm caddy:2-alpine caddy hash-password --plaintext 'your-dashboard-password'
+#   # put the resulting hash in KAIRON_DASHBOARD_PASSWORD_HASH, plus KAIRON_DASHBOARD_USER and
+#   # KAIRON_PUBLIC_DOMAIN, in your .env, then:
 #   docker compose -f docker-compose.cloud.yml -f docker-compose.cloud.tls.yml up -d
 #
 # DNS for KAIRON_PUBLIC_DOMAIN must already point at this host, and ports 80/443 must be reachable
 # from the internet for Let's Encrypt's HTTP-01 challenge to succeed.
+#
+# Requires Caddy 2.8 or newer (the basic_auth directive).
 
 {$KAIRON_PUBLIC_DOMAIN} {
-	reverse_proxy backend:8000
+	# Called by software, presenting its own credential. POST-only and path-exact, because several
+	# of these paths are ALSO operator-gated reads under a different method - GET
+	# /api/telemetry/incidents lists incidents, POST /api/telemetry/incidents ingests one - and a
+	# path-only rule would hand the read to anyone holding a project API key.
+	@sdk {
+		method POST
+		path /api/telemetry/incidents /api/telemetry/metrics /api/telemetry/events
+		path /api/v1/telemetry/events
+		path /api/v1/sdk/pair /api/v1/sdk/pair/*/confirm
+		path /api/agent/register
+		path /api/agent/machines/*/heartbeat /api/agent/machines/*/user-session/heartbeat
+	}
+
+	# Liveness/readiness for external monitors. No credential, and nothing sensitive in the body.
+	@health {
+		method GET
+		path /api/health /api/health/ready
+	}
+
+	route {
+		# FIRST, unconditionally, on every route: a client may not supply this header. Everything
+		# below depends on the only operator key the backend ever sees being one Caddy injected.
+		request_header -X-Kairon-Operator-Key
+
+		handle @sdk {
+			reverse_proxy {$KAIRON_BACKEND_UPSTREAM:backend:8000} {
+				header_up -Authorization
+			}
+		}
+
+		handle @health {
+			reverse_proxy {$KAIRON_BACKEND_UPSTREAM:backend:8000} {
+				header_up -Authorization
+			}
+		}
+
+		# The dashboard and every operator API it calls. A human proves who they are here; only
+		# then does this deployment speak to the backend as the operator.
+		handle {
+			basic_auth {
+				{$KAIRON_DASHBOARD_USER} {$KAIRON_DASHBOARD_PASSWORD_HASH}
+			}
+
+			reverse_proxy {$KAIRON_BACKEND_UPSTREAM:backend:8000} {
+				header_up -Authorization
+				header_up X-Kairon-Operator-Key {$KAIRON_OPERATOR_KEY}
+			}
+		}
+	}
 }

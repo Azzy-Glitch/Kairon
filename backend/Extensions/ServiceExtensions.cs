@@ -50,6 +50,9 @@ public static class ServiceExtensions
     public static IServiceCollection AddPlatformServices(this IServiceCollection services, IConfiguration configuration)
     {
         services.Configure<PlatformSecurityOptions>(configuration.GetSection(PlatformSecurityOptions.SectionName));
+        // The address pairing hands to SDKs - see PairingEndpointPolicy for why it is validated
+        // rather than simply defaulted.
+        services.Configure<ProductOptions>(configuration.GetSection(ProductOptions.SectionName));
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<IPlatformAuditService, PlatformAuditService>();
         services.AddScoped<IProjectCredentialService, ProjectCredentialService>();
@@ -91,6 +94,10 @@ public static class ServiceExtensions
         services.Configure<VerificationOptions>(configuration.GetSection(VerificationOptions.SectionName));
         services.Configure<AiOrchestrationOptions>(configuration.GetSection(AiOrchestrationOptions.SectionName));
         services.Configure<SreSecurityOptions>(configuration.GetSection(SreSecurityOptions.SectionName));
+        // Machine enrollment is its own trust boundary, bound separately from SreSecurity so an
+        // operator key can never be read as an enrollment credential or the reverse.
+        services.Configure<AgentEnrollmentSecurityOptions>(
+            configuration.GetSection(AgentEnrollmentSecurityOptions.SectionName));
         services.Configure<WindowsRemediationOptions>(configuration.GetSection(WindowsRemediationOptions.SectionName));
 
         // Database-backed replacement for WindowsRemediation:Targets - see

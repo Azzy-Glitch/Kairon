@@ -28,6 +28,11 @@ services:
       - "443:443"
     environment:
       KAIRON_PUBLIC_DOMAIN: ${KAIRON_PUBLIC_DOMAIN:?Set KAIRON_PUBLIC_DOMAIN}
+      # Caddy is where a human proves who they are, and the only place the operator key is added to
+      # a request. The backend never sees a login and the browser never sees the operator key.
+      KAIRON_DASHBOARD_USER: ${KAIRON_DASHBOARD_USER:?Set KAIRON_DASHBOARD_USER}
+      KAIRON_DASHBOARD_PASSWORD_HASH: ${KAIRON_DASHBOARD_PASSWORD_HASH:?Set KAIRON_DASHBOARD_PASSWORD_HASH}
+      KAIRON_OPERATOR_KEY: ${KAIRON_OPERATOR_KEY:?Set KAIRON_OPERATOR_KEY}
     volumes:
       - ./deploy/Caddyfile.cloud:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

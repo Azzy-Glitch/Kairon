@@ -84,7 +84,7 @@ def test_unreachable_backend_returns_none_not_an_exception():
 def test_timeout_returns_none_not_an_exception():
     import socket
 
-    with patch("kairon.client.urllib.request.urlopen", side_effect=socket.timeout("timed out")):
+    with patch("kairon.client._open", side_effect=socket.timeout("timed out")):
         assert pair("http://localhost:8000", "pair_x") is None
 
 
