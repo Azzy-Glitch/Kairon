@@ -175,7 +175,35 @@ app.UseRateLimiter();
 // this API process instead of requiring a separate Vite dev server. Registered before the health/
 // API routes only affects static asset matching; MapFallbackToFile below is what runs last.
 app.UseDefaultFiles();
-app.UseStaticFiles();
+// Explicit caching contract, because the default (no Cache-Control at all) leaves browsers to
+// apply HEURISTIC freshness from Last-Modified - and that silently breaks upgrades: a WebView2
+// shell that had cached a weeks-old index.html went on serving it for days without revalidating,
+// so an upgraded install kept rendering the PREVIOUS release's UI while the new bundle sat
+// unused on disk (confirmed live on a 1.0.1 -> 1.1.0 upgrade). Vite content-hashes every asset
+// filename, so the two halves get opposite treatment:
+//   - index.html: never served from cache without revalidating. The ETag still makes that a cheap
+//     304 in the normal case; what matters is that a new release is never missed.
+//   - /assets/*: the hash IS the version, so a given URL's bytes can never change - cache it hard.
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = context =>
+    {
+        var headers = context.Context.Response.GetTypedHeaders();
+        var isHashedAsset = context.Context.Request.Path.StartsWithSegments("/assets");
+
+        headers.CacheControl = isHashedAsset
+            ? new Microsoft.Net.Http.Headers.CacheControlHeaderValue
+            {
+                Public = true,
+                MaxAge = TimeSpan.FromDays(365)
+            }
+            : new Microsoft.Net.Http.Headers.CacheControlHeaderValue
+            {
+                NoCache = true,
+                MustRevalidate = true
+            };
+    }
+});
 
 app.MapHealthChecks("/api/health");
 
@@ -192,7 +220,14 @@ app.MapControllers();
 // shadow /api/*. Missing wwwroot/index.html (no frontend built yet) is a no-op, not an error.
 if (File.Exists(Path.Combine(app.Environment.WebRootPath ?? "wwwroot", "index.html")))
 {
-    app.MapFallbackToFile("index.html");
+    // Same no-cache contract as the shell served directly above: a deep link (/incidents, ...)
+    // returns index.html too, so it must not be the one path that can still hand back a stale
+    // release's UI.
+    app.MapFallbackToFile("index.html", new StaticFileOptions
+    {
+        OnPrepareResponse = context => context.Context.Response.GetTypedHeaders().CacheControl =
+            new Microsoft.Net.Http.Headers.CacheControlHeaderValue { NoCache = true, MustRevalidate = true }
+    });
 }
 
 // Initialize database

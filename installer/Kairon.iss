@@ -36,6 +36,18 @@ UninstallDisplayIcon={app}\Kairon.exe
 SetupIconFile=..\assets\kairon-icon.ico
 VersionInfoVersion={#MyAppVersion}
 
+[InstallDelete]
+; Runs BEFORE [Files] is copied (unlike [UninstallDelete], which this installer deliberately does
+; not use - see the remarks further down about never deleting the user's database on uninstall).
+; Everything under wwwroot is installer-owned build output, never user data: Vite content-hashes
+; each bundle's filename, so an upgrade ADDS index-<newhash>.js and leaves the previous release's
+; index-<oldhash>.js behind forever - ignoreversion overwrites matching names, it never removes
+; orphans. That accumulation is not just dead bytes: it lets a browser/WebView2 cache still holding
+; the OLD index.html keep resolving that old bundle successfully, so an upgraded install silently
+; renders the previous release's UI (confirmed live on a 1.0.1 -> 1.1.0 upgrade). Clearing the
+; directory first makes a stale shell fail loudly (404 -> reload) instead of silently succeeding.
+Type: filesandordirs; Name: "{app}\backend\wwwroot"
+
 [Files]
 ; The desktop shell publishes to the package root; backend/agent/ai each publish to their own
 ; subfolder (matches desktop/Kairon.Desktop/AppPaths.cs's expected layout exactly).
