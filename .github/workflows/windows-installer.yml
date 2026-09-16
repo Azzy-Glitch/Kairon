@@ -25,9 +25,15 @@ jobs:
       # every project but cannot execute Kairon.Desktop.Tests, Kairon.Agent.Tests, or
       # Kairon.UserAgent.Tests at all (WinForms/service-hosting testhosts that only start on
       # Windows), and skips the SqlServerFact-gated backend tests for want of a SQL Server/LocalDB
-      # instance. windows-latest ships SQL Server LocalDB pre-installed, so this single step
-      # exercises all of that for real before a tagged release is packaged - a genuine test
-      # failure here blocks producing an installer from broken code.
+      # instance. windows-latest ships the LocalDB tooling, but no instance is created/started by
+      # default - SqlLocalDB start fails harmlessly if none exists yet, in which case create -s
+      # both creates and starts it. Idempotent either way this runner is provisioned.
+      - name: Start SQL Server LocalDB
+        shell: powershell
+        run: |
+          sqllocaldb start MSSQLLocalDB
+          if ($LASTEXITCODE -ne 0) { sqllocaldb create MSSQLLocalDB -s }
+          sqllocaldb info MSSQLLocalDB
       - run: dotnet test Kairon.slnx --configuration Release
       # Builds the desktop shell, backend, Windows Service Agent, UserAgent, and the
       # PyInstaller-packaged AI service, then compiles the Inno Setup installer.
