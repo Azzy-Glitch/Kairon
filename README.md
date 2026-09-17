@@ -422,7 +422,10 @@ unrelated directories.
 - The backend-to-AI transport key is also generated per desktop launch.
 - Project API keys are returned once and stored only as SHA-256 hashes with revocation metadata.
 - AI-provider keys are encrypted at rest and omitted from every API response and log.
-- Normalized and legacy ingestion endpoints are rate-limited and payload-sized.
+- Normalized and legacy ingestion endpoints are rate-limited and payload-sized. SDK pairing
+  redemption and confirmation (`POST /api/v1/sdk/pair` and its `/confirm`) carry their own,
+  tighter, dedicated rate-limit policy - separate from bulk telemetry ingestion's - since both are
+  unattended, no-operator-key endpoints an automated caller could otherwise hammer.
 - Custom AI endpoints require HTTPS except for loopback development endpoints.
 - The Agent service runs as `LocalService`, not `LocalSystem`.
 - Remediation has no arbitrary command execution tool and always requires approval by default.

@@ -114,6 +114,19 @@ builder.Services.AddRateLimiter(options =>
         {
             PermitLimit = 600, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true
         }));
+    // SdkPairingController.Pair/Confirm: unattended, no-operator-key endpoints - the pairing code
+    // (or, for confirm, the freshly issued API key) is the only proof of intent. The code itself
+    // has 192 bits of random entropy (SdkPairingService.Token(24)), so brute-forcing it is
+    // computationally infeasible regardless of rate - this is defense-in-depth against automated
+    // hammering/reconnaissance, not the primary defense. Tighter than bulk telemetry ingestion, but
+    // generous enough for legitimate simultaneous onboarding from one shared/office IP and the
+    // SDKs' own bounded confirm retries (2 attempts with backoff).
+    options.AddPolicy("pairing", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "local",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 30, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true
+        }));
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 

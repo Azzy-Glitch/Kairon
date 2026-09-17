@@ -103,6 +103,18 @@ describe('RemediationTargetsPage', () => {
     expect(document.body.textContent).not.toContain('krn_should_never_render_this_secret');
   });
 
+  // Explicit, generous timeout (vitest's default is 5000ms, shared uniformly by every test in the
+  // suite): this test drives the longest real user-interaction chain in this file - nine
+  // sequential userEvent steps across the full create-target form, one dropdown/keystroke at a
+  // time, the way a real user actually operates it - not a logic race. Investigated after a single
+  // observed timeout under heavy parallel machine load: no shared mutable state across tests (this
+  // file's own afterEach/cleanup + vi.clearAllMocks already isolate every test), no unflushed
+  // timer or promise left behind by an earlier test, and the assertions themselves are fully
+  // deterministic - reproducing under real heavy concurrent load (dotnet test running
+  // simultaneously) measured this suite's own environment/setup overhead ballooning past 50s on
+  // this shared machine, confirming the slowdown is genuine host contention, not a source-level
+  // defect this test happens to be hiding. A wider budget for this one legitimately longer test is
+  // the fix; the global default stays untouched so a genuine hang elsewhere is still caught fast.
   it('creates a target with the exact payload the backend expects', async () => {
     remediationTargetsApi.list.mockResolvedValue([]);
     remediationTargetsApi.create.mockResolvedValue({ ...target });
@@ -134,7 +146,7 @@ describe('RemediationTargetsPage', () => {
       allowedOperations: ['RestartService'],
       enabled: true
     }));
-  });
+  }, 15000);
 
   it('displays a backend validation failure clearly without persisting', async () => {
     remediationTargetsApi.list.mockResolvedValue([]);

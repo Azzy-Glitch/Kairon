@@ -39,4 +39,34 @@ public sealed class ProtectedReadEndpointTests
 
         Assert.Equal("telemetry", policy.PolicyName);
     }
+
+    // A cheap, fast companion to the live PairingRateLimitTests (which prove the policy actually
+    // throttles over a real HTTP pipeline): this just guards against the attribute silently
+    // disappearing from the wrong method in a future edit.
+    [Theory]
+    [InlineData(nameof(SdkPairingController.Pair))]
+    [InlineData(nameof(SdkPairingController.Confirm))]
+    public void UnattendedPairingEndpointsUseTheDedicatedPairingRatePolicy(string methodName)
+    {
+        var method = typeof(SdkPairingController).GetMethod(methodName);
+        var policy = Assert.Single(method!.GetCustomAttributes(typeof(EnableRateLimitingAttribute), inherit: true)
+            .Cast<EnableRateLimitingAttribute>());
+
+        Assert.Equal("pairing", policy.PolicyName);
+    }
+
+    // The operator-gated pairing endpoints are reached only by someone who already holds the
+    // operator key - they are not the unattended, no-credential surface the "pairing" policy exists
+    // to protect, and must not be silently swept into it (or any other policy) by a future edit.
+    [Theory]
+    [InlineData(nameof(SdkPairingController.Create))]
+    [InlineData(nameof(SdkPairingController.RevokePairing))]
+    [InlineData(nameof(SdkPairingController.GetStatus))]
+    [InlineData(nameof(SdkPairingController.CompleteRepair))]
+    public void OperatorGatedPairingEndpointsCarryNoRateLimitPolicy(string methodName)
+    {
+        var method = typeof(SdkPairingController).GetMethod(methodName);
+
+        Assert.Empty(method!.GetCustomAttributes(typeof(EnableRateLimitingAttribute), inherit: true));
+    }
 }

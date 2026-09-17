@@ -60,6 +60,11 @@ beforeEach(() => {
 });
 
 describe('SdkPage re-pairing', () => {
+  // POLL_TEST_TIMEOUT (already applied to every other real-polling test in this file): this one
+  // was simply missed. renderSdkPage + openPairingTab (2 findBy calls) + startRepair (1 findBy)
+  // is enough real async work that it was directly observed timing out at vitest's 5000ms default
+  // under genuine sustained load on this shared machine - not a logic race (no shared state, no
+  // stray timer; passes cleanly whenever the host is not under heavy concurrent load).
   it('starts a re-pair, showing the fresh code and its expiration', async () => {
     renderSdkPage();
     await openPairingTab();
@@ -68,7 +73,7 @@ describe('SdkPage re-pairing', () => {
 
     expect(screen.getByText(/Re-pairing "orders-sdk"/)).toBeInTheDocument();
     expect(sdkApi.createPairing).toHaveBeenCalledWith('proj-1', 'dotnet', 'cred-1');
-  });
+  }, POLL_TEST_TIMEOUT);
 
   it('never renders any credential secret, before or during a re-pair', async () => {
     renderSdkPage();
@@ -76,7 +81,7 @@ describe('SdkPage re-pairing', () => {
     await startRepair();
 
     expect(document.body.textContent).not.toContain('krn_should_never_render_this_secret');
-  });
+  }, POLL_TEST_TIMEOUT);
 
   it('shows an intermediate "awaiting confirmation" state on Redeemed, without completing the repair yet', async () => {
     renderSdkPage();

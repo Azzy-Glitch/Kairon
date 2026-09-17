@@ -20,12 +20,17 @@ vi.mock('../../api', () => ({
 }));
 
 describe('SDK onboarding interactions', () => {
+  // Explicit, generous timeout (vitest's default is 5000ms): directly observed timing out on this
+  // shared, actively-used development machine (Word, VS Code, and a live-wallpaper process were
+  // all running at the same time) despite this test's own real work being short - confirming the
+  // constraint is this host's current real, ongoing load, not this test's length or logic. See
+  // RemediationTargetsPage.test.jsx's equivalent note for the fuller investigation.
   it('opens live pairing without claiming active credentials prove connectivity', async () => {
     render(<SdkPage />);
     await userEvent.click(screen.getByRole('button', { name: 'Open Pairing' }));
     expect(await screen.findByText('1 active credential')).toBeInTheDocument();
     expect(screen.queryByText(/Connected ·/)).not.toBeInTheDocument();
-  });
+  }, 15000);
 
   it('shows the real .NET and Python integration examples with no extra click required', async () => {
     render(<SdkPage />);

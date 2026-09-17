@@ -1,6 +1,7 @@
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Kairon.Backend.Controllers;
 
@@ -40,8 +41,12 @@ public sealed class SdkPairingController : ControllerBase
     }
 
     /// <summary>Called by an SDK, unattended - no operator key. The pairing code itself is the
-    /// one-time proof of intent; it is single-use and expires in 10 minutes.</summary>
+    /// one-time proof of intent; it is single-use and expires in 10 minutes. Rate-limited (the
+    /// "pairing" policy, separate from bulk telemetry ingestion's "telemetry" policy): defense-in-
+    /// depth against automated guessing/hammering, not the primary defense - the code's own entropy
+    /// already makes brute-forcing it infeasible.</summary>
     [HttpPost("api/v1/sdk/pair")]
+    [EnableRateLimiting("pairing")]
     public async Task<IActionResult> Pair([FromBody] RedeemPairingRequest request, CancellationToken cancellationToken)
     {
         var paired = await _pairing.RedeemAsync(request.Code, request.SdkType, request.Version, cancellationToken);
@@ -74,8 +79,11 @@ public sealed class SdkPairingController : ControllerBase
     /// credential redemption just issued - the only trustworthy proof that the redeem response was
     /// actually received and saved, not merely that the backend issued it. Authenticates by
     /// requiring the exact api key this session issued; never accepts a bare claim. Safe to call
-    /// more than once (recoverable if a previous confirmation's response was lost).</summary>
+    /// more than once (recoverable if a previous confirmation's response was lost). Shares the
+    /// "pairing" rate-limit policy with <see cref="Pair"/> - same unattended, no-operator-key
+    /// trust boundary, same defense-in-depth reasoning.</summary>
     [HttpPost("api/v1/sdk/pair/{pairingId:guid}/confirm")]
+    [EnableRateLimiting("pairing")]
     public async Task<IActionResult> Confirm(Guid pairingId, [FromBody] ConfirmPairingRequest request, CancellationToken cancellationToken)
     {
         if (!await _pairing.ConfirmAsync(pairingId, request.ApiKey, cancellationToken))

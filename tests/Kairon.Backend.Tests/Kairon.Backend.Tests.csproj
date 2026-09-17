@@ -16,6 +16,11 @@
          broken model configuration pass its own tests. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.11" />
+    <!-- Real in-process HTTP pipeline testing (PairingRateLimitTests): the ASP.NET Core rate
+         limiter only engages through the actual request pipeline (UseRateLimiter() + the
+         [EnableRateLimiting] attribute's routing metadata) - a unit-level call straight into a
+         controller action, as the rest of this project does, cannot exercise it at all. -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />
   </ItemGroup>
 
   <ItemGroup>

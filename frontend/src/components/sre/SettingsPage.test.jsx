@@ -165,6 +165,14 @@ describe('SettingsPage > AI configuration', () => {
     expect(screen.getByLabelText(/custom endpoint/i)).toHaveValue('');
   });
 
+  // Explicit, generous timeout (vitest's default is 5000ms, shared uniformly by every test in the
+  // suite): this test types a genuine ~90-character URL twice via userEvent (one simulated
+  // keystroke at a time, the way a real user actually types), on top of two waitFor polls and a
+  // final regex search - legitimately more real work than most tests here, not a logic race.
+  // Directly observed timing out under real heavy concurrent load (the full .NET solution's test
+  // suite running at the same time) and passing cleanly in isolation immediately after, with no
+  // assertion or setup change - confirming genuine host contention, not a source-level defect. A
+  // wider budget for this one longer test is the fix; the global default stays untouched elsewhere.
   it('a typed custom endpoint is sent with Test Connection and Save', async () => {
     const user = userEvent.setup();
     const dedicatedEndpoint = 'https://ws-8s7id56fv8yt5bmm.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1/chat/completions';
@@ -191,7 +199,7 @@ describe('SettingsPage > AI configuration', () => {
       expect.objectContaining({ provider: 'qwen', endpoint: dedicatedEndpoint })
     ));
     expect(await screen.findByText(new RegExp(dedicatedEndpoint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))).toBeInTheDocument();
-  });
+  }, 15000);
 
   it('a blank endpoint field is sent explicitly, so a cleared override is actually cleared', async () => {
     // Sending undefined would read as "leave the endpoint alone" and strand a previously saved
