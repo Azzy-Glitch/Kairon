@@ -404,10 +404,15 @@ The **Settings > Your data** controls provide:
 Deletion is currently global to the local KAIRON database; there is no per-project delete API.
 Export is available only when SQLite is the active provider.
 
-The official Windows uninstaller removes the registered service/task, installed binaries, the
-managed SQLite database, and managed KAIRON backup files. Export important data before uninstalling.
-It does not recursively delete arbitrary source, repository, export, credential, log, or unrelated
-directories.
+The official Windows uninstaller removes the registered service/task and installed binaries. It
+deliberately does **not** delete the managed SQLite database, its WAL/SHM files, or managed KAIRON
+backup files - those are the user's actual incident/telemetry/remediation history, not
+installer-owned state, and a normal uninstall (Add/Remove Programs, or re-running the installer to
+repair/reinstall) has no separate confirmation step before it would otherwise run. Reinstalling
+KAIRON therefore picks up the existing database rather than starting empty. Use **Settings > Your
+data > Delete all data** (above) for a deliberate, explicitly-confirmed local data wipe instead. The
+uninstaller does not recursively delete arbitrary source, repository, export, credential, log, or
+unrelated directories.
 
 ## Security model and deployment boundaries
 
@@ -693,10 +698,11 @@ tests/                    .NET unit, integration, and acceptance tests
   either port.
 - Local desktop telemetry-key enforcement is disabled by default and is not a safe internet-facing
   configuration.
-- Agent registration is gated by the operator key (see "Security model and deployment
-  boundaries"), which for a local single-machine install is satisfied automatically over loopback
-  with no separate provisioning step - that convenience is itself a trust assumption: anything
-  that can reach the backend from this same machine can register a machine identity.
+- Agent registration is gated by its own enrollment key (`AgentEnrollmentSecurity:EnrollmentKeys`,
+  `X-Kairon-Enrollment-Key` - see "Security model and deployment boundaries"), not the operator
+  key, which for a local single-machine install is satisfied automatically over loopback with no
+  separate provisioning step - that convenience is itself a trust assumption: anything that can
+  reach the backend from this same machine can register a machine identity.
 - Data deletion is global; per-project deletion is not implemented.
 - External AI-provider connectivity still depends on the user's provider account, key, model,
   region, network, and endpoint. Passing mock-mode tests does not verify those external systems.

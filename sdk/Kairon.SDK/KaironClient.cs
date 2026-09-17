@@ -58,6 +58,7 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
     private readonly HttpClient _http;
     private readonly KaironTelemetrySender _sender;
     private readonly KaironMetricsCollector _collector;
+    private readonly KaironOptions _options;
     private bool _started;
 
     public KaironClient(
@@ -107,6 +108,7 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
 
         Endpoint = options.Endpoint;
         ProjectId = options.ProjectId;
+        _options = options;
 
         var optionsAccessor = Options.Create(options);
         var metrics = new KaironMetrics();
@@ -147,6 +149,74 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
         try { await _collector.StopAsync(cts.Token).ConfigureAwait(false); } catch (OperationCanceledException) { }
         _http.Dispose();
         return _queue.FailedCount == 0 && _queue.DroppedCount == 0;
+    }
+
+    /// <summary>
+    /// Manually records an exception/incident - the .NET counterpart to sdk-python's
+    /// <c>Kairon.capture_exception</c>. <see cref="KaironMiddleware"/> already does the equivalent
+    /// enqueue automatically for every instrumented HTTP request in an ASP.NET Core host
+    /// (<c>AddKairon</c>/<c>UseKairon</c>); this exists because <see cref="KaironClient"/> is
+    /// documented as the entry point for applications that are NOT themselves an ASP.NET Core host
+    /// - a worker, console app, or scheduled job - and until this method existed, nothing on this
+    /// SDK's public surface let one of those actually report an incident: <see cref="Start"/> only
+    /// switches on the background PROCESS-metrics collector, which knows nothing about a caught
+    /// exception or a business-level failure the host code itself observed.
+    ///
+    /// Never throws and never blocks beyond a bounded, non-blocking enqueue (the same contract as
+    /// every other telemetry path in this SDK) - queue-full drops the oldest pending item exactly
+    /// like <see cref="KaironMiddleware"/>'s own enqueue.
+    /// </summary>
+    public void CaptureException(Exception exception, string endpoint = "", string method = "",
+        int statusCode = 500, long durationMs = 0)
+    {
+        if (!_options.EnableTelemetry) return;
+
+        _queue.TryEnqueue(new Models.TelemetryPayload
+        {
+            ProjectId = _options.ProjectId,
+            ApplicationName = KaironIdentity.ResolveApplication(_options),
+            Service = KaironIdentity.ResolveService(_options),
+            Environment = KaironIdentity.ResolveEnvironment(_options),
+            Endpoint = endpoint,
+            Method = method,
+            StatusCode = statusCode,
+            Duration = durationMs,
+            Error = exception.Message,
+            ExceptionType = exception.GetType().FullName,
+            StackTrace = exception.StackTrace,
+            Timestamp = DateTime.UtcNow
+        });
+    }
+
+    /// <summary>
+    /// Manually records a metric sample - the .NET counterpart to sdk-python's
+    /// <c>Kairon.record_metric</c>, for the same non-ASP.NET-Core hosts <see cref="CaptureException"/>
+    /// targets. <see cref="Start"/>'s automatic process-metrics collection covers CPU/memory on an
+    /// interval; this is for a caller-observed value (a request duration, a queue depth, a retry
+    /// count) the collector has no way to know about on its own.
+    /// </summary>
+    public void RecordMetric(double? cpuPercent = null, double? memoryPercent = null,
+        double? responseTimeMs = null, long requestCount = 0, long errorCount = 0,
+        long? retryCount = null, long? queueDepth = null, string? component = null)
+    {
+        if (!_options.EnableTelemetry) return;
+
+        _queue.TryEnqueueMetric(new Models.MetricPayload
+        {
+            ProjectId = _options.ProjectId,
+            Timestamp = DateTime.UtcNow,
+            CpuPercent = cpuPercent,
+            MemoryPercent = memoryPercent,
+            ResponseTimeMs = responseTimeMs,
+            RequestCount = requestCount,
+            ErrorCount = errorCount,
+            RetryCount = retryCount,
+            QueueDepth = queueDepth,
+            Environment = KaironIdentity.ResolveEnvironment(_options),
+            Application = KaironIdentity.ResolveApplication(_options),
+            Service = KaironIdentity.ResolveService(_options),
+            Component = component
+        });
     }
 
     public ValueTask DisposeAsync() => new(StopAsync(TimeSpan.FromSeconds(5)));

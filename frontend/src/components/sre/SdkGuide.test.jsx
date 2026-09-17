@@ -100,6 +100,21 @@ it('opens remediation through the supplied navigation', async () => {
   expect(navigate).toHaveBeenCalledOnce();
 });
 
+it('states the remote/cloud KAIRON_ENDPOINT requirement in the primary pairing step, not only under Advanced', async () => {
+  render(<SdkPage />);
+  // The main "Pair your application" step must carry this, not merely a buried Advanced section -
+  // otherwise a remote/cloud KAIRON pairing attempt tries to reach 127.0.0.1:8000 with no signal
+  // pointing at why.
+  expect(await screen.findByText(/Remote or cloud KAIRON/)).toBeInTheDocument();
+  expect(screen.getAllByText(/KAIRON_ENDPOINT/).length).toBeGreaterThan(0);
+});
+
+it('clarifies that AddKairon() does not consume a KaironClient pairing credential automatically', async () => {
+  render(<SdkPage />);
+  await userEvent.click(screen.getByRole('tab', { name: /\.NET/ }));
+  expect(await screen.findByText(/AddKairon\(\) does not automatically read the credential a pairing-code KaironClient stored on disk/)).toBeInTheDocument();
+});
+
 it('keeps Troubleshooting and Advanced collapsed until opened, each with real content', async () => {
   render(<SdkPage />);
   const troubleshooting = screen.getByText('Troubleshooting').closest('details');

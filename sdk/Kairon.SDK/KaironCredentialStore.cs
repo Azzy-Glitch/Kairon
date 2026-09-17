@@ -109,15 +109,34 @@ internal static class KaironCredentialStore
         }
     }
 
+    // One IDataProtectionProvider per key-ring directory, shared across every Save/Load call that
+    // targets it - never created fresh per call. This is what makes concurrent credential writes
+    // (ConcurrentCredentialWritesNeverCorruptTheStoredFile) actually safe: DataProtectionProvider's
+    // own KeyRingProvider already handles many concurrent Protect/Unprotect calls correctly, but
+    // only for calls sharing ONE provider instance's in-memory key cache and file-access
+    // coordination. A fresh provider per call - this class's previous behavior - gave every
+    // concurrent caller its own uncoordinated view of the same directory: two callers could each
+    // independently decide a new key was needed and write different key-*.xml files to it at once,
+    // and one caller's read of a key file still being written by another could lose the race
+    // entirely (reproduced directly: CryptographicException wrapping "The process cannot access
+    // the file '...key-*.xml' because it is being used by another process" under twelve concurrent
+    // KaironClient pairings against the same configPath).
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, IDataProtectionProvider> s_providers =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private static IDataProtector CreateProtector(string credentialPath)
     {
         var keyRingPath = Path.Combine(Path.GetDirectoryName(credentialPath)!, "keys");
         Directory.CreateDirectory(keyRingPath);
-        var provider = DataProtectionProvider.Create(new DirectoryInfo(keyRingPath), b =>
-        {
-            b.SetApplicationName("Kairon");
-            if (OperatingSystem.IsWindows()) b.ProtectKeysWithDpapi();
-        });
+        var normalizedKeyRingPath = Path.GetFullPath(keyRingPath);
+
+        var provider = s_providers.GetOrAdd(normalizedKeyRingPath, path =>
+            DataProtectionProvider.Create(new DirectoryInfo(path), b =>
+            {
+                b.SetApplicationName("Kairon");
+                if (OperatingSystem.IsWindows()) b.ProtectKeysWithDpapi();
+            }));
+
         return provider.CreateProtector(ProtectorPurpose);
     }
 }

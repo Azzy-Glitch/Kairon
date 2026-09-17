@@ -19,8 +19,17 @@ public static class KaironExtensions
         services.AddSingleton<IKaironTelemetryQueue, KaironTelemetryQueue>();
         services.AddSingleton<IKaironMetrics, KaironMetrics>();
 
-        services.AddHttpClient<KaironTelemetryClient>(
-            (serviceProvider, client) =>
+        // A NAMED client rather than services.AddHttpClient<KaironTelemetryClient>(): the typed-
+        // client form constructs KaironTelemetryClient via ActivatorUtilities, which only ever
+        // finds a PUBLIC constructor - exactly the escape hatch KaironTelemetryClient's constructor
+        // is internal to close (see its own remarks). Registering the HttpClient under a name and
+        // then building KaironTelemetryClient with an explicit `new` below keeps every other
+        // behavior identical (IHttpClientFactory-managed pooling/handler lifetime, the same
+        // endpoint validation, the same non-redirecting primary handler) while the internal
+        // constructor stays genuinely unreachable from outside this assembly.
+        const string HttpClientName = "Kairon.SDK.Telemetry";
+
+        services.AddHttpClient(HttpClientName, (serviceProvider, client) =>
             {
                 var options =
                     serviceProvider
@@ -43,6 +52,10 @@ public static class KaironExtensions
                     TimeSpan.FromSeconds(Math.Max(2, options.TimeoutSeconds + 1));
             })
             .ConfigurePrimaryHttpMessageHandler(KaironEndpointSecurity.CreateNonRedirectingHandler);
+
+        services.AddSingleton(serviceProvider => new KaironTelemetryClient(
+            serviceProvider.GetRequiredService<IHttpClientFactory>().CreateClient(HttpClientName),
+            serviceProvider.GetRequiredService<IOptions<KaironOptions>>()));
 
         // The sender drains the queue; the collector emits process metrics. Both are best-effort
         // background services that never propagate a fault to the host.

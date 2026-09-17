@@ -60,6 +60,55 @@ public class OrderWorker(IKaironMetrics metrics)
 }
 ```
 
+## Standalone use (workers, console apps, anything that isn't ASP.NET Core)
+
+`KaironClient` is the non-DI entry point - no `IServiceCollection` required:
+
+```csharp
+using Kairon.SDK;
+
+// Redeems a one-time pairing code (from the Kairon UI), persists the resulting project
+// credential, and starts the background process-metrics collector.
+var kairon = new KaironClient(pairingCode: "YOUR_PAIRING_CODE");
+kairon.Start();
+```
+
+A later run of the same application with the same `configPath` (default:
+`%LOCALAPPDATA%/Kairon/sdk/credential.json`) reuses the stored credential automatically - no
+pairing code needed again. To connect against a remote or cloud Kairon backend instead of this
+machine's own, set `KAIRON_ENDPOINT` (or pass `endpoint:`) to that backend's HTTPS address
+*before* pairing: the pairing call itself needs to reach the right backend, since a bare
+`new KaironClient(pairingCode: "...")` otherwise tries `http://localhost:8000`. Explicit
+`projectId`/`apiKey`/`endpoint` arguments (or `KAIRON_PROJECT_ID`/`KAIRON_API_KEY`/`KAIRON_ENDPOINT`)
+remain fully supported in place of a pairing code, for CI/CD or containers.
+
+`KaironClient.Start()` only switches on automatic process-metrics collection (CPU/memory on an
+interval) - it has no HTTP request to instrument on its own. Report anything else the host code
+itself observes directly:
+
+```csharp
+try { ProcessOrder(order); }
+catch (Exception ex)
+{
+    kairon.CaptureException(ex, endpoint: "/jobs/order-processing", method: "JOB", statusCode: 500);
+}
+
+kairon.RecordMetric(queueDepth: queue.Count, component: "order-worker");
+```
+
+Both are non-blocking, bounded, and never throw - the same fail-open contract every other
+telemetry path in this SDK follows.
+
+## Redirect and transport safety
+
+Pairing, confirmation and telemetry never follow an HTTP redirect: every `HttpClient` this SDK
+constructs internally uses a handler with automatic redirect-following disabled, so a compromised
+or misconfigured backend cannot redirect one of those requests - and the credentials on it - onto
+a different origin merely by answering with a 3xx. Plain HTTP is accepted only to a loopback
+address (`localhost`/`127.0.0.0/8`/`::1`); anywhere else requires HTTPS, checked at every point an
+endpoint can enter the SDK (explicit configuration, a pairing response's own returned endpoint, the
+actual send itself) rather than once at startup.
+
 ## Failure behavior
 
 The SDK never turns a Kairon outage into an application outage. Every send is bounded, timed

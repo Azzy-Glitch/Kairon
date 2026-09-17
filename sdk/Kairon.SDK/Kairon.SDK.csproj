@@ -20,4 +20,14 @@
 		<None Include="..\..\NOTICE" Pack="true" PackagePath="\" />
 	</ItemGroup>
 
+	<ItemGroup>
+		<!-- KaironTelemetryClient's constructor is internal (see its own remarks): this is the one
+		     friend assembly allowed to construct it directly with a caller-supplied HttpClient, for
+		     test doubles only. No other assembly - in particular, no external NuGet consumer - gets
+		     this access. -->
+		<InternalsVisibleTo Include="Kairon.SDK.Tests" />
+	</ItemGroup>
+
+
+
 </Project>

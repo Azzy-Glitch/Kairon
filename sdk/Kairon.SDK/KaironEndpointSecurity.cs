@@ -66,4 +66,45 @@ public static class KaironEndpointSecurity
     /// attacker-controlled or plaintext - origin by returning a 3xx response. A redirect is instead
     /// surfaced as an ordinary non-success status, exactly like any other rejected request.</summary>
     public static HttpClientHandler CreateNonRedirectingHandler() => new() { AllowAutoRedirect = false };
+
+    /// <summary>
+    /// Forcibly turns off redirect-following on an already-constructed handler, walking a
+    /// <see cref="DelegatingHandler"/> chain down to whatever concrete handler actually executes
+    /// the request. Used wherever this SDK's public surface accepts an OPTIONAL caller-supplied
+    /// <see cref="HttpMessageHandler"/> for test stubbing (<see cref="KaironPairingClient.PairAsync"/>,
+    /// <see cref="KaironPairingClient.ConfirmAsync"/>): the default (no handler supplied) already
+    /// gets a fresh <see cref="CreateNonRedirectingHandler"/>, but a caller who supplies their own -
+    /// a real <see cref="HttpClientHandler"/>/<see cref="SocketsHttpHandler"/> at its default
+    /// settings, however many <see cref="DelegatingHandler"/>s deep - must not be able to silently
+    /// reintroduce redirect-following merely by not having thought to set
+    /// <c>AllowAutoRedirect = false</c> themselves. A pairing code and a confirmation's freshly
+    /// issued API key both travel in the POST body, which a 307/308 redirect replays verbatim to
+    /// wherever the response's Location points.
+    ///
+    /// This mutates the supplied instance's <c>AllowAutoRedirect</c> property in place - it never
+    /// replaces or wraps the handler - so every other customization the caller made (a proxy,
+    /// client certificates, cookies, a DelegatingHandler's own logic) is left untouched. A handler
+    /// type this SDK does not recognize (neither <see cref="HttpClientHandler"/> nor
+    /// <see cref="SocketsHttpHandler"/> at the end of the chain - for example, a fully custom
+    /// <see cref="HttpMessageHandler"/> subclass implementing its own transport) cannot be mutated
+    /// this way; test doubles that just return a canned <see cref="HttpResponseMessage"/> directly
+    /// (this SDK's own test suite's pattern) fall in that category too, but are not a redirect risk
+    /// in the first place - they never call a base implementation that follows redirects at all.
+    /// </summary>
+    public static void DisableAutoRedirect(HttpMessageHandler? handler)
+    {
+        var current = handler;
+        while (current is DelegatingHandler delegating && delegating.InnerHandler is not null)
+            current = delegating.InnerHandler;
+
+        switch (current)
+        {
+            case HttpClientHandler httpClientHandler:
+                httpClientHandler.AllowAutoRedirect = false;
+                break;
+            case SocketsHttpHandler socketsHttpHandler:
+                socketsHttpHandler.AllowAutoRedirect = false;
+                break;
+        }
+    }
 }

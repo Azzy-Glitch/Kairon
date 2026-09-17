@@ -21,7 +21,27 @@ availability is not assumed; deployment can use a release wheel instead of sourc
 
 Create/select a project in KAIRON's Pairing page and choose Python. A `pair_...` value
 is a single-use, 10-minute credential-exchange code for that existing project. It is
-not a project ID or telemetry API key. `from kairon import pair; pair(endpoint, code)`
+not a project ID or telemetry API key.
+
+The primary, simplest way to use it is passing it straight to the `Kairon` constructor,
+which redeems it, persists the resulting credential, and confirms receipt - later runs
+reuse the stored connection with no code needed again:
+
+```python
+from kairon import Kairon
+
+kairon = Kairon(pairing_code="YOUR_PAIRING_CODE")
+kairon.start()
+```
+
+**Pairing against a remote or cloud KAIRON backend?** Set `KAIRON_ENDPOINT` (or pass
+`endpoint=`) to that backend's real HTTPS address *first* - the pairing call itself has
+to reach the right backend to redeem the code. `Kairon(pairing_code=...)` with no
+endpoint tries `http://127.0.0.1:8000`, this machine, not a remote one. "Nothing else
+to configure" only holds when KAIRON is on this same machine.
+
+Lower-level, if you need the resulting credential without starting a collector (a
+one-time setup script, for example): `from kairon import pair; pair(endpoint, code)`
 returns `apiKey`, `projectId`, `endpoint`, or None on failure. Securely persist those
 values yourself without printing the response. An operator may also issue a project
 credential directly; pairing is not required at runtime and does not create a project.
@@ -77,6 +97,31 @@ Automatic metrics every five seconds sample real process CPU/memory and aggregat
 middleware request/error counts and mean duration. Omitting service uses the application
 identity consistently for both requests and metrics. The SDK is collection-only;
 telemetry does not grant remediation authorization.
+
+### Reporting outside a web request
+
+For a worker, scheduled job, or anywhere there is no HTTP request to instrument,
+`capture_exception`/`record_metric` report directly - non-blocking, bounded, and fail-open
+like every other telemetry path here:
+
+```python
+try:
+    process_order(order)
+except Exception as exc:
+    kairon.capture_exception(exc, endpoint="/jobs/order-processing", method="JOB", status_code=500)
+
+kairon.record_metric(queue_depth=queue.qsize(), component="order-worker")
+```
+
+### Redirect and transport safety
+
+Pairing, confirmation and telemetry never follow an HTTP redirect: every network call goes
+through a private urllib opener with redirect-following disabled, so a compromised or
+misconfigured backend cannot redirect one of those requests - and the credentials on it -
+onto a different origin merely by answering with a 3xx. Plain HTTP is accepted only to a
+loopback address (`localhost`/`127.0.0.0/8`/`::1`); anywhere else requires HTTPS, checked at
+every point an endpoint can enter the SDK (explicit configuration, a pairing response's own
+returned endpoint, the actual send itself) rather than once at startup.
 
 ## Real integration example
 

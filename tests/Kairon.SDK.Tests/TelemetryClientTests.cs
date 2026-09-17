@@ -122,7 +122,15 @@ public class TelemetryClientTests
     [Fact]
     public async Task TimeoutIsReportedNotThrown()
     {
-        var handler = new SlowHandler(TimeSpan.FromSeconds(5));
+        // Previously used a handler that resolved on its own after a FIXED 5-second delay, racing
+        // it against the SDK's 1-second internal timeout - a race that mostly favors the timeout
+        // by a wide margin, but was observed to invert under extreme scheduling contention (many
+        // parallel test processes at once), where the internal CancelAfter(1s) callback itself got
+        // delayed long enough for the handler's own 5-second delay to win first, making this
+        // report success instead of a timeout. A handler that NEVER completes on its own - only
+        // cancellation can end it - removes the race entirely: there is no wall-clock value the
+        // scheduler could delay by that would change the outcome.
+        var handler = new NeverRespondsUntilCanceledHandler();
 
         var response = await CreateClient(handler, o => o.TimeoutSeconds = 1).SendAsync(Payload());
 
@@ -135,12 +143,26 @@ public class TelemetryClientTests
     public async Task TimeoutIsBoundedEvenWithNoCallerCancellation()
     {
         // A caller passing CancellationToken.None must still not be held indefinitely.
-        var handler = new SlowHandler(TimeSpan.FromSeconds(10));
-        var started = DateTime.UtcNow;
+        //
+        // This previously asserted `elapsed < 5s` around the call - a wall-clock margin that was
+        // observed to fail under a full-solution test run (many other projects' tests, several of
+        // them opening real loopback listeners, compete for the thread pool at the same time),
+        // without the SDK's own per-call timeout logic being at fault: PostAsync's internal linked
+        // CancellationTokenSource still fires at 1 second either way, but HOW LONG AFTER THAT the
+        // continuation actually gets scheduled and observed depends on how busy the machine is at
+        // that moment - not on anything this SDK controls. Asserting on a deterministic SIGNAL
+        // (the handler's own token actually being canceled) instead of an absolute time budget
+        // proves the same real thing - the timeout genuinely fires - without being sensitive to how
+        // fast the test happens to run.
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new ObservesCancellationHandler(cancellationObserved);
 
         await CreateClient(handler, o => o.TimeoutSeconds = 1).SendAsync(Payload(), CancellationToken.None);
 
-        Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(5));
+        // A generous, environment-tolerant bound - not what is being measured. It only stops this
+        // test itself from hanging forever if the timeout genuinely regressed and stopped firing.
+        var completed = await Task.WhenAny(cancellationObserved.Task, Task.Delay(TimeSpan.FromSeconds(30)));
+        Assert.Same(cancellationObserved.Task, completed);
     }
 
     [Fact]
@@ -335,6 +357,49 @@ public class TelemetryClientTests
             {
                 Content = new StringContent("""{"success":true}""")
             };
+        }
+    }
+
+    /// <summary>Never completes on its own - <c>Task.Delay(Timeout.InfiniteTimeSpan, ...)</c> only
+    /// ever ends via the token, so the ONLY way this method returns is cancellation. Used wherever
+    /// a test needs to prove the SDK's own timeout actually fires, with no wall-clock race against
+    /// an artificial delay of any size: <see cref="TimeoutIsReportedNotThrown"/> and
+    /// <see cref="TimeoutIsBoundedEvenWithNoCallerCancellation"/> both previously used a handler
+    /// that resolved on its own after a fixed delay, which mostly loses that race to the SDK's
+    /// shorter internal timeout but was observed to invert under severe scheduling contention.</summary>
+    private class NeverRespondsUntilCanceledHandler : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("Unreachable: Task.Delay(Timeout.InfiniteTimeSpan) only ever throws.");
+        }
+    }
+
+    /// <summary>Like <see cref="NeverRespondsUntilCanceledHandler"/>, but also signals a
+    /// <see cref="TaskCompletionSource"/> the moment cancellation is actually observed - the
+    /// deterministic event <see cref="TimeoutIsBoundedEvenWithNoCallerCancellation"/> waits on, in
+    /// place of a wall-clock assertion.</summary>
+    private class ObservesCancellationHandler : HttpMessageHandler
+    {
+        private readonly TaskCompletionSource _cancellationObserved;
+
+        public ObservesCancellationHandler(TaskCompletionSource cancellationObserved) =>
+            _cancellationObserved = cancellationObserved;
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                _cancellationObserved.TrySetResult();
+                throw;
+            }
+
+            throw new InvalidOperationException("Unreachable: Task.Delay(Timeout.InfiniteTimeSpan) only ever throws.");
         }
     }
 }

@@ -20,7 +20,11 @@ public static class KaironPairingClient
 {
     /// <summary>
     /// <paramref name="handler"/> is exposed only so tests can stub the HTTP response without a
-    /// live server; production callers always omit it and get a real connection.
+    /// live server; production callers always omit it and get a real connection. Supplying one
+    /// does not reopen the redirect-safety hole it might otherwise look like it does: whatever is
+    /// passed has its own redirect-following forcibly disabled first (see
+    /// <see cref="KaironEndpointSecurity.DisableAutoRedirect"/>) - a pairing code is a secret
+    /// worth protecting in transit regardless of who constructed the transport.
     /// </summary>
     public static async Task<KaironPairingResult> PairAsync(string backendEndpoint, string pairingCode,
         CancellationToken cancellationToken = default, HttpMessageHandler? handler = null)
@@ -30,6 +34,8 @@ public static class KaironPairingClient
         // below), and the pairing code itself is a secret worth protecting in transit.
         if (!KaironEndpointSecurity.IsAllowed(backendEndpoint))
             return new KaironPairingResult(false, "Refusing to pair over an insecure endpoint: plain HTTP is only allowed to localhost/127.0.0.0/8/::1. Use HTTPS for a non-local KAIRON backend.");
+
+        if (handler is not null) KaironEndpointSecurity.DisableAutoRedirect(handler);
 
         try
         {
@@ -84,6 +90,10 @@ public static class KaironPairingClient
         // run), so it is re-checked here too rather than trusted because it was checked somewhere
         // earlier.
         if (!KaironEndpointSecurity.IsAllowed(backendEndpoint)) return false;
+
+        // Same reasoning as PairAsync: the freshly issued API key travels in this call's POST
+        // body, and a caller-supplied handler must not be able to let a redirect replay it.
+        if (handler is not null) KaironEndpointSecurity.DisableAutoRedirect(handler);
 
         using var client = new HttpClient(handler ?? KaironEndpointSecurity.CreateNonRedirectingHandler(), disposeHandler: true)
         {

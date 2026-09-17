@@ -283,7 +283,8 @@ function PythonGuide({ CodeBlock, projectId, onTelemetry }) {
         <p className="sdk-hint">That installs the core SDK plus the FastAPI/Starlette middleware. Using a different framework or a plain script? Install just <code>./sdk-python</code> — see Advanced.</p>
       </SubStep>
       <SubStep number="2" title="Connect with your pairing code">
-        <p>Paste the pairing code from Step 2 above. KAIRON looks up your project, its API key and its endpoint automatically — nothing else to configure.</p>
+        <p>Paste the pairing code from Step 2 above. KAIRON looks up your project, its API key and its endpoint automatically.</p>
+        <p className="sdk-hint"><strong>Pairing against a remote or cloud KAIRON?</strong> Set <code>KAIRON_ENDPOINT</code> to that backend's HTTPS address first — <code>Kairon(pairing_code=...)</code> with no endpoint tries to pair against <code>http://127.0.0.1:8000</code>, this machine. Nothing else to configure only holds for a local KAIRON backend.</p>
         <CodeBlock copyKey="python-pairing" code={pythonPairing} />
         <p className="sdk-hint">The SDK redeems the code once and remembers the connection, so later runs of this app don't need it again. Keep the pairing code private; never commit it to Git.</p>
         <details className="sdk-guide-details">
@@ -328,9 +329,10 @@ function DotNetGuide({ CodeBlock, projectId, onTelemetry }) {
         <p className="sdk-hint">There is no public NuGet feed for this release — use the package feed or local <code>.nupkg</code> folder your KAIRON release owner supplies. For local development from a source checkout instead, see Advanced.</p>
       </SubStep>
       <SubStep number="2" title="Connect with your pairing code">
-        <p>Paste the pairing code from Step 2 above. KAIRON looks up your project, its API key and its endpoint automatically — nothing else to configure.</p>
+        <p>Paste the pairing code from Step 2 above. KAIRON looks up your project, its API key and its endpoint automatically.</p>
+        <p className="sdk-hint"><strong>Pairing against a remote or cloud KAIRON?</strong> Set <code>KAIRON_ENDPOINT</code> to that backend's HTTPS address first — <code>new KaironClient(pairingCode: ...)</code> with no endpoint tries to pair against <code>http://127.0.0.1:8000</code>, this machine. Nothing else to configure only holds for a local KAIRON backend.</p>
         <CodeBlock copyKey="dotnet-pairing" code={dotnetClientPairing} />
-        <p className="sdk-hint"><code>KaironClient</code> redeems the code once and remembers the connection, so later runs of this app don't need it again. Keep the pairing code private; never commit it to Git. Works in any .NET app — a worker, a console app, or an ASP.NET Core host.</p>
+        <p className="sdk-hint"><code>KaironClient</code> redeems the code once and remembers the connection, so later runs of this app don't need it again. Keep the pairing code private; never commit it to Git. Works in any .NET app — a worker, a console app, or an ASP.NET Core host. Report an incident or a metric directly with <code>kairon.CaptureException(...)</code>/<code>kairon.RecordMetric(...)</code> — useful outside a web request, such as a scheduled job.</p>
         <details className="sdk-guide-details">
           <summary>Prefer explicit configuration? (CI/CD, containers)</summary>
           <p>Set these values in your application's environment instead:</p>
@@ -348,6 +350,7 @@ function DotNetGuide({ CodeBlock, projectId, onTelemetry }) {
         <p>The pairing-code client above already reports process metrics automatically — enough for a worker or a quick connectivity check. For automatic per-request instrumentation in an ASP.NET Core app, register the DI-based integration instead, using the same values a pairing code resolves (shown above, or under Prefer explicit configuration):</p>
         <CodeBlock copyKey="dotnet-usage" code={dotnetProgram} />
         <p className="sdk-hint"><code>AddKairon()</code> configures telemetry. <code>UseKairon()</code> adds request monitoring.</p>
+        <p className="sdk-hint">AddKairon() does not automatically read the credential a pairing-code KaironClient stored on disk — the two are separate. Paste the SAME endpoint/project ID/API key a pairing code resolved into AddKairon()'s options (or its environment variables), rather than assuming an already-paired KaironClient elsewhere in the app is what AddKairon() is using.</p>
       </SubStep>
       <SubStep number="4" title="Run">
         <CodeBlock copyKey="dotnet-run" code={'dotnet run'} />
@@ -432,7 +435,7 @@ function SecurityCard() {
           <li>Never put pairing codes into source code.</li>
           <li>Never use a Groq key as an application telemetry key.</li>
           <li>Never expose project credentials in screenshots or logs.</li>
-          <li>Plain HTTP is only accepted to a loopback backend (<code>localhost</code>/<code>127.0.0.0/8</code>/<code>::1</code>). Connecting to any non-local KAIRON backend requires HTTPS — the SDK refuses a remote plaintext endpoint before sending anything, checked at every point an endpoint can enter the SDK (configuration, pairing, the actual telemetry send itself) rather than once. The SDK also never follows an HTTP redirect, so a compromised or misconfigured backend cannot redirect a request — and the credentials/telemetry on it — onto a different origin.</li>
+          <li>Plain HTTP is only accepted to a loopback backend (<code>localhost</code>/<code>127.0.0.0/8</code>/<code>::1</code>). Connecting to any non-local KAIRON backend requires HTTPS — the SDK refuses a remote plaintext endpoint before sending anything, checked at every point an endpoint can enter the SDK (configuration, pairing, the actual telemetry send itself) rather than once. Pairing, confirmation and telemetry also never follow an HTTP redirect, so a compromised or misconfigured backend cannot redirect one of those requests — and the credentials on it — onto a different origin.</li>
         </ul>
         <p>Use environment variables or your deployment's secret manager.</p>
       </div>
@@ -575,6 +578,10 @@ export default function SdkGuide({ CodeBlock, onPairing, onTelemetry, onRemediat
           'Application telemetry uses the resulting Project ID + Project API Key, resolved automatically from the code.',
           'Never use the pairing code as the telemetry API key.'
         ]} />
+        <div className="resolution-banner resolution-neutral sdk-remote-callout">
+          <p><strong>Local KAIRON (this machine):</strong> the pairing code is enough — nothing else to configure. The default endpoint already points at this backend.</p>
+          <p><strong>Remote or cloud KAIRON:</strong> set <code>KAIRON_ENDPOINT</code> to your KAIRON backend's real HTTPS address <em>before</em> pairing, on whatever machine your application runs on. The pairing code itself must reach the right backend to be redeemed; KAIRON then tells the SDK the correct address to keep using afterward. Skip this and the SDK tries to pair against <code>http://127.0.0.1:8000</code> — this machine, not your KAIRON backend.</p>
+        </div>
         <button type="button" className="small-btn sdk-primary-action" onClick={onPairing}>Open Pairing</button>
       </Step>
 

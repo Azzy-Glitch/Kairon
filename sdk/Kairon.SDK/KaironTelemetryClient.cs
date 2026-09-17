@@ -16,7 +16,27 @@ public class KaironTelemetryClient
     private readonly HttpClient _http;
     private readonly KaironOptions _options;
 
-    public KaironTelemetryClient(HttpClient http, IOptions<KaironOptions> options)
+    /// <summary>
+    /// Internal by design, not merely by convention: an already-constructed <see cref="HttpClient"/>
+    /// exposes no public way to inspect or change the handler chain baked into it, so once one
+    /// reaches here this class has no way to verify - let alone enforce - that it will not silently
+    /// follow a redirect and replay <c>X-Kairon-API-Key</c> at whatever a malicious or compromised
+    /// backend's 3xx response names. A publicly constructible overload would therefore be an
+    /// unrestricted escape hatch around this SDK's entire redirect-safety guarantee: any external
+    /// caller could hand in a plain <c>new HttpClient()</c> (auto-redirect on by default) and this
+    /// class would have no way to know.
+    ///
+    /// The only safe way to build one is for the SDK itself to build the <see cref="HttpClient"/>
+    /// first - see <see cref="KaironExtensions.AddKairon"/> (a named client via
+    /// <c>IHttpClientFactory</c>, its primary handler forced through
+    /// <see cref="KaironEndpointSecurity.CreateNonRedirectingHandler"/>) and
+    /// <see cref="KaironClient"/>'s own private constructor (same pattern, no DI). Both live in this
+    /// assembly, so the internal accessibility here costs them nothing. <c>Kairon.SDK.Tests</c> is
+    /// the one friend assembly (<c>InternalsVisibleTo</c> in the project file) allowed to construct
+    /// this directly, and only ever does so with in-memory <c>HttpMessageHandler</c> test doubles
+    /// that stub responses without a real handler chain to redirect through in the first place.
+    /// </summary>
+    internal KaironTelemetryClient(HttpClient http, IOptions<KaironOptions> options)
     {
         _http = http;
         _options = options.Value;
