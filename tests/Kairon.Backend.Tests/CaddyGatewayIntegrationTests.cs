@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Xunit;
 
 namespace Kairon.Backend.Tests;
@@ -410,92 +412,51 @@ public sealed class CaddyGateway : IDisposable
 
     private sealed class StubBackend : IDisposable
     {
-        private HttpListener _listener = new();
-        private volatile bool _running;
+        // Deliberately Kestrel, not HttpListener: HttpListener on Linux is a fully-managed
+        // implementation (Windows backs the same class with http.sys instead, a completely
+        // different code path), and its HTTP/1.1 framing does not line up with what Caddy's Go-based
+        // reverse-proxy client expects - confirmed via a real Linux CI run, where Caddy logged an
+        // unbroken stream of "Unsolicited response received on idle HTTP channel" for every single
+        // proxied request over a full 30-second window, never once returning the backend's response
+        // to the client, so every probe here saw only Caddy's own built-in 404. This was invisible
+        // locally on Windows no matter how many times it was rerun, because Windows's http.sys-backed
+        // HttpListener doesn't share the bug. Kestrel has no such platform fork - it's the same
+        // managed server on every OS, and it's what the real Kairon.Backend this suite is standing in
+        // for actually runs on, so this also makes the stub a more faithful double, not just a
+        // workaround.
+        private WebApplication? _app;
 
         public readonly ConcurrentBag<RecordedRequest> Requests = new();
         public int Port { get; private set; }
 
         public void Start()
         {
-            // Same claim-and-retry approach as Kairon.SDK.Tests' loopback server: HttpListener
-            // registers through http.sys, a different namespace from a raw TCP bind, so probing a
-            // port first does not prove this one can be claimed.
-            HttpListenerException? last = null;
-            for (var attempt = 0; attempt < 10; attempt++)
+            Port = FreePort();
+
+            var builder = WebApplication.CreateBuilder();
+            builder.Logging.ClearProviders();
+            builder.WebHost.UseUrls($"http://127.0.0.1:{Port}");
+            _app = builder.Build();
+
+            _app.Run(async context =>
             {
-                Port = Random.Shared.Next(20000, 60000);
-                _listener = new HttpListener();
-                _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
-                try
-                {
-                    _listener.Start();
-                    last = null;
-                    break;
-                }
-                catch (HttpListenerException exception)
-                {
-                    last = exception;
-                }
-            }
+                var headers = context.Request.Headers.ToDictionary(
+                    h => h.Key, h => h.Value.ToString(), StringComparer.OrdinalIgnoreCase);
+                Requests.Add(new RecordedRequest(context.Request.Method, context.Request.Path.Value ?? "", headers));
 
-            if (last is not null) throw last;
-
-            _running = true;
-            _ = Task.Run(Loop);
-        }
-
-        private async Task Loop()
-        {
-            while (_running)
-            {
-                HttpListenerContext context;
-                try
-                {
-                    context = await _listener.GetContextAsync();
-                }
-                catch (Exception)
-                {
-                    return;
-                }
-
-                var headers = context.Request.Headers.AllKeys
-                    .Where(key => key is not null)
-                    .ToDictionary(key => key!, key => context.Request.Headers[key] ?? "",
-                        StringComparer.OrdinalIgnoreCase);
-                Requests.Add(new RecordedRequest(context.Request.HttpMethod,
-                    context.Request.Url?.AbsolutePath ?? "", headers));
-
-                var body = "{\"ok\":true}"u8.ToArray();
                 context.Response.StatusCode = 200;
                 context.Response.ContentType = "application/json";
-                context.Response.ContentLength64 = body.Length;
-                // HttpListener on Linux is a fully-managed implementation (Windows backs it with
-                // http.sys instead), and its HTTP/1.1 keep-alive framing does not line up with what
-                // Caddy's Go-based reverse-proxy client expects - confirmed via a real Linux CI run,
-                // where Caddy logged a stream of "Unsolicited response received on idle HTTP channel"
-                // for every proxied request, silently dropping each one instead of returning it to the
-                // client, so every probe here saw only Caddy's own built-in 404. Closing the connection
-                // after every response, rather than leaving it pooled for reuse, sidesteps the mismatch
-                // entirely. Windows was never affected, which is why this stayed invisible until CI.
-                context.Response.KeepAlive = false;
-                await context.Response.OutputStream.WriteAsync(body);
-                context.Response.Close();
-            }
+                await context.Response.WriteAsync("{\"ok\":true}");
+            });
+
+            _app.StartAsync().GetAwaiter().GetResult();
         }
 
         public void Dispose()
         {
-            _running = false;
-            try
-            {
-                _listener.Stop();
-                _listener.Close();
-            }
-            catch (Exception)
-            {
-                // Already torn down.
-            }
+            if (_app is null) return;
+            _app.StopAsync().GetAwaiter().GetResult();
+            _app.DisposeAsync().AsTask().GetAwaiter().GetResult();
         }
     }
 }
