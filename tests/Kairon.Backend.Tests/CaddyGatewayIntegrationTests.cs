@@ -204,6 +204,11 @@ public sealed class CaddyGateway : IDisposable
     private readonly StubBackend? _backend;
     private readonly HttpClient _client = new(new HttpClientHandler { AllowAutoRedirect = false });
     private readonly int _gatewayPort;
+    // Captured, not discarded: Caddy failing to reach a genuinely ready state (see
+    // WaitUntilAnswering) is otherwise reported as nineteen confusing, identical-looking
+    // "Expected OK, Actual NotFound" test failures with no indication of WHY - this is what makes
+    // that diagnosable instead.
+    private readonly StringBuilder _caddyLog = new();
 
     public CaddyGateway()
     {
@@ -300,7 +305,7 @@ public sealed class CaddyGateway : IDisposable
         return hash;
     }
 
-    private static Process StartCaddy(string binary, Dictionary<string, string> environment)
+    private Process StartCaddy(string binary, Dictionary<string, string> environment)
     {
         var startInfo = new ProcessStartInfo(binary)
         {
@@ -312,33 +317,61 @@ public sealed class CaddyGateway : IDisposable
         foreach (var (key, value) in environment) startInfo.Environment[key] = value;
 
         var process = Process.Start(startInfo)!;
-        // Drained so a chatty Caddy can never fill its pipe buffer and wedge the process.
-        process.OutputDataReceived += (_, _) => { };
-        process.ErrorDataReceived += (_, _) => { };
+        // Captured under a lock (both streams deliver on their own threads) rather than discarded,
+        // so a Caddy that never reaches a ready state - a bad Caddyfile substitution, a real config
+        // error - can actually be diagnosed instead of just producing nineteen bare "Actual:
+        // NotFound" failures.
+        process.OutputDataReceived += (_, e) => { if (e.Data is not null) lock (_caddyLog) _caddyLog.AppendLine(e.Data); };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) lock (_caddyLog) _caddyLog.AppendLine(e.Data); };
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
         return process;
     }
 
+    /// <summary>
+    /// Requires an actual 200 from /api/health - not merely "the socket accepted a connection and
+    /// returned SOME response" - before considering Caddy ready. A caddy process can start
+    /// accepting TCP connections before its Caddyfile has finished loading into active routes; in
+    /// that narrow window (observed to be wide enough to matter under a loaded, slower CI runner)
+    /// it answers with its own built-in 404 for "no site configured yet", which is a real HTTP
+    /// response and would satisfy a check that only asked "did this throw" - letting every
+    /// subsequent test in the class run against a gateway that never actually finished configuring,
+    /// each failing identically and unhelpfully as "Expected OK, Actual NotFound" with no signal of
+    /// why. Failing loudly here instead, with Caddy's own captured log attached, turns that into a
+    /// single, actionable diagnosis at setup time.
+    /// </summary>
     private void WaitUntilAnswering()
     {
         var deadline = DateTime.UtcNow.AddSeconds(30);
+        HttpStatusCode? lastStatus = null;
         while (DateTime.UtcNow < deadline)
         {
+            if (_caddy!.HasExited)
+                throw new InvalidOperationException(
+                    $"Caddy exited during startup (code {_caddy.ExitCode}) before it ever answered /api/health.\n--- Caddy output ---\n{_caddyLog}");
+
             try
             {
                 using var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-                probe.GetAsync($"http://localhost:{_gatewayPort}/api/health").GetAwaiter().GetResult();
-                _backend!.Requests.Clear();
-                return;
+                var response = probe.GetAsync($"http://localhost:{_gatewayPort}/api/health").GetAwaiter().GetResult();
+                lastStatus = response.StatusCode;
+                if (response.IsSuccessStatusCode)
+                {
+                    _backend!.Requests.Clear();
+                    return;
+                }
             }
             catch (Exception)
             {
-                Thread.Sleep(250);
+                // Not yet listening at all - keep retrying until the deadline.
             }
+
+            Thread.Sleep(250);
         }
 
-        throw new InvalidOperationException("Caddy did not start answering within 30 seconds.");
+        throw new InvalidOperationException(
+            $"Caddy never answered /api/health with a success status within 30 seconds (last observed: " +
+            $"{(lastStatus.HasValue ? ((int)lastStatus.Value).ToString() : "no response")}).\n--- Caddy output ---\n{_caddyLog}");
     }
 
     private static int FreePort()

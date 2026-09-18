@@ -50,10 +50,38 @@ class RedirectNotAllowedError(urllib.error.URLError):
 
 class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
     """Fails every 3xx instead of following it, for every status urllib would redirect on
-    (301, 302, 303, 307, 308)."""
+    (301, 302, 303, 307, 308).
+
+    308 needs a conditional, explicit handler here, not just an override of redirect_request:
+    CPython's own HTTPRedirectHandler only grew a built-in http_error_308 in a later release
+    (confirmed missing on 3.9.25 in CI - a 308 response there never reaches redirect_request at all
+    and instead falls through to http_error_default, raising a bare urllib.error.HTTPError). The
+    underlying security property still held even then - urllib never makes a second request
+    without a handler for the status, so the redirect target is never contacted either way - but
+    the exception type and message differed from every other refused status, a real cross-version
+    inconsistency this SDK's own contract ("never follows a redirect", not "never follows a
+    redirect except on Python 3.9") must not have.
+
+    The fallback below is defined ONLY when the running Python's stdlib lacks http_error_308
+    entirely (checked once, at class-definition time) - never as an unconditional override. An
+    http_error_XXX hook's real signature omits newurl (six arguments, not redirect_request's
+    seven) and is expected to derive it from the response headers itself before calling
+    redirect_request, exactly like the stdlib's own http_error_302 already does for 301/302/303/
+    307; aliasing http_error_308 directly to redirect_request would silently mismatch that
+    signature and break real redirect handling on any Python version where the stdlib DOES already
+    supply a (more careful, edge-case-handling) http_error_308 of its own.
+    """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102 - urllib hook
         raise RedirectNotAllowedError(code, newurl)
+
+    if not hasattr(urllib.request.HTTPRedirectHandler, "http_error_308"):
+        def http_error_308(self, req, fp, code, msg, headers):  # noqa: D102 - urllib hook
+            # The value is never resolved or requested - only ever repr()'d into the exception
+            # message - so this deliberately does not replicate the stdlib's fuller relative-URL
+            # resolution; it only needs to name the untrusted destination for diagnostics.
+            newurl = headers.get("location") or headers.get("uri")
+            return self.redirect_request(req, fp, code, msg, headers, newurl)
 
 
 # A PRIVATE opener, never installed globally with urllib.request.install_opener(): this SDK's
