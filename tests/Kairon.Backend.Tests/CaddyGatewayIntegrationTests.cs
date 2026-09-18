@@ -470,6 +470,15 @@ public sealed class CaddyGateway : IDisposable
                 context.Response.StatusCode = 200;
                 context.Response.ContentType = "application/json";
                 context.Response.ContentLength64 = body.Length;
+                // HttpListener on Linux is a fully-managed implementation (Windows backs it with
+                // http.sys instead), and its HTTP/1.1 keep-alive framing does not line up with what
+                // Caddy's Go-based reverse-proxy client expects - confirmed via a real Linux CI run,
+                // where Caddy logged a stream of "Unsolicited response received on idle HTTP channel"
+                // for every proxied request, silently dropping each one instead of returning it to the
+                // client, so every probe here saw only Caddy's own built-in 404. Closing the connection
+                // after every response, rather than leaving it pooled for reuse, sidesteps the mismatch
+                // entirely. Windows was never affected, which is why this stayed invisible until CI.
+                context.Response.KeepAlive = false;
                 await context.Response.OutputStream.WriteAsync(body);
                 context.Response.Close();
             }

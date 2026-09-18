@@ -103,22 +103,27 @@ public sealed class PairingEndpointPolicyTests
         Assert.Equal(PairingEndpointFailure.InsecureScheme, failure);
     }
 
-    [Theory]
-    [InlineData("kairon.example.com")]
-    [InlineData("/api")]
-    public void ARelativeOrSchemelessUrlIsRefused(string url)
+    [Fact]
+    public void ASchemelessHostnameIsRefused()
     {
-        Assert.False(PairingEndpointPolicy.TryResolve(Public(url), out _, out var failure));
+        Assert.False(PairingEndpointPolicy.TryResolve(Public("kairon.example.com"), out _, out var failure));
         Assert.Equal(PairingEndpointFailure.NotAbsolute, failure);
     }
 
-    [Fact]
-    public void AProtocolRelativeUrlIsRefusedEvenThoughWindowsParsesItAsAUncFilePath()
+    [Theory]
+    [InlineData("/api")]
+    [InlineData("//kairon.example.com")]
+    public void APathLikeOrProtocolRelativeUrlIsRefusedRegardlessOfPlatformSpecificUriParsing(string url)
     {
-        // "//host" is not schemeless to Uri on Windows - it parses as file://host/, a UNC share.
-        // Which failure code that produces is a platform detail; that it is refused is not, so this
-        // asserts the refusal rather than the specific reason.
-        Assert.False(PairingEndpointPolicy.TryResolve(Public("//kairon.example.com"), out _, out var failure));
+        // Uri.TryCreate's absolute-URI heuristics are platform-dependent for a string that also
+        // looks like a filesystem path: confirmed via a real Linux CI run that "/api" parses as an
+        // absolute file:// URI there (failing this policy's later https-only check, InsecureScheme)
+        // while on Windows it fails to parse as absolute at all (NotAbsolute) - and "//host" already
+        // had the mirror image of this problem (a Windows UNC-share parse, file://host/, with no
+        // Linux equivalent). Which specific failure code either produces is therefore a platform
+        // detail neither this policy nor this test should depend on; that both are refused is the
+        // actual, platform-independent guarantee, so that is what this asserts.
+        Assert.False(PairingEndpointPolicy.TryResolve(Public(url), out _, out var failure));
         Assert.NotEqual(PairingEndpointFailure.None, failure);
     }
 
