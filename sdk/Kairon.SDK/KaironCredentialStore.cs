@@ -21,6 +21,14 @@ internal static class KaironCredentialStore
 {
     private const string ProtectorPurpose = "Kairon.SDK.PairedCredential.v1";
 
+    // Atomic replacement is safe for readers, but Windows does not guarantee that multiple
+    // simultaneous MoveFileEx(REPLACE_EXISTING) calls targeting the same destination will all
+    // succeed. Serialize only the final publish step for writers in this process; unique temp
+    // files still let encryption and disk writes proceed independently, while the bounded retry
+    // below continues to cover another process or a scanner briefly holding the destination.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, object> s_publishLocks =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private sealed class StoredCredential
     {
         public string Endpoint { get; set; } = "";
@@ -79,6 +87,7 @@ internal static class KaironCredentialStore
         // clobber each other's still-being-written temp file; File.Move is still the sole atomic
         // publish step either way, so whichever finishes last still wins cleanly.
         var tempPath = path + "." + Environment.ProcessId + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        var publishLock = s_publishLocks.GetOrAdd(Path.GetFullPath(path), static _ => new object());
         try
         {
             File.WriteAllText(tempPath, protectedText);
@@ -86,22 +95,25 @@ internal static class KaironCredentialStore
             // (or a virus scanner briefly holding it open) can transiently fail with
             // IOException/UnauthorizedAccessException - a short bounded retry is the standard way
             // to make the move itself robust to that; it remains the one atomic publish step.
-            Exception? lastError = null;
-            for (var attempt = 0; attempt < 5; attempt++)
+            lock (publishLock)
             {
-                try
+                Exception? lastError = null;
+                for (var attempt = 0; attempt < 5; attempt++)
                 {
-                    File.Move(tempPath, path, overwrite: true);
-                    lastError = null;
-                    break;
+                    try
+                    {
+                        File.Move(tempPath, path, overwrite: true);
+                        lastError = null;
+                        break;
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        lastError = ex;
+                        Thread.Sleep(50 * (attempt + 1));
+                    }
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    lastError = ex;
-                    Thread.Sleep(50 * (attempt + 1));
-                }
+                if (lastError is not null) throw lastError;
             }
-            if (lastError is not null) throw lastError;
         }
         finally
         {
