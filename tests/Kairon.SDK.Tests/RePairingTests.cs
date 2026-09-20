@@ -337,27 +337,54 @@ public sealed class RePairingTests : IDisposable
     }
 
     [Fact]
-    public async Task ConcurrentCredentialWritesNeverCorruptTheStoredFile()
+    public void ConcurrentCredentialWritesNeverCorruptTheStoredFile()
     {
         // Multiple overlapping saves to the SAME configPath must never leave it half-written or
         // unreadable - each writer's own uniquely named temp file means no two writers can clobber
         // each other's in-progress write, and the final File.Move is what atomically decides which
         // one's contents actually land.
-        var writers = Enumerable.Range(1, 12).Select(n => Task.Run(async () =>
-        {
-            using var server = new FakeRepairServer();
-            server.NextPairingBody = JsonSerializer.Serialize(new
+        const int writerCount = 12;
+        using var startGate = new Barrier(writerCount + 1);
+        var failures = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+        var writers = Enumerable.Range(1, writerCount)
+            .Select(n => new Thread(() =>
             {
-                apiKey = $"krn_key_{n}", projectId = $"{n:00000000}-0000-0000-0000-000000000000", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
-            });
-            await using var kairon = new KaironClient(pairingCode: $"pair_concurrent_{n}", endpoint: server.Url, configPath: ConfigPath);
-        }));
+                try
+                {
+                    startGate.SignalAndWait();
+                    KaironCredentialStore.Save(
+                        ConfigPath,
+                        $"https://writer-{n}.example.test",
+                        Guid.Parse($"{n:00000000}-0000-0000-0000-000000000000"),
+                        $"krn_key_{n}");
+                }
+                catch (Exception exception)
+                {
+                    failures.Enqueue(exception);
+                }
+            }))
+            .ToArray();
 
-        await Task.WhenAll(writers);
+        foreach (var writer in writers)
+        {
+            writer.Start();
+        }
+
+        Assert.True(startGate.SignalAndWait(TimeSpan.FromSeconds(10)), "Credential writers did not become ready in time.");
+        foreach (var writer in writers)
+        {
+            Assert.True(writer.Join(TimeSpan.FromSeconds(15)), "A credential writer did not complete in time.");
+        }
+
+        Assert.Empty(failures);
 
         // Whichever write landed last, the file itself is fully intact and loadable.
-        await using var final = new KaironClient(endpoint: "http://127.0.0.1:1", configPath: ConfigPath);
-        Assert.EndsWith("-0000-0000-0000-000000000000", final.ProjectId.ToString());
+        var stored = KaironCredentialStore.Load(ConfigPath);
+        Assert.NotNull(stored);
+        Assert.Matches(@"^https://writer-(?:[1-9]|1[0-2])\.example\.test$", stored.Value.Endpoint);
+        Assert.Matches(@"^krn_key_(?:[1-9]|1[0-2])$", stored.Value.ApiKey);
+        Assert.NotEqual(Guid.Empty, stored.Value.ProjectId);
+        Assert.Empty(Directory.EnumerateFiles(_tempDir, "*.tmp", SearchOption.TopDirectoryOnly));
     }
 
     [Fact]

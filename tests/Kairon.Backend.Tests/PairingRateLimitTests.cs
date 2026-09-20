@@ -149,11 +149,22 @@ public sealed class PairingRateLimitFixture : WebApplicationFactory<Program>
 {
     public string OperatorKey { get; } = "rate-limit-test-operator-key-" + Guid.NewGuid().ToString("N");
 
-    private readonly string _dataDir =
-        Path.Combine(Path.GetTempPath(), "kairon-ratelimit-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly string _dataDir;
+    private readonly string _webRoot;
+
+    public PairingRateLimitFixture()
+    {
+        _dataDir = Path.Combine(
+            Path.GetTempPath(),
+            "kairon-ratelimit-tests-" + Guid.NewGuid().ToString("N"));
+        _webRoot = Path.Combine(_dataDir, "wwwroot");
+        Directory.CreateDirectory(_webRoot);
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        builder.UseSetting(WebHostDefaults.StaticWebAssetsKey, string.Empty);
+        builder.UseWebRoot(_webRoot);
         builder.UseEnvironment("Development");
         builder.ConfigureAppConfiguration((_, config) =>
         {
