@@ -1,12 +1,23 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Kairon.Backend.Configuration;
+using Kairon.Backend.Infrastructure;
+using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Extensions.Configuration;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Serilog;
 using Xunit;
 
 namespace Kairon.Backend.Tests;
+
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class PairingRateLimitCollection
+{
+    public const string Name = "Pairing rate-limit integration";
+}
 
 /// <summary>
 /// SdkPairingController.Pair/Confirm are unattended, no-operator-key endpoints - the pairing code
@@ -18,6 +29,7 @@ namespace Kairon.Backend.Tests;
 /// as the rest of this test project makes, cannot exercise it at all. This mirrors why
 /// CaddyGatewayIntegrationTests runs a real Caddy process rather than asserting on config strings.
 /// </summary>
+[Collection(PairingRateLimitCollection.Name)]
 public sealed class PairingRateLimitTests : IDisposable
 {
     // A FRESH factory per test method (xUnit constructs a new test class instance per [Fact]),
@@ -26,7 +38,7 @@ public sealed class PairingRateLimitTests : IDisposable
     // bleed into the next test's "legitimate call still succeeds" assertion.
     private readonly PairingRateLimitFixture _fixture = new();
 
-    public void Dispose() => _fixture.Dispose();
+    public void Dispose() => _fixture.DisposeAndCleanup();
 
     [Fact]
     public async Task RepeatedPairAttemptsAreEventuallyRateLimited()
@@ -147,17 +159,27 @@ public sealed class PairingRateLimitTests : IDisposable
 /// </summary>
 public sealed class PairingRateLimitFixture : WebApplicationFactory<Program>
 {
+    private const string TemporaryDirectoryPrefix = "kairon-ratelimit-tests-";
+
     public string OperatorKey { get; } = "rate-limit-test-operator-key-" + Guid.NewGuid().ToString("N");
+    public string ExpectedDatabasePath { get; }
+    public string? ActualDatabasePath { get; private set; }
 
     private readonly string _dataDir;
     private readonly string _webRoot;
+    private readonly object _databaseVerificationLock = new();
+    private bool _databaseIsolationVerified;
 
     public PairingRateLimitFixture()
     {
-        _dataDir = Path.Combine(
+        _dataDir = Path.GetFullPath(Path.Combine(
             Path.GetTempPath(),
-            "kairon-ratelimit-tests-" + Guid.NewGuid().ToString("N"));
+            TemporaryDirectoryPrefix + Guid.NewGuid().ToString("N")));
         _webRoot = Path.Combine(_dataDir, "wwwroot");
+        ExpectedDatabasePath = Path.Combine(_dataDir, "kairon.db");
+
+        AssertFixtureOwnedPath(_dataDir);
+        AssertRequestedDatabasePathIsSafe();
         Directory.CreateDirectory(_webRoot);
     }
 
@@ -166,17 +188,37 @@ public sealed class PairingRateLimitFixture : WebApplicationFactory<Program>
         builder.UseSetting(WebHostDefaults.StaticWebAssetsKey, string.Empty);
         builder.UseWebRoot(_webRoot);
         builder.UseEnvironment("Development");
-        builder.ConfigureAppConfiguration((_, config) =>
+        // WebApplicationFactory's ConfigureAppConfiguration callback is applied after this
+        // minimal-host application's top-level Program has already consumed PersistenceOptions
+        // and registered AppDbContext. Host settings are part of the bootstrap configuration and
+        // are therefore visible to WebApplication.CreateBuilder before persistence registration.
+        builder.UseSetting("Persistence:Provider", "SQLite");
+        builder.UseSetting("Persistence:DatabasePath", ExpectedDatabasePath);
+        builder.UseSetting("SreSecurity:RequireOperatorKey", "true");
+        builder.UseSetting("SreSecurity:OperatorKey", OperatorKey);
+        // No AI provider is configured or needed for pairing/rate-limit behavior.
+        builder.UseSetting("AiOrchestration:Enabled", "false");
+    }
+
+    /// <summary>
+    /// Starts the real application, then proves from its registered AppDbContext that the running
+    /// backend is connected to this fixture's database. Every test calls this concrete fixture
+    /// method, so HTTP traffic cannot begin unless the check succeeds.
+    /// </summary>
+    public new HttpClient CreateClient()
+    {
+        AssertRequestedDatabasePathIsSafe();
+        var client = base.CreateClient();
+        try
         {
-            config.AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Persistence:DatabasePath"] = Path.Combine(_dataDir, "kairon.db"),
-                ["SreSecurity:RequireOperatorKey"] = "true",
-                ["SreSecurity:OperatorKey"] = OperatorKey,
-                // No AI provider is configured or needed for pairing/rate-limit behavior.
-                ["AiOrchestration:Enabled"] = "false"
-            });
-        });
+            VerifyEffectiveDatabasePath();
+            return client;
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
     }
 
     /// <summary>Real operator-authenticated project creation + pairing-code mint, exactly what the
@@ -200,10 +242,92 @@ public sealed class PairingRateLimitFixture : WebApplicationFactory<Program>
         return pairing.GetProperty("code").GetString()!;
     }
 
-    protected override void Dispose(bool disposing)
+    private void VerifyEffectiveDatabasePath()
     {
-        base.Dispose(disposing);
-        try { if (Directory.Exists(_dataDir)) Directory.Delete(_dataDir, recursive: true); }
-        catch { /* best-effort cleanup */ }
+        lock (_databaseVerificationLock)
+        {
+            if (_databaseIsolationVerified) return;
+
+            using var scope = Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            if (!db.Database.IsSqlite())
+                throw new InvalidOperationException("Pairing rate-limit tests must use SQLite.");
+
+            var dataSource = db.Database.GetDbConnection().DataSource;
+            if (string.IsNullOrWhiteSpace(dataSource))
+                throw new InvalidOperationException("The running test AppDbContext did not expose a SQLite data source.");
+
+            ActualDatabasePath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(dataSource));
+            var defaultDatabasePath = GetDefaultDatabasePath();
+
+            if (PathsEqual(ActualDatabasePath, defaultDatabasePath))
+                throw new InvalidOperationException(
+                    $"Unsafe pairing test database: the running AppDbContext resolved to KAIRON's default data path '{defaultDatabasePath}'.");
+            if (!PathsEqual(ActualDatabasePath, ExpectedDatabasePath))
+                throw new InvalidOperationException(
+                    $"Pairing test database isolation failed. Expected '{ExpectedDatabasePath}', actual '{ActualDatabasePath}'.");
+            if (!IsWithinDirectory(ActualDatabasePath, _dataDir))
+                throw new InvalidOperationException(
+                    $"Pairing test database '{ActualDatabasePath}' is outside the fixture-owned directory '{_dataDir}'.");
+            if (!File.Exists(ExpectedDatabasePath))
+                throw new InvalidOperationException(
+                    $"The running application did not create the expected pairing test database '{ExpectedDatabasePath}'.");
+
+            Console.WriteLine(
+                $"PairingRateLimitFixture database isolation verified. Expected DB: {ExpectedDatabasePath}; Actual DB: {ActualDatabasePath}; Default installed DB: {defaultDatabasePath} (not used).");
+            _databaseIsolationVerified = true;
+        }
+    }
+
+    private void AssertRequestedDatabasePathIsSafe()
+    {
+        var defaultDatabasePath = GetDefaultDatabasePath();
+        if (PathsEqual(ExpectedDatabasePath, defaultDatabasePath))
+            throw new InvalidOperationException(
+                $"Unsafe pairing test setup: requested database equals KAIRON's default data path '{defaultDatabasePath}'.");
+        if (!IsWithinDirectory(ExpectedDatabasePath, _dataDir))
+            throw new InvalidOperationException(
+                $"Unsafe pairing test setup: requested database '{ExpectedDatabasePath}' is outside '{_dataDir}'.");
+    }
+
+    private static string GetDefaultDatabasePath() =>
+        Path.GetFullPath(KaironDataPaths.Resolve(new PersistenceOptions()).DatabasePath);
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+            StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsWithinDirectory(string candidate, string directory)
+    {
+        var relative = Path.GetRelativePath(Path.GetFullPath(directory), Path.GetFullPath(candidate));
+        return !Path.IsPathRooted(relative) &&
+               !string.Equals(relative, "..", StringComparison.Ordinal) &&
+               !relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
+               !relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal);
+    }
+
+    private static void AssertFixtureOwnedPath(string directory)
+    {
+        var fullDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+        var tempRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath()));
+        if (!IsWithinDirectory(fullDirectory, tempRoot) ||
+            !Path.GetFileName(fullDirectory).StartsWith(TemporaryDirectoryPrefix, StringComparison.Ordinal))
+            throw new InvalidOperationException($"Refusing to manage non-fixture directory '{fullDirectory}'.");
+    }
+
+    public void DisposeAndCleanup()
+    {
+        Dispose();
+
+        // Program configures Serilog's process-global logger, whose file sink otherwise keeps this
+        // fixture's temporary log open after the host stops. This collection never runs in
+        // parallel, so closing the test process logger cannot race another application fixture.
+        Log.CloseAndFlush();
+        // Pooling can likewise keep kairon.db, kairon.db-wal or kairon.db-shm handles alive.
+        SqliteConnection.ClearAllPools();
+        AssertFixtureOwnedPath(_dataDir);
+        if (Directory.Exists(_dataDir)) Directory.Delete(_dataDir, recursive: true);
     }
 }
