@@ -12,7 +12,6 @@ import os
 import socket
 import threading
 import time
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -21,23 +20,14 @@ from urllib.request import Request, urlopen
 import uvicorn
 from fastapi import FastAPI
 from kairon import Kairon
-from kairon.middleware import KaironMiddleware
 
 
 def run():
-    collector = Kairon(pairing_code=os.environ.get("KAIRON_PAIRING_CODE"),
+    app = FastAPI(title="PythonSDKIntegrationTest")
+    collector = Kairon.attach(app, pairing_code=os.environ.get("KAIRON_PAIRING_CODE"),
         environment=os.environ.get("KAIRON_ENVIRONMENT", "Development"),
         application="PythonSDKIntegrationTest", service="PythonSDKTestService")
     started = datetime.now(timezone.utc)
-    @asynccontextmanager
-    async def lifespan(app):
-        collector.start()
-        try:
-            yield
-        finally:
-            collector.stop(5)
-    app = FastAPI(lifespan=lifespan)
-    app.add_middleware(KaironMiddleware, kairon=collector)
     @app.get("/")
     async def root():
         return {"status": "ok"}
@@ -74,10 +64,6 @@ def run():
             result["requests"].append({"path": path, "status": status, "elapsedMs": round((time.monotonic()-before)*1000)})
         # Automatic sampler emits actual process metrics and measured request aggregates.
         time.sleep(5.5)
-        drained = collector.stop(5)
-        result.update(delivered=collector.delivered_count, failed=collector.failed_count,
-                      dropped=collector.dropped_count, pending=collector.pending_count, drained=drained,
-                      lastDeliveryError=collector.last_delivery_error)
         operator = os.environ.get("KAIRON_OPERATOR_KEY")
         if operator:
             def read(kind):
@@ -108,6 +94,10 @@ def run():
         server.should_exit = True
         thread.join(timeout=10)
         sock.close()
+        result.update(delivered=collector.delivered_count, failed=collector.failed_count,
+                      dropped=collector.dropped_count, pending=collector.pending_count,
+                      drained=collector.last_shutdown_drained is True,
+                      lastDeliveryError=collector.last_delivery_error)
 
 
 if __name__ == "__main__":

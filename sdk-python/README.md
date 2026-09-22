@@ -23,20 +23,25 @@ Create/select a project in KAIRON's Pairing page and choose Python. A `pair_...`
 is a single-use, 10-minute credential-exchange code for that existing project. It is
 not a project ID or telemetry API key.
 
-The primary, simplest way to use it is passing it straight to the `Kairon` constructor,
-which redeems it, persists the resulting credential, and confirms receipt - later runs
-reuse the stored connection with no code needed again:
+For FastAPI/Starlette, the normal integration is one call. It redeems the code, stores the
+resulting connection, registers request telemetry, starts with the application, and performs a
+bounded drain during shutdown:
 
 ```python
+from fastapi import FastAPI
 from kairon import Kairon
 
-kairon = Kairon(pairing_code="YOUR_PAIRING_CODE")
-kairon.start()
+app = FastAPI()
+Kairon.attach(app, pairing_code="YOUR_PAIRING_CODE")  # First run only.
 ```
+
+On every later run use `Kairon.attach(app)`; no pairing code, project ID, API key, credential path,
+middleware registration, `start()` or `stop()` call is needed. The low-level `Kairon` constructor
+and `KaironMiddleware` remain available for workers and applications that need manual control.
 
 **Pairing against a remote or cloud KAIRON backend?** Set `KAIRON_ENDPOINT` (or pass
 `endpoint=`) to that backend's real HTTPS address *first* - the pairing call itself has
-to reach the right backend to redeem the code. `Kairon(pairing_code=...)` with no
+to reach the right backend to redeem the code. `Kairon.attach(app, pairing_code=...)` with no
 endpoint tries `http://localhost:8000`, this machine, not a remote one. "Nothing else
 to configure" only holds when KAIRON is on this same machine.
 
@@ -61,18 +66,16 @@ information and the endpoint returned by pairing is what gets stored.
 
 ```python
 import os
+from fastapi import FastAPI
 from kairon import Kairon
-from kairon.middleware import KaironMiddleware
 
-collector = Kairon(
-    pairing_code=os.environ.get("KAIRON_PAIRING_CODE"),
-    environment=os.environ.get("KAIRON_ENVIRONMENT", "Development"),
-    application="OrdersApp", service="OrdersService",
-)
-# Start in the FastAPI lifespan; stop in its finally block.
-# See the executable integration example for the complete lifecycle.
-app.add_middleware(KaironMiddleware, kairon=collector)
+app = FastAPI(title="OrdersApp")
+Kairon.attach(app, pairing_code=os.environ.get("KAIRON_PAIRING_CODE"))
 ```
+
+After the code has been redeemed, remove `KAIRON_PAIRING_CODE`; the same source becomes
+`Kairon.attach(app)`. The FastAPI title becomes the default application/service identity unless
+you pass `application=` or `service=` explicitly.
 
 Explicit `endpoint`/`project_id`/`api_key` arguments and the matching `KAIRON_*` environment
 variables remain supported for managed deployments with no stored credential. The SDK does not
@@ -83,12 +86,16 @@ Use a base backend URL, without `/api`. Loopback works only on the same host;
 containers and remote machines need an explicitly reachable backend. The default
 desktop backend is loopback-only. Remote transport should use HTTPS.
 
-The middleware must be installed and `collector.start()` called once per process.
-It streams responses unchanged, measures through completion, preserves application
+`Kairon.attach()` installs the existing middleware and wraps—not replaces—an existing application
+lifespan. It streams responses unchanged, measures through completion, preserves application
 exceptions, and records request path, method, status, elapsed milliseconds, UTC
 timestamp, application, service and environment. Handled HTTP errors retain their
 actual status; unhandled errors before headers have status 500. A late streaming
 error retains the already-sent HTTP status and includes exception details.
+
+For the advanced/manual path, construct `Kairon(...)`, call `start()`/`stop()`, and register
+`KaironMiddleware` exactly as before. Do not combine manual lifecycle management with
+`Kairon.attach()` for the same collector.
 
 Automatic metrics every five seconds sample real process CPU/memory and aggregate
 middleware request/error counts and mean duration. Omitting service uses the application

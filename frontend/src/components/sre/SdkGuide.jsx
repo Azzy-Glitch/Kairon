@@ -22,20 +22,10 @@ const dotnetProgram = `using Kairon.SDK;
 var builder = WebApplication.CreateBuilder(args);
 var pairingCode = Environment.GetEnvironmentVariable("KAIRON_PAIRING_CODE");
 
-void ConfigureKairon(KaironOptions options)
-{
-    options.ApplicationName = "OrdersApp";
-    options.ServiceName = "OrdersService";
-    options.Environment = Environment.GetEnvironmentVariable("KAIRON_ENVIRONMENT")
-        ?? builder.Environment.EnvironmentName;
-    var remoteEndpoint = Environment.GetEnvironmentVariable("KAIRON_ENDPOINT");
-    if (!string.IsNullOrWhiteSpace(remoteEndpoint)) options.Endpoint = remoteEndpoint;
-}
-
 if (!string.IsNullOrWhiteSpace(pairingCode))
-    await builder.Services.AddKaironAsync(pairingCode, ConfigureKairon); // First run only.
+    await builder.Services.AddKaironAsync(pairingCode); // First run only.
 else
-    builder.Services.AddKairon(ConfigureKairon); // Reuses the protected stored credential.
+    builder.Services.AddKairon(); // Reuses the protected stored credential.
 
 var app = builder.Build();
 app.UseKairon(); // Before the endpoints you want to observe.
@@ -49,35 +39,22 @@ var paired = await KaironPairingClient.PairAsync(
 if (!paired.Success) throw new InvalidOperationException("Pairing failed");
 // Store paired.ProjectId and paired.ApiKey in your secret store. Do not log or serialize paired.`;
 
-// Primary, simplest path: the SDK redeems the pairing code itself and persists the resulting
-// project credential (kairon/_credential_store.py) - project_id/api_key/endpoint are never
-// typed in by hand.
-const pythonPairing = `from kairon import Kairon
-
-kairon = Kairon(pairing_code="YOUR_PAIRING_CODE")
-kairon.start()`;
-
-const pythonFastapiPaired = `from contextlib import asynccontextmanager
-from fastapi import FastAPI
+// Primary FastAPI path: one call reuses the existing collector, protected credential resolver,
+// middleware and lifecycle implementation. Project ID/API key/endpoint are never typed by hand.
+const pythonFastapiPaired = `from fastapi import FastAPI
 from kairon import Kairon
-from kairon.middleware import KaironMiddleware
 
-collector = Kairon(pairing_code="YOUR_PAIRING_CODE")
-
-@asynccontextmanager
-async def lifespan(app):
-    collector.start()
-    try:
-        yield
-    finally:
-        collector.stop(timeout_seconds=5)
-
-app = FastAPI(lifespan=lifespan)
-app.add_middleware(KaironMiddleware, kairon=collector)
+app = FastAPI()
+Kairon.attach(app, pairing_code="YOUR_PAIRING_CODE")  # First run only.
 
 @app.get("/orders")
 def orders():
     return {"status": "ok"}`;
+
+const pythonPairing = `from kairon import Kairon
+
+kairon = Kairon(pairing_code="YOUR_PAIRING_CODE")
+kairon.start()`;
 
 // Explicit configuration remains fully supported - CI/CD, containers, or anyone who prefers not
 // to rely on the SDK's local credential cache.
@@ -275,7 +252,7 @@ function VerifyCard({ projectId, onTelemetry }) {
   );
 }
 
-// ---- Per-SDK guides (identical structure: Install → Configure → Add SDK → Run → Verify) --------
+// ---- Per-SDK guides (progressive: Install → Connect → Automatic behavior → Run → Verify) -------
 
 function PythonGuide({ CodeBlock, projectId, onTelemetry }) {
   return (
@@ -287,12 +264,12 @@ function PythonGuide({ CodeBlock, projectId, onTelemetry }) {
         <p className="sdk-hint">That installs the core SDK plus the FastAPI/Starlette middleware. Using a different framework or a plain script? Install just <code>./sdk-python</code> — see Advanced.</p>
       </SubStep>
       <SubStep number="2" title="Connect with your pairing code">
-        <p>Paste the pairing code from Step 2 above. KAIRON looks up your project, its API key and its endpoint automatically.</p>
-        <p className="sdk-hint"><strong>Pairing against a remote or cloud KAIRON?</strong> Set <code>KAIRON_ENDPOINT</code> to that backend's HTTPS address first — <code>Kairon(pairing_code=...)</code> with no endpoint tries to pair against <code>http://localhost:8000</code>, this machine. Nothing else to configure only holds for a local KAIRON backend.</p>
-        <CodeBlock copyKey="python-pairing" code={pythonPairing} />
-        <p className="sdk-hint">The SDK redeems the code once and remembers the connection, so later runs of this app don't need it again. Keep the pairing code private; never commit it to Git.</p>
+        <p>Add one line to your FastAPI application. KAIRON securely resolves the project, credential and endpoint for you.</p>
+        <CodeBlock copyKey="python-fastapi-paired" code={pythonFastapiPaired} />
+        <p className="sdk-hint">After the first successful run, change that line to <code>Kairon.attach(app)</code>. The protected stored connection is reused automatically.</p>
         <details className="sdk-guide-details">
-          <summary>Prefer explicit configuration? (CI/CD, containers)</summary>
+          <summary>Remote/cloud or explicit configuration</summary>
+          <p><strong>Remote first pairing:</strong> set <code>KAIRON_ENDPOINT</code> to the reachable HTTPS backend before starting the app. Local KAIRON needs no endpoint.</p>
           <p>Set these values in your application's environment instead:</p>
           <CodeBlock copyKey="python-configuration" code={configuration} />
           <ul className="sdk-config-explain">
@@ -304,12 +281,14 @@ function PythonGuide({ CodeBlock, projectId, onTelemetry }) {
           <p className="sdk-hint">These values are used only the first time this app runs, before it has anything stored. Once a connection is stored — from a pairing code or from these values — the endpoint, project ID and API key are always used together as that one stored connection; they're never mixed with a different explicit value or environment variable afterward. To change a stored connection, redeem a fresh pairing code — that always replaces the whole stored connection. Keep your API key private. Never commit it to Git.</p>
         </details>
       </SubStep>
-      <SubStep number="3" title="Add KAIRON to your application">
-        <CodeBlock copyKey="python-fastapi-paired" code={pythonFastapiPaired} />
-        <details className="sdk-guide-details">
-          <summary>Using explicit configuration instead?</summary>
-          <CodeBlock copyKey="python-fastapi-usage" code={pythonFastapi} />
-        </details>
+      <SubStep number="3" title="What KAIRON handles automatically">
+        <Checklist items={[
+          'Secure pairing and stored-credential reuse',
+          'FastAPI/Starlette request middleware',
+          'Errors, status codes and latency telemetry',
+          'Background delivery and process metrics',
+          'Startup, shutdown and a bounded final telemetry drain'
+        ]} />
       </SubStep>
       <SubStep number="4" title="Run">
         <CodeBlock copyKey="python-run" code={'uvicorn app:app --reload'} />
@@ -333,12 +312,11 @@ function DotNetGuide({ CodeBlock, projectId, onTelemetry }) {
         <p className="sdk-hint">There is no public NuGet feed for this release — use the package feed or local <code>.nupkg</code> folder your KAIRON release owner supplies. For local development from a source checkout instead, see Advanced.</p>
       </SubStep>
       <SubStep number="2" title="Connect with your pairing code">
-        <p>Paste the pairing code from Step 2 above. KAIRON looks up your project, its API key and its endpoint automatically.</p>
-        <p className="sdk-hint"><strong>Pairing against a remote or cloud KAIRON?</strong> Set <code>KAIRON_ENDPOINT</code> to that backend's HTTPS address first — <code>new KaironClient(pairingCode: ...)</code> with no endpoint tries to pair against <code>http://localhost:8000</code>, this machine. Nothing else to configure only holds for a local KAIRON backend.</p>
-        <CodeBlock copyKey="dotnet-pairing" code={dotnetClientPairing} />
-        <p className="sdk-hint"><code>KaironClient</code> redeems the code once and remembers the connection, so later runs of this app don't need it again. Keep the pairing code private; never commit it to Git. Works in any .NET app — a worker, a console app, or an ASP.NET Core host. Report an incident or a metric directly with <code>kairon.CaptureException(...)</code>/<code>kairon.RecordMetric(...)</code> — useful outside a web request, such as a scheduled job.</p>
+        <p>Use asynchronous pairing on the first run. Later runs call parameterless <code>AddKairon()</code> and reuse the protected connection.</p>
+        <CodeBlock copyKey="dotnet-usage" code={dotnetProgram} />
         <details className="sdk-guide-details">
-          <summary>Prefer explicit configuration? (CI/CD, containers)</summary>
+          <summary>Remote/cloud or explicit configuration</summary>
+          <p><strong>Remote first pairing:</strong> pass an HTTPS endpoint in the optional configuration callback. Local KAIRON needs no endpoint.</p>
           <p>Set these values in your application's environment instead:</p>
           <CodeBlock copyKey="dotnet-configuration" code={configuration} />
           <ul className="sdk-config-explain">
@@ -350,10 +328,15 @@ function DotNetGuide({ CodeBlock, projectId, onTelemetry }) {
           <p className="sdk-hint">For ASP.NET Core, a complete explicit endpoint/project ID/API key remains authoritative for backward compatibility. If project ID and API key are omitted, <code>AddKairon()</code> loads the protected stored connection instead. Partial project/key configuration is rejected, so fields from different identities are never mixed. Keep your API key private. Never commit it to Git.</p>
         </details>
       </SubStep>
-      <SubStep number="3" title="Add KAIRON to ASP.NET Core">
-        <p>The pairing-code client above already reports process metrics automatically — enough for a worker or a quick connectivity check. For automatic per-request instrumentation, use the DI integration below. On the first run it opts into asynchronous pairing; later runs omit the code and <code>AddKairon()</code> reuses the same protected stored endpoint, project ID and API key.</p>
-        <CodeBlock copyKey="dotnet-usage" code={dotnetProgram} />
-        <p className="sdk-hint"><code>AddKaironAsync()</code> is only for first-run pairing because service registration cannot safely hide asynchronous network work. <code>AddKairon()</code> performs no network pairing: it uses complete explicit options when supplied, otherwise loads the existing protected SDK credential. <code>UseKairon()</code> adds request monitoring.</p>
+      <SubStep number="3" title="What KAIRON handles automatically">
+        <Checklist items={[
+          'Secure pairing and stored-credential reuse',
+          'Hosted telemetry delivery and process metrics',
+          'Errors, status codes and latency telemetry',
+          'Application identity defaults',
+          'Host-managed startup, shutdown and bounded drain'
+        ]} />
+        <p className="sdk-hint"><code>UseKairon()</code> remains explicit so you control where request instrumentation sits in the ASP.NET Core middleware pipeline.</p>
       </SubStep>
       <SubStep number="4" title="Run">
         <CodeBlock copyKey="dotnet-run" code={'dotnet run'} />
@@ -388,7 +371,7 @@ function PairingCard({ CodeBlock }) {
       ]} />
       <details className="sdk-guide-details">
         <summary>Redeeming a pairing code manually</summary>
-        <p className="sdk-hint">Most applications should just pass <code>pairing_code</code>/<code>pairingCode</code> to the SDK constructor, as shown in Step 3. Call these directly only if you need the resulting credential without starting a collector — for example, a one-time setup script.</p>
+        <p className="sdk-hint">Web applications should use <code>Kairon.attach(...)</code> or <code>AddKaironAsync(...)</code>. Call these lower-level APIs only if you need the resulting credential without starting application instrumentation — for example, a one-time setup script.</p>
         <CodeBlock copyKey="pair-python" code={pythonPairSnippet} />
         <CodeBlock copyKey="pair-dotnet" code={dotnetPairSnippet} />
       </details>
@@ -507,8 +490,13 @@ function AdvancedSection({ CodeBlock }) {
           <CodeBlock copyKey="python-source" code={'python -m pip install ./sdk-python\n# Or, for FastAPI/Starlette middleware:\npython -m pip install "./sdk-python[fastapi]"'} />
           <p>A release wheel is also supplied with some SDK releases:</p>
           <CodeBlock copyKey="python-wheel-install" code={'python -m pip install "<path-to-kairon-sdk-wheel.whl>"'} />
+          <p><strong>Manual FastAPI lifecycle</strong> — the low-level client and middleware remain available when you need explicit control:</p>
+          <CodeBlock copyKey="python-fastapi-manual" code={pythonFastapi} />
           <p><strong>Plain Python, no FastAPI</strong> — for a worker or script, create one collector per process after it starts:</p>
+          <CodeBlock copyKey="python-worker-pairing" code={pythonPairing} />
           <CodeBlock copyKey="python-worker" code={pythonWorker} />
+          <p><strong>Standalone .NET</strong> — workers and console applications can keep using <code>KaironClient</code> directly:</p>
+          <CodeBlock copyKey="dotnet-worker-pairing" code={dotnetClientPairing} />
         </section>
         <section className="section-card">
           <h3>Delivery and shutdown</h3>
@@ -583,7 +571,7 @@ export default function SdkGuide({ CodeBlock, onPairing, onTelemetry, onRemediat
         ]} />
         <div className="resolution-banner resolution-neutral sdk-remote-callout">
           <p><strong>Local KAIRON (this machine):</strong> the pairing code is enough — nothing else to configure. The default endpoint already points at this backend.</p>
-          <p><strong>Remote or cloud KAIRON:</strong> set <code>KAIRON_ENDPOINT</code> to your KAIRON backend's real HTTPS address <em>before</em> pairing, on whatever machine your application runs on. The pairing code itself must reach the right backend to be redeemed; KAIRON then tells the SDK the correct address to keep using afterward. Skip this and the SDK tries to pair against <code>http://127.0.0.1:8000</code> — this machine, not your KAIRON backend.</p>
+          <p><strong>Remote or cloud KAIRON:</strong> set <code>KAIRON_ENDPOINT</code> to your KAIRON backend's real HTTPS address <em>before</em> pairing, on whatever machine your application runs on. The pairing code itself must reach the right backend to be redeemed; KAIRON then tells the SDK the correct address to keep using afterward. Skip this and the SDK tries to pair against <code>http://localhost:8000</code> — this machine, not your KAIRON backend.</p>
         </div>
         <button type="button" className="small-btn sdk-primary-action" onClick={onPairing}>Open Pairing</button>
       </Step>

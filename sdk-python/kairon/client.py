@@ -14,6 +14,7 @@ this is a telemetry collector and nothing more, same boundary KaironOptions docu
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -387,6 +389,110 @@ class Kairon:
         self._metric_requests = 0
         self._metric_errors = 0
         self._metric_duration_ms = 0
+        self.last_shutdown_drained: Optional[bool] = None
+
+    @classmethod
+    def attach(
+        cls,
+        app,
+        *,
+        pairing_code: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        project_id: Optional[str] = None,
+        service: Optional[str] = None,
+        application: Optional[str] = None,
+        environment: Optional[str] = None,
+        api_key: Optional[str] = None,
+        enabled: bool = True,
+        timeout_seconds: float = 5.0,
+        queue_capacity: int = 1000,
+        success_sample_rate: float = 1.0,
+        ignored_path_prefixes: tuple = DEFAULT_IGNORED_PATH_PREFIXES,
+        enable_metrics: bool = True,
+        metrics_interval_seconds: float = 5.0,
+        machine_id: Optional[str] = None,
+        config_path: Optional[str] = None,
+        shutdown_timeout_seconds: float = 5.0,
+    ) -> "Kairon":
+        """Attach Kairon to a FastAPI/Starlette application in one step.
+
+        This is the normal web-application API: it creates the existing collector, registers the
+        existing :class:`KaironMiddleware`, starts telemetry with the application's lifespan, and
+        performs a bounded drain during shutdown. The returned collector remains available for
+        advanced/manual recording, but ordinary applications do not need to call ``start()`` or
+        ``stop()`` themselves.
+
+        A pairing code is still an explicit security decision. When omitted, the same credential
+        resolver used by the manual API reuses a completed stored connection. Remote first contact
+        still requires an explicit HTTPS endpoint (argument or ``KAIRON_ENDPOINT``).
+        """
+        try:
+            from .middleware import KaironMiddleware
+        except ImportError as exc:
+            raise ImportError(
+                "Kairon.attach requires FastAPI/Starlette. Install with "
+                "`pip install kairon-sdk[fastapi]`."
+            ) from exc
+
+        if getattr(getattr(app, "state", None), "_kairon_sdk_attached", False):
+            raise RuntimeError("Kairon is already attached to this application.")
+        if getattr(app, "middleware_stack", None) is not None:
+            raise RuntimeError("Call Kairon.attach(app) before the application starts.")
+        if (
+            not hasattr(app, "add_middleware")
+            or not hasattr(app, "state")
+            or not hasattr(getattr(app, "router", None), "lifespan_context")
+        ):
+            raise TypeError("Kairon.attach requires a FastAPI or Starlette application.")
+
+        inferred_application = application
+        if inferred_application is None:
+            title = getattr(app, "title", None)
+            if isinstance(title, str) and title.strip():
+                inferred_application = title.strip()
+
+        collector = cls(
+            endpoint=endpoint,
+            project_id=project_id,
+            pairing_code=pairing_code,
+            service=service,
+            application=inferred_application,
+            environment=environment,
+            api_key=api_key,
+            enabled=enabled,
+            timeout_seconds=timeout_seconds,
+            queue_capacity=queue_capacity,
+            success_sample_rate=success_sample_rate,
+            ignored_path_prefixes=ignored_path_prefixes,
+            enable_metrics=enable_metrics,
+            metrics_interval_seconds=metrics_interval_seconds,
+            machine_id=machine_id,
+            config_path=config_path,
+        )
+
+        original_lifespan = app.router.lifespan_context
+
+        @asynccontextmanager
+        async def kairon_lifespan(lifespan_app):
+            collector.start()
+            try:
+                async with original_lifespan(lifespan_app) as state:
+                    yield state
+            finally:
+                try:
+                    collector.last_shutdown_drained = await asyncio.to_thread(
+                        collector.stop, shutdown_timeout_seconds
+                    )
+                except Exception:
+                    collector.last_shutdown_drained = False
+                    # Telemetry cleanup remains fail-open, just like request delivery. Never emit
+                    # exception text here: it could include host/application data.
+                    _logger.warning("kairon: shutdown cleanup failed")
+
+        app.add_middleware(KaironMiddleware, kairon=collector)
+        app.router.lifespan_context = kairon_lifespan
+        app.state._kairon_sdk_attached = True
+        return collector
 
     # --- lifecycle -------------------------------------------------------------------
 
@@ -447,6 +553,11 @@ class Kairon:
     @property
     def delivered_count(self) -> int:
         return self._delivered_count
+
+    @property
+    def is_started(self) -> bool:
+        """Whether this collector is currently accepting and delivering telemetry."""
+        return not self._closed and self._thread is not None and self._thread.is_alive()
 
     @property
     def failed_count(self) -> int:

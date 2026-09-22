@@ -37,11 +37,13 @@ def _dpapi_protect(data: bytes) -> bytes:
     class DATA_BLOB(ctypes.Structure):
         _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
 
-    def _blob(raw: bytes) -> DATA_BLOB:
-        buf = ctypes.create_string_buffer(raw, len(raw))
-        return DATA_BLOB(len(raw), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
-
-    in_blob = _blob(data)
+    # Keep the ctypes buffer referenced until CryptProtectData returns. Returning only a
+    # DATA_BLOB from a helper leaves its pointer referring to a temporary buffer that Python may
+    # reclaim before the native call, which makes credential persistence fail intermittently.
+    in_buffer = ctypes.create_string_buffer(data, len(data))
+    in_blob = DATA_BLOB(
+        len(data), ctypes.cast(in_buffer, ctypes.POINTER(ctypes.c_char))
+    )
     out_blob = DATA_BLOB()
     if not ctypes.windll.crypt32.CryptProtectData(
         ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)

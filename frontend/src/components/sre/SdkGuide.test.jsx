@@ -34,10 +34,10 @@ describe('SDK onboarding interactions', () => {
 
   it('shows the real .NET and Python integration examples with no extra click required', async () => {
     render(<SdkPage />);
-    expect(await screen.findByText(/collector = Kairon\(pairing_code="YOUR_PAIRING_CODE"\)/)).toBeInTheDocument();
+    expect(await screen.findByText(/Kairon\.attach\(app, pairing_code="YOUR_PAIRING_CODE"\)/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole('tab', { name: /\.NET/ }));
-    expect(await screen.findByText(/new KaironClient\(pairingCode: "YOUR_PAIRING_CODE"\)/)).toBeInTheDocument();
-    expect(await screen.findByText(/builder\.Services\.AddKairon/)).toBeInTheDocument();
+    expect(await screen.findByText(/AddKaironAsync\(pairingCode\)/)).toBeInTheDocument();
+    expect(await screen.findByText(/builder\.Services\.AddKairon\(\)/)).toBeInTheDocument();
   });
 
   it('copies the pairing-code Python example, the new primary onboarding path', async () => {
@@ -45,7 +45,9 @@ describe('SDK onboarding interactions', () => {
     const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
     render(<SdkPage />);
     await user.click(await screen.findByRole('button', { name: 'Copy python-fastapi-paired example' }));
-    expect(write).toHaveBeenCalledWith(expect.stringContaining('Kairon(pairing_code="YOUR_PAIRING_CODE")'));
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('Kairon.attach(app, pairing_code="YOUR_PAIRING_CODE")'));
+    expect(write).toHaveBeenCalledWith(expect.not.stringContaining('add_middleware'));
+    expect(write).toHaveBeenCalledWith(expect.not.stringContaining('.start()'));
     write.mockRestore();
   });
 
@@ -53,8 +55,8 @@ describe('SDK onboarding interactions', () => {
     const user = userEvent.setup();
     const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
     render(<SdkPage />);
-    await user.click(screen.getByText('Using explicit configuration instead?'));
-    await user.click(await screen.findByRole('button', { name: 'Copy python-fastapi-usage example' }));
+    await user.click(screen.getByText('Advanced'));
+    await user.click(await screen.findByRole('button', { name: 'Copy python-fastapi-manual example' }));
     expect(write).toHaveBeenCalledWith(expect.stringContaining('api_key=os.environ["KAIRON_API_KEY"]'));
     write.mockRestore();
   });
@@ -119,10 +121,12 @@ it('documents first-run ASP.NET pairing and automatic stored-credential reuse', 
   const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
   render(<SdkPage />);
   await user.click(screen.getByRole('tab', { name: /\.NET/ }));
-  expect(await screen.findByText(/is only for first-run pairing because/)).toBeInTheDocument();
+  const useKairon = (await screen.findAllByText('UseKairon()')).at(-1);
+  expect(useKairon.closest('p')).toHaveTextContent(/remains explicit/);
   await user.click(screen.getByRole('button', { name: 'Copy dotnet-usage example' }));
   expect(write).toHaveBeenCalledWith(expect.stringContaining('AddKaironAsync'));
-  expect(write).toHaveBeenCalledWith(expect.stringContaining('builder.Services.AddKairon(ConfigureKairon)'));
+  expect(write).toHaveBeenCalledWith(expect.stringContaining('builder.Services.AddKairon()'));
+  expect(write).toHaveBeenCalledWith(expect.stringContaining('app.UseKairon()'));
   write.mockRestore();
 });
 

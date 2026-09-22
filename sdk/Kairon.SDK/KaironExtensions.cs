@@ -12,9 +12,9 @@ public static class KaironExtensions
     /// </summary>
     public static IServiceCollection AddKairon(
         this IServiceCollection services,
-        Action<KaironOptions> configure)
+        Action<KaironOptions>? configure = null)
     {
-        ArgumentNullException.ThrowIfNull(configure);
+        configure ??= static _ => { };
 
         // Preserve the established ASP.NET options timing: the caller's callback still runs when
         // options are resolved. Stored-credential resolution is a post-configuration layer, so a
@@ -35,7 +35,7 @@ public static class KaironExtensions
     public static async Task<IServiceCollection> AddKaironAsync(
         this IServiceCollection services,
         string pairingCode,
-        Action<KaironOptions> configure,
+        Action<KaironOptions>? configure = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pairingCode);
@@ -51,17 +51,17 @@ public static class KaironExtensions
     /// </summary>
     public static Task<IServiceCollection> AddKaironAsync(
         this IServiceCollection services,
-        Action<KaironOptions> configure,
+        Action<KaironOptions>? configure = null,
         CancellationToken cancellationToken = default) =>
         AddKaironAsyncCore(services, null, configure, cancellationToken);
 
     private static async Task<IServiceCollection> AddKaironAsyncCore(
         IServiceCollection services,
         string? pairingCode,
-        Action<KaironOptions> configure,
+        Action<KaironOptions>? configure,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(configure);
+        configure ??= static _ => { };
 
         var options = new KaironOptions();
         configure(options);

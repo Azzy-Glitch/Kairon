@@ -4,6 +4,7 @@ using Kairon.SDK;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -135,6 +136,31 @@ public sealed class DependencyInjectionOnboardingTests : IDisposable
             () => provider.GetRequiredService<IOptions<KaironOptions>>().Value);
 
         Assert.Contains("pair once", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ParameterlessAddKaironUsesTheNormalOptionsPipelineAndRegistersHostLifecycleServices()
+    {
+        var projectId = Guid.NewGuid();
+        var services = new ServiceCollection();
+        services.Configure<KaironOptions>(options =>
+        {
+            options.Endpoint = "http://127.0.0.1:8000";
+            options.ProjectId = projectId;
+            options.ApiKey = "krn_parameterless";
+            options.EnableMetrics = false;
+        });
+
+        services.AddKairon();
+
+        using var provider = services.BuildServiceProvider();
+        var resolved = provider.GetRequiredService<IOptions<KaironOptions>>().Value;
+        var hostedServices = provider.GetServices<IHostedService>().ToList();
+
+        Assert.Equal(projectId, resolved.ProjectId);
+        Assert.Equal("krn_parameterless", resolved.ApiKey);
+        Assert.Contains(hostedServices, service => service.GetType().Name == "KaironTelemetrySender");
+        Assert.Contains(hostedServices, service => service.GetType().Name == "KaironMetricsCollector");
     }
 
     [Fact]

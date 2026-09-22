@@ -13,11 +13,7 @@ dotnet add package Kairon.SDK
 ## Usage
 
 ```csharp
-builder.Services.AddKairon(options =>
-{
-    // Endpoint, ProjectId and ApiKey are loaded from the protected credential created by pairing.
-    options.ServiceName = "OrderProcessingService";
-});
+builder.Services.AddKairon(); // Reuses the protected connection after pairing.
 
 // ...
 
@@ -34,21 +30,11 @@ On a first run, explicitly opt into asynchronous pairing before building the app
 var pairingCode = Environment.GetEnvironmentVariable("KAIRON_PAIRING_CODE");
 if (!string.IsNullOrWhiteSpace(pairingCode))
 {
-    await builder.Services.AddKaironAsync(pairingCode, options =>
-    {
-        options.ApplicationName = "OrdersApp";
-        options.ServiceName = "OrderProcessingService";
-        // For remote/cloud first contact only:
-        // options.Endpoint = "https://your-kairon-server.example.com";
-    });
+    await builder.Services.AddKaironAsync(pairingCode);
 }
 else
 {
-    builder.Services.AddKairon(options =>
-    {
-        options.ApplicationName = "OrdersApp";
-        options.ServiceName = "OrderProcessingService";
-    });
+    builder.Services.AddKairon();
 }
 ```
 
@@ -57,6 +43,12 @@ network pairing; when endpoint/project/key are omitted it loads that same stored
 one unit. Existing complete explicit `Endpoint` + `ProjectId` + `ApiKey` configuration remains
 supported and authoritative. A partial project/key configuration is rejected rather than mixed
 with stored values.
+
+`UseKairon()` remains explicit because its position in the ASP.NET Core pipeline is an application
+decision: place it before the endpoints you want to observe. Queue delivery and process metrics
+are hosted services, so the ASP.NET host starts and stops them automatically. Application and
+service names default to the entry assembly; use the optional configuration callback only when you
+want custom labels, remote first-contact HTTPS, sampling or other advanced options.
 
 ### Options
 

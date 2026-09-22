@@ -7,6 +7,7 @@ process or any other test in the suite.
 
 from __future__ import annotations
 
+import gc
 import os
 import sys
 from pathlib import Path
@@ -62,3 +63,15 @@ def test_explicit_config_path_still_works_and_is_independent_of_the_default(tmp_
     # Loading with NO path at all reads the (isolated, per-test) default - never this explicit one.
     assert _credential_store.load_stored_config(None) is None
     assert not Path(_credential_store.default_config_path()).exists()
+
+
+def test_windows_dpapi_round_trip_survives_gc_pressure():
+    if sys.platform != "win32":
+        return
+
+    for index in range(25):
+        plaintext = f"kairon-dpapi-lifetime-{index}".encode("utf-8")
+        gc.collect()
+        protected = _credential_store._dpapi_protect(plaintext)
+        assert protected != plaintext
+        assert _credential_store._dpapi_unprotect(protected) == plaintext

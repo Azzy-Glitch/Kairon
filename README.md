@@ -197,32 +197,13 @@ pip install -e ".\sdk-python[fastapi]"
 Minimal `main.py`:
 
 ```python
-from contextlib import asynccontextmanager
 import os
 
 from fastapi import FastAPI
 from kairon import Kairon
-from kairon.middleware import KaironMiddleware
 
-kairon = Kairon(
-    pairing_code=os.environ.get("KAIRON_PAIRING_CODE"),
-    application="PaymentsApi",
-    service="PaymentService",
-    environment="Development",
-)
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    kairon.start()
-    try:
-        yield
-    finally:
-        kairon.stop(timeout_seconds=5)
-
-
-app = FastAPI(lifespan=lifespan)
-app.add_middleware(KaironMiddleware, kairon=kairon)
+app = FastAPI(title="PaymentsApi")
+Kairon.attach(app, pairing_code=os.environ.get("KAIRON_PAIRING_CODE"))
 
 
 @app.get("/payments/{payment_id}")
@@ -238,8 +219,9 @@ uvicorn main:app --port 8088
 ```
 
 Set `KAIRON_PAIRING_CODE` only for the first successful run. The Python SDK stores the redeemed
-connection using Windows DPAPI; on later runs, leave the variable unset and the constructor loads
-the stored connection.
+connection using Windows DPAPI; on later runs, leave the variable unset and `Kairon.attach(app)`
+loads it. The high-level API registers middleware and manages SDK startup, shutdown and bounded
+telemetry drain automatically.
 
 The middleware records request status and latency. A lightweight background sampler reports
 process CPU and memory plus accumulated request/error counts every five seconds. It ignores health,
@@ -288,25 +270,20 @@ asynchronous; later runs omit the code and load the stored connection:
 ```csharp
 var pairingCode = Environment.GetEnvironmentVariable("KAIRON_PAIRING_CODE");
 
-void ConfigureKairon(KaironOptions options)
-{
-    options.ApplicationName = "PaymentsApi";
-    options.ServiceName = "PaymentService";
-    options.Environment = "Development";
-}
-
 if (!string.IsNullOrWhiteSpace(pairingCode))
-    await builder.Services.AddKaironAsync(pairingCode, ConfigureKairon);
+    await builder.Services.AddKaironAsync(pairingCode);
 else
-    builder.Services.AddKairon(ConfigureKairon);
+    builder.Services.AddKairon();
 
 app.UseKairon();
 ```
 
 Local pairing uses `http://localhost:8000` by default. For remote/cloud first contact, set
-`options.Endpoint` to the reachable HTTPS backend inside `ConfigureKairon`. The endpoint returned
-by pairing is then stored and reused. Complete explicit endpoint/project/API-key configuration
-remains supported for managed deployments; partial credentials are rejected.
+`options.Endpoint` to the reachable HTTPS backend through the optional configuration callback.
+The endpoint returned by pairing is then stored and reused. Complete explicit
+endpoint/project/API-key configuration remains supported for managed deployments; partial
+credentials are rejected. Hosted services manage telemetry startup and shutdown; `UseKairon()`
+remains explicit so the application controls middleware ordering.
 
 The .NET SDK follows the same fail-open contract as the Python SDK: bounded buffering, independent
 timeouts, cancellation support, and no database, AI, or remediation responsibility inside the
