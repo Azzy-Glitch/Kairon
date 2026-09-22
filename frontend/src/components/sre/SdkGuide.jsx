@@ -20,19 +20,23 @@ kairon.Start();`;
 const dotnetProgram = `using Kairon.SDK;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddKairon(options =>
+var pairingCode = Environment.GetEnvironmentVariable("KAIRON_PAIRING_CODE");
+
+void ConfigureKairon(KaironOptions options)
 {
-    options.Endpoint = Environment.GetEnvironmentVariable("KAIRON_ENDPOINT")
-        ?? throw new InvalidOperationException("Set KAIRON_ENDPOINT");
-    options.ProjectId = Guid.Parse(Environment.GetEnvironmentVariable("KAIRON_PROJECT_ID")
-        ?? throw new InvalidOperationException("Set KAIRON_PROJECT_ID"));
-    options.ApiKey = Environment.GetEnvironmentVariable("KAIRON_API_KEY")
-        ?? throw new InvalidOperationException("Set KAIRON_API_KEY");
     options.ApplicationName = "OrdersApp";
     options.ServiceName = "OrdersService";
     options.Environment = Environment.GetEnvironmentVariable("KAIRON_ENVIRONMENT")
         ?? builder.Environment.EnvironmentName;
-});
+    var remoteEndpoint = Environment.GetEnvironmentVariable("KAIRON_ENDPOINT");
+    if (!string.IsNullOrWhiteSpace(remoteEndpoint)) options.Endpoint = remoteEndpoint;
+}
+
+if (!string.IsNullOrWhiteSpace(pairingCode))
+    await builder.Services.AddKaironAsync(pairingCode, ConfigureKairon); // First run only.
+else
+    builder.Services.AddKairon(ConfigureKairon); // Reuses the protected stored credential.
+
 var app = builder.Build();
 app.UseKairon(); // Before the endpoints you want to observe.
 app.MapGet("/orders", () => Results.Ok(new { status = "ok" }));
@@ -284,7 +288,7 @@ function PythonGuide({ CodeBlock, projectId, onTelemetry }) {
       </SubStep>
       <SubStep number="2" title="Connect with your pairing code">
         <p>Paste the pairing code from Step 2 above. KAIRON looks up your project, its API key and its endpoint automatically.</p>
-        <p className="sdk-hint"><strong>Pairing against a remote or cloud KAIRON?</strong> Set <code>KAIRON_ENDPOINT</code> to that backend's HTTPS address first — <code>Kairon(pairing_code=...)</code> with no endpoint tries to pair against <code>http://127.0.0.1:8000</code>, this machine. Nothing else to configure only holds for a local KAIRON backend.</p>
+        <p className="sdk-hint"><strong>Pairing against a remote or cloud KAIRON?</strong> Set <code>KAIRON_ENDPOINT</code> to that backend's HTTPS address first — <code>Kairon(pairing_code=...)</code> with no endpoint tries to pair against <code>http://localhost:8000</code>, this machine. Nothing else to configure only holds for a local KAIRON backend.</p>
         <CodeBlock copyKey="python-pairing" code={pythonPairing} />
         <p className="sdk-hint">The SDK redeems the code once and remembers the connection, so later runs of this app don't need it again. Keep the pairing code private; never commit it to Git.</p>
         <details className="sdk-guide-details">
@@ -330,7 +334,7 @@ function DotNetGuide({ CodeBlock, projectId, onTelemetry }) {
       </SubStep>
       <SubStep number="2" title="Connect with your pairing code">
         <p>Paste the pairing code from Step 2 above. KAIRON looks up your project, its API key and its endpoint automatically.</p>
-        <p className="sdk-hint"><strong>Pairing against a remote or cloud KAIRON?</strong> Set <code>KAIRON_ENDPOINT</code> to that backend's HTTPS address first — <code>new KaironClient(pairingCode: ...)</code> with no endpoint tries to pair against <code>http://127.0.0.1:8000</code>, this machine. Nothing else to configure only holds for a local KAIRON backend.</p>
+        <p className="sdk-hint"><strong>Pairing against a remote or cloud KAIRON?</strong> Set <code>KAIRON_ENDPOINT</code> to that backend's HTTPS address first — <code>new KaironClient(pairingCode: ...)</code> with no endpoint tries to pair against <code>http://localhost:8000</code>, this machine. Nothing else to configure only holds for a local KAIRON backend.</p>
         <CodeBlock copyKey="dotnet-pairing" code={dotnetClientPairing} />
         <p className="sdk-hint"><code>KaironClient</code> redeems the code once and remembers the connection, so later runs of this app don't need it again. Keep the pairing code private; never commit it to Git. Works in any .NET app — a worker, a console app, or an ASP.NET Core host. Report an incident or a metric directly with <code>kairon.CaptureException(...)</code>/<code>kairon.RecordMetric(...)</code> — useful outside a web request, such as a scheduled job.</p>
         <details className="sdk-guide-details">
@@ -343,14 +347,13 @@ function DotNetGuide({ CodeBlock, projectId, onTelemetry }) {
             <li><code>KAIRON_API_KEY</code> — the project telemetry key.</li>
             <li><code>KAIRON_ENVIRONMENT</code> — your application's environment.</li>
           </ul>
-          <p className="sdk-hint">These values are used only the first time this app runs, before it has anything stored. Once a connection is stored — from a pairing code or from these values — the endpoint, project ID and API key are always used together as that one stored connection; they're never mixed with a different explicit value or environment variable afterward. To change a stored connection, redeem a fresh pairing code — that always replaces the whole stored connection. Keep your API key private. Never commit it to Git.</p>
+          <p className="sdk-hint">For ASP.NET Core, a complete explicit endpoint/project ID/API key remains authoritative for backward compatibility. If project ID and API key are omitted, <code>AddKairon()</code> loads the protected stored connection instead. Partial project/key configuration is rejected, so fields from different identities are never mixed. Keep your API key private. Never commit it to Git.</p>
         </details>
       </SubStep>
       <SubStep number="3" title="Add KAIRON to ASP.NET Core">
-        <p>The pairing-code client above already reports process metrics automatically — enough for a worker or a quick connectivity check. For automatic per-request instrumentation in an ASP.NET Core app, register the DI-based integration instead, using the same values a pairing code resolves (shown above, or under Prefer explicit configuration):</p>
+        <p>The pairing-code client above already reports process metrics automatically — enough for a worker or a quick connectivity check. For automatic per-request instrumentation, use the DI integration below. On the first run it opts into asynchronous pairing; later runs omit the code and <code>AddKairon()</code> reuses the same protected stored endpoint, project ID and API key.</p>
         <CodeBlock copyKey="dotnet-usage" code={dotnetProgram} />
-        <p className="sdk-hint"><code>AddKairon()</code> configures telemetry. <code>UseKairon()</code> adds request monitoring.</p>
-        <p className="sdk-hint">AddKairon() does not automatically read the credential a pairing-code KaironClient stored on disk — the two are separate. Paste the SAME endpoint/project ID/API key a pairing code resolved into AddKairon()'s options (or its environment variables), rather than assuming an already-paired KaironClient elsewhere in the app is what AddKairon() is using.</p>
+        <p className="sdk-hint"><code>AddKaironAsync()</code> is only for first-run pairing because service registration cannot safely hide asynchronous network work. <code>AddKairon()</code> performs no network pairing: it uses complete explicit options when supplied, otherwise loads the existing protected SDK credential. <code>UseKairon()</code> adds request monitoring.</p>
       </SubStep>
       <SubStep number="4" title="Run">
         <CodeBlock copyKey="dotnet-run" code={'dotnet run'} />
@@ -453,7 +456,7 @@ function TroubleshootingSection() {
         <div className="sdk-trouble-card">
           <h4><IconAlertTriangle className="w-4 h-4 tone-critical" aria-hidden="true" /> KAIRON isn't reachable</h4>
           <Checklist items={['KAIRON is running', 'The endpoint is correct', "You're using the backend address"]} />
-          <p className="sdk-trouble-fix">Expected local backend: <code>http://127.0.0.1:8000</code></p>
+          <p className="sdk-trouble-fix">Expected local backend: <code>http://localhost:8000</code></p>
         </div>
         <div className="sdk-trouble-card">
           <h4><IconAlertTriangle className="w-4 h-4 tone-critical" aria-hidden="true" /> 401 / 403</h4>

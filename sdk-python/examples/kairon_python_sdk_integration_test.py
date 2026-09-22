@@ -1,6 +1,8 @@
 """Real FastAPI -> SDK -> KAIRON integration. No fabricated telemetry or backend.
 
-Set KAIRON_ENDPOINT, KAIRON_PROJECT_ID, KAIRON_API_KEY, KAIRON_ENVIRONMENT.
+On the first run, set KAIRON_PAIRING_CODE. Local KAIRON needs no endpoint; remote/cloud first
+contact also needs KAIRON_ENDPOINT set to the reachable HTTPS backend. On later runs, omit both
+and the SDK reuses its protected stored connection.
 Optional KAIRON_OPERATOR_KEY enables read-back verification through the backend API.
 Run with Python from an environment containing kairon-sdk, FastAPI and uvicorn.
 """
@@ -15,7 +17,6 @@ from datetime import datetime, timezone
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-from uuid import UUID
 
 import uvicorn
 from fastapi import FastAPI
@@ -24,12 +25,8 @@ from kairon.middleware import KaironMiddleware
 
 
 def run():
-    required = ("KAIRON_ENDPOINT", "KAIRON_PROJECT_ID", "KAIRON_API_KEY", "KAIRON_ENVIRONMENT")
-    if any(not os.environ.get(name) for name in required):
-        raise RuntimeError("Set KAIRON_ENDPOINT, KAIRON_PROJECT_ID, KAIRON_API_KEY and KAIRON_ENVIRONMENT")
-    UUID(os.environ["KAIRON_PROJECT_ID"])
-    collector = Kairon(endpoint=os.environ["KAIRON_ENDPOINT"], project_id=os.environ["KAIRON_PROJECT_ID"],
-        api_key=os.environ["KAIRON_API_KEY"], environment=os.environ["KAIRON_ENVIRONMENT"],
+    collector = Kairon(pairing_code=os.environ.get("KAIRON_PAIRING_CODE"),
+        environment=os.environ.get("KAIRON_ENVIRONMENT", "Development"),
         application="PythonSDKIntegrationTest", service="PythonSDKTestService")
     started = datetime.now(timezone.utc)
     @asynccontextmanager

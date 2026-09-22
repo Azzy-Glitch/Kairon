@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from kairon import Kairon
+from kairon import client as client_module
 
 
 class _PairingHandler(BaseHTTPRequestHandler):
@@ -72,6 +73,56 @@ def test_pairing_code_alone_redeems_persists_and_configures_the_client(pairing_s
         assert b"pair_realcode" not in Path(config_path).read_bytes()
     finally:
         kairon.stop(timeout_seconds=1)
+
+
+def test_local_pairing_without_endpoint_uses_the_documented_default(monkeypatch, pairing_server, config_path):
+    # Redirect only the constant for this isolated test server; the call itself deliberately has
+    # neither endpoint= nor KAIRON_ENDPOINT, proving the same fallback used in production.
+    monkeypatch.setattr(client_module, "DEFAULT_ENDPOINT", pairing_server)
+
+    kairon = Kairon(pairing_code="pair_local_default", config_path=config_path)
+    try:
+        assert kairon.project_id == "66666666-6666-6666-6666-666666666666"
+        assert kairon.endpoint == "http://127.0.0.1:8000"
+        assert Path(config_path).exists()
+    finally:
+        kairon.stop(timeout_seconds=1)
+
+
+def test_remote_first_pairing_uses_environment_endpoint_then_persists_returned_endpoint(
+    monkeypatch, pairing_server, config_path
+):
+    monkeypatch.setenv("KAIRON_ENDPOINT", pairing_server)
+
+    first = Kairon(pairing_code="pair_remote", config_path=config_path)
+    try:
+        assert first.endpoint == "http://127.0.0.1:8000"
+    finally:
+        first.stop(timeout_seconds=1)
+
+    monkeypatch.delenv("KAIRON_ENDPOINT")
+    second = Kairon(config_path=config_path)
+    try:
+        assert second.endpoint == "http://127.0.0.1:8000"
+        assert second.api_key == "krn_real_key"
+    finally:
+        second.stop(timeout_seconds=1)
+
+
+def test_pairing_secrets_are_not_written_to_stdout_stderr_or_logs(
+    pairing_server, config_path, caplog, capsys
+):
+    pairing_code = "pair_must_not_be_logged"
+    api_key = "krn_real_key"
+
+    kairon = Kairon(pairing_code=pairing_code, endpoint=pairing_server, config_path=config_path)
+    kairon.stop(timeout_seconds=1)
+
+    captured = capsys.readouterr()
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    combined = captured.out + captured.err + logs
+    assert pairing_code not in combined
+    assert api_key not in combined
 
 
 def test_second_run_reuses_the_stored_credential_without_redeeming_again(pairing_server, config_path):

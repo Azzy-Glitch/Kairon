@@ -15,8 +15,7 @@ dotnet add package Kairon.SDK
 ```csharp
 builder.Services.AddKairon(options =>
 {
-    options.Endpoint = "http://localhost:8000";
-    options.ProjectId = Guid.Parse("...");
+    // Endpoint, ProjectId and ApiKey are loaded from the protected credential created by pairing.
     options.ServiceName = "OrderProcessingService";
 });
 
@@ -29,6 +28,36 @@ app.UseKairon();
 `UseKairon` adds the middleware that captures every request: status code, duration, and
 exceptions.
 
+On a first run, explicitly opt into asynchronous pairing before building the application:
+
+```csharp
+var pairingCode = Environment.GetEnvironmentVariable("KAIRON_PAIRING_CODE");
+if (!string.IsNullOrWhiteSpace(pairingCode))
+{
+    await builder.Services.AddKaironAsync(pairingCode, options =>
+    {
+        options.ApplicationName = "OrdersApp";
+        options.ServiceName = "OrderProcessingService";
+        // For remote/cloud first contact only:
+        // options.Endpoint = "https://your-kairon-server.example.com";
+    });
+}
+else
+{
+    builder.Services.AddKairon(options =>
+    {
+        options.ApplicationName = "OrdersApp";
+        options.ServiceName = "OrderProcessingService";
+    });
+}
+```
+
+`AddKaironAsync` redeems, confirms and stores the pairing result. `AddKairon` performs no
+network pairing; when endpoint/project/key are omitted it loads that same stored connection as
+one unit. Existing complete explicit `Endpoint` + `ProjectId` + `ApiKey` configuration remains
+supported and authoritative. A partial project/key configuration is rejected rather than mixed
+with stored values.
+
 ### Options
 
 The most commonly set fields on `KaironOptions`:
@@ -38,6 +67,7 @@ The most commonly set fields on `KaironOptions`:
 | `Endpoint` | `http://localhost:8000` | Base URL of the Kairon backend. |
 | `ApiKey` | `null` | Project credential, if the backend requires one. |
 | `ProjectId` | — | The Kairon project this application reports to. |
+| `CredentialPath` | `%LOCALAPPDATA%/Kairon/sdk/credential.json` | Optional override for the protected pairing record. |
 | `ApplicationName` / `ServiceName` | entry assembly name | Identifies this app/service in Kairon. |
 | `Environment` | `null` | e.g. `"Production"`, `"Staging"`. |
 | `EnableTelemetry` / `EnableMetrics` | `true` | Toggle request telemetry and process metrics independently. |

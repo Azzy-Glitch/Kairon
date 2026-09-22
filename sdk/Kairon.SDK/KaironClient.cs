@@ -39,7 +39,7 @@ namespace Kairon.SDK;
 /// <see cref="CreateAsync"/> factory (preferred for new code, and required in any host with a
 /// synchronization context - e.g. a UI thread - where blocking on async pairing/confirmation work
 /// via a synchronous wrapper risks a real deadlock). Both resolve configuration identically
-/// (<see cref="ResolveAsync"/> is the single implementation; the synchronous constructor is a thin
+/// (<see cref="KaironConfigurationResolver"/> is the single implementation; the synchronous constructor is a thin
 /// blocking wrapper over it) and both fully support pairing-code redemption, confirmation, and
 /// confirmation recovery.
 /// </summary>
@@ -70,7 +70,7 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
         string? serviceName = null,
         string? environment = null,
         string? configPath = null)
-        : this(ResolveAsync(pairingCode, endpoint, projectId, apiKey, configPath, default).GetAwaiter().GetResult(),
+        : this(KaironConfigurationResolver.ResolveAsync(pairingCode, endpoint, projectId, apiKey, configPath, default).GetAwaiter().GetResult(),
               applicationName, serviceName, environment)
     {
     }
@@ -92,7 +92,8 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
         string? configPath = null,
         CancellationToken cancellationToken = default)
     {
-        var options = await ResolveAsync(pairingCode, endpoint, projectId, apiKey, configPath, cancellationToken).ConfigureAwait(false);
+        var options = await KaironConfigurationResolver.ResolveAsync(
+            pairingCode, endpoint, projectId, apiKey, configPath, cancellationToken).ConfigureAwait(false);
         return new KaironClient(options, applicationName, serviceName, environment);
     }
 
@@ -223,106 +224,4 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
 
     public void Dispose() => Stop();
 
-    private static async Task<KaironOptions> ResolveAsync(string? pairingCode, string? endpoint, Guid? projectId, string? apiKey,
-        string? configPath, CancellationToken cancellationToken)
-    {
-        var path = configPath ?? KaironCredentialStore.DefaultPath();
-
-        if (!string.IsNullOrWhiteSpace(pairingCode))
-        {
-            var resolvedEndpointForPairing = endpoint ?? Environment.GetEnvironmentVariable("KAIRON_ENDPOINT") ?? "http://localhost:8000";
-            var paired = await KaironPairingClient.PairAsync(resolvedEndpointForPairing, pairingCode, cancellationToken).ConfigureAwait(false);
-            if (!paired.Success)
-                throw new InvalidOperationException(
-                    $"Kairon pairing failed: {paired.Error ?? "the pairing code was rejected."} " +
-                    "Generate a new pairing code from Kairon and try again.");
-
-            // Persisted (with the pairing id recorded as still-pending-confirmation) before being
-            // used - a failure here throws and construction never completes, so pairing is never
-            // reported as successful without a durable credential. The freshly redeemed values win
-            // outright, replacing whatever explicit args/env vars/stored file resolved above - an
-            // explicit pairingCode is a direct instruction to (re)pair now, not a fallback.
-            KaironCredentialStore.Save(path, paired.Endpoint!, paired.ProjectId, paired.ApiKey!, paired.PairingId);
-
-            if (await KaironPairingClient.ConfirmAsync(paired.Endpoint!, paired.PairingId, paired.ApiKey!, cancellationToken).ConfigureAwait(false))
-            {
-                // Clears the pending marker now that confirmation actually succeeded - leaving it
-                // set would make every future run keep retrying a confirmation that already worked.
-                KaironCredentialStore.Save(path, paired.Endpoint!, paired.ProjectId, paired.ApiKey!);
-            }
-            // If confirmation did not succeed, the pending marker stays recorded on disk (set just
-            // above) so a LATER run - even with no pairingCode at all - can retry it. Never fatal
-            // here: the credential itself is already valid and saved either way.
-
-            // Already validated inside KaironPairingClient.PairAsync - re-checked here too rather
-            // than trusted, matching every other endpoint this method resolves.
-            KaironEndpointSecurity.EnsureAllowed(paired.Endpoint);
-            return new KaironOptions { Endpoint = paired.Endpoint!, ProjectId = paired.ProjectId, ApiKey = paired.ApiKey! };
-        }
-
-        // A previously stored credential - if one exists - represents a real, completed pairing
-        // and is preferred wholesale over ordinary configuration. ProjectId and ApiKey always come
-        // from the SAME source together here - never an explicit/env ProjectId combined with a
-        // stored ApiKey (or vice versa) belonging to a different pairing.
-        var stored = KaironCredentialStore.Load(path);
-        if (stored is { } credential)
-        {
-            // Atomic with ProjectId/ApiKey below, not merely "closest available value": a stored
-            // connection is (Endpoint, ProjectId, ApiKey) together, from the one pairing that
-            // produced it. Letting an explicit endpoint argument or an ambient KAIRON_ENDPOINT
-            // redirect traffic for this project/key pair to a DIFFERENT backend than the one it
-            // was actually paired against - while still authenticating as this project - is
-            // exactly the "hybrid" precedence this SDK must not have. To point an already-paired
-            // application at a different KAIRON backend, pass a fresh pairingCode (re-pairing) -
-            // the one explicit, documented way to relocate a stored connection - rather than an
-            // environment variable or constructor argument silently overriding half of it.
-            var storedEndpoint = credential.Endpoint;
-            // Defense in depth: a credential file predating this security policy, or one edited/
-            // corrupted on disk, must fail closed here rather than silently resume sending
-            // telemetry (and API-key-bearing requests) to a remote plaintext address.
-            KaironEndpointSecurity.EnsureAllowed(storedEndpoint);
-
-            if (credential.PendingConfirmationPairingId is { } pendingId)
-            {
-                // Recovers a confirmation whose earlier attempt was lost (network failure, or the
-                // process exited before it could run) - never re-redeems a code, never generates
-                // one: the stored credential's own presence is what makes retrying confirmation
-                // safe here.
-                if (await KaironPairingClient.ConfirmAsync(credential.Endpoint, pendingId, credential.ApiKey, cancellationToken).ConfigureAwait(false))
-                    KaironCredentialStore.Save(path, credential.Endpoint, credential.ProjectId, credential.ApiKey);
-            }
-
-            return new KaironOptions { Endpoint = storedEndpoint, ProjectId = credential.ProjectId, ApiKey = credential.ApiKey };
-        }
-
-        // First-time onboarding: no pairing code, nothing stored yet - ordinary explicit
-        // arguments, then environment variables.
-        endpoint ??= Environment.GetEnvironmentVariable("KAIRON_ENDPOINT");
-
-        var resolvedProjectId = projectId;
-        if (resolvedProjectId is null)
-        {
-            var envProjectId = Environment.GetEnvironmentVariable("KAIRON_PROJECT_ID");
-            if (!string.IsNullOrWhiteSpace(envProjectId) && Guid.TryParse(envProjectId, out var parsed))
-                resolvedProjectId = parsed;
-        }
-
-        apiKey ??= Environment.GetEnvironmentVariable("KAIRON_API_KEY");
-
-        if (resolvedProjectId is null || string.IsNullOrWhiteSpace(apiKey))
-            throw new InvalidOperationException(
-                "Kairon needs a project and API key. Provide projectId/apiKey directly, set " +
-                "KAIRON_PROJECT_ID/KAIRON_API_KEY, pass pairingCode from a Kairon-generated pairing " +
-                "code, or pair once so the stored configuration can be reused.");
-
-        var resolvedEndpoint = endpoint ?? "http://localhost:8000";
-        KaironEndpointSecurity.EnsureAllowed(resolvedEndpoint);
-
-        return new KaironOptions
-        {
-            Endpoint = resolvedEndpoint,
-            ProjectId = resolvedProjectId.Value,
-            ApiKey = apiKey
-        };
-    }
 }

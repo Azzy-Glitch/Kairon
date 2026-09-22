@@ -14,8 +14,75 @@ public static class KaironExtensions
         this IServiceCollection services,
         Action<KaironOptions> configure)
     {
-        services.Configure(configure);
+        ArgumentNullException.ThrowIfNull(configure);
 
+        // Preserve the established ASP.NET options timing: the caller's callback still runs when
+        // options are resolved. Stored-credential resolution is a post-configuration layer, so a
+        // complete explicit ProjectId/ApiKey remains authoritative exactly as before.
+        services.AddOptions<KaironOptions>()
+            .Configure(configure)
+            .PostConfigure(options => KaironConfigurationResolver.ResolveForDependencyInjection(options));
+
+        return AddKaironServices(services);
+    }
+
+    /// <summary>
+    /// Asynchronously redeems a first-run pairing code, confirms and durably stores the resulting
+    /// connection, then registers the normal ASP.NET Core telemetry integration. Later runs should
+    /// call <see cref="AddKairon(IServiceCollection, Action{KaironOptions})"/> without the pairing
+    /// code; it reuses the same protected stored credential automatically.
+    /// </summary>
+    public static async Task<IServiceCollection> AddKaironAsync(
+        this IServiceCollection services,
+        string pairingCode,
+        Action<KaironOptions> configure,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(pairingCode);
+        return await AddKaironAsyncCore(services, pairingCode, configure, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Asynchronous stored-credential registration. Normally a completed credential should use
+    /// synchronous <see cref="AddKairon(IServiceCollection, Action{KaironOptions})"/>. Use this
+    /// overload when startup must recover a previously lost pairing-confirmation response; no
+    /// pairing code is generated or redeemed.
+    /// </summary>
+    public static Task<IServiceCollection> AddKaironAsync(
+        this IServiceCollection services,
+        Action<KaironOptions> configure,
+        CancellationToken cancellationToken = default) =>
+        AddKaironAsyncCore(services, null, configure, cancellationToken);
+
+    private static async Task<IServiceCollection> AddKaironAsyncCore(
+        IServiceCollection services,
+        string? pairingCode,
+        Action<KaironOptions> configure,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+
+        var options = new KaironOptions();
+        configure(options);
+
+        var connection = await KaironConfigurationResolver.ResolveAsync(
+                pairingCode,
+                string.Equals(options.Endpoint, KaironConfigurationResolver.DefaultEndpoint,
+                    StringComparison.OrdinalIgnoreCase) ? null : options.Endpoint,
+                options.ProjectId == Guid.Empty ? null : options.ProjectId,
+                options.ApiKey,
+                options.CredentialPath,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        KaironConfigurationResolver.ApplyConnection(options, connection);
+        services.AddOptions<KaironOptions>().Configure(target => CopyOptions(options, target));
+        return AddKaironServices(services);
+    }
+
+    private static IServiceCollection AddKaironServices(IServiceCollection services)
+    {
         services.AddSingleton<IKaironTelemetryQueue, KaironTelemetryQueue>();
         services.AddSingleton<IKaironMetrics, KaironMetrics>();
 
@@ -36,10 +103,8 @@ public static class KaironExtensions
                         .GetRequiredService<IOptions<KaironOptions>>()
                         .Value;
 
-                // This is a SEPARATE entry point from KaironClient's own ResolveAsync - a host
-                // wiring AddKairon directly from its own configuration never goes through that
-                // resolution path at all, so the endpoint must be validated here too rather than
-                // assumed safe because "some other code path already checks this".
+                // Defense in depth: resolution validates every endpoint, and the actual transport
+                // validates again immediately before assigning BaseAddress.
                 KaironEndpointSecurity.EnsureAllowed(options.Endpoint);
 
                 client.BaseAddress =
@@ -63,6 +128,28 @@ public static class KaironExtensions
         services.AddHostedService<KaironMetricsCollector>();
 
         return services;
+    }
+
+    private static void CopyOptions(KaironOptions source, KaironOptions target)
+    {
+        target.Endpoint = source.Endpoint;
+        target.ApiKey = source.ApiKey;
+        target.ProjectId = source.ProjectId;
+        target.CredentialPath = source.CredentialPath;
+        target.MachineId = source.MachineId;
+        target.EnableTelemetry = source.EnableTelemetry;
+        target.CaptureRequestBody = source.CaptureRequestBody;
+        target.CaptureResponseBody = source.CaptureResponseBody;
+        target.ApplicationName = source.ApplicationName;
+        target.ServiceName = source.ServiceName;
+        target.Environment = source.Environment;
+        target.TimeoutSeconds = source.TimeoutSeconds;
+        target.QueueCapacity = source.QueueCapacity;
+        target.MaxBodyCharacters = source.MaxBodyCharacters;
+        target.SuccessSampleRate = source.SuccessSampleRate;
+        target.EnableMetrics = source.EnableMetrics;
+        target.MetricsIntervalSeconds = source.MetricsIntervalSeconds;
+        target.IgnoredPathPrefixes = new List<string>(source.IgnoredPathPrefixes);
     }
 
     public static IApplicationBuilder UseKairon(

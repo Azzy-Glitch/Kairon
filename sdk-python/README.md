@@ -37,7 +37,7 @@ kairon.start()
 **Pairing against a remote or cloud KAIRON backend?** Set `KAIRON_ENDPOINT` (or pass
 `endpoint=`) to that backend's real HTTPS address *first* - the pairing call itself has
 to reach the right backend to redeem the code. `Kairon(pairing_code=...)` with no
-endpoint tries `http://127.0.0.1:8000`, this machine, not a remote one. "Nothing else
+endpoint tries `http://localhost:8000`, this machine, not a remote one. "Nothing else
 to configure" only holds when KAIRON is on this same machine.
 
 Lower-level, if you need the resulting credential without starting a collector (a
@@ -52,18 +52,12 @@ inactive/unregistered projects are rejected. Backend custom telemetry header set
 must remain compatible with this header. A scoped MachineId additionally requires the
 operator's exact project/machine/service/environment and credential association.
 
-## Usage
+## FastAPI usage
 
-Supply these variables from your deployment configuration or secret store; do not
-commit their values. The example reads them explicitly (the constructor does not
-automatically load environment variables or a `.env` file):
-
-```powershell
-$env:KAIRON_ENDPOINT="http://127.0.0.1:8000"
-$env:KAIRON_PROJECT_ID="<real-project-UUID>"
-# Supply KAIRON_API_KEY securely from your deployment's secret store.
-$env:KAIRON_ENVIRONMENT="Development"
-```
+The normal local first run needs only the pairing code. On every later run, leave the pairing
+code unset; the SDK reuses the protected stored endpoint, project ID and API key. For remote/cloud
+first contact, also set `KAIRON_ENDPOINT` to the reachable HTTPS backend; it is bootstrap
+information and the endpoint returned by pairing is what gets stored.
 
 ```python
 import os
@@ -71,16 +65,19 @@ from kairon import Kairon
 from kairon.middleware import KaironMiddleware
 
 collector = Kairon(
-    endpoint=os.environ["KAIRON_ENDPOINT"],
-    project_id=os.environ["KAIRON_PROJECT_ID"],
-    api_key=os.environ["KAIRON_API_KEY"],
-    environment=os.environ["KAIRON_ENVIRONMENT"],
+    pairing_code=os.environ.get("KAIRON_PAIRING_CODE"),
+    environment=os.environ.get("KAIRON_ENVIRONMENT", "Development"),
     application="OrdersApp", service="OrdersService",
 )
 # Start in the FastAPI lifespan; stop in its finally block.
 # See the executable integration example for the complete lifecycle.
 app.add_middleware(KaironMiddleware, kairon=collector)
 ```
+
+Explicit `endpoint`/`project_id`/`api_key` arguments and the matching `KAIRON_*` environment
+variables remain supported for managed deployments with no stored credential. The SDK does not
+load `.env` files itself. Once a paired credential exists, its endpoint, project ID and API key
+win together; ambient values are never mixed into that stored identity.
 
 Use a base backend URL, without `/api`. Loopback works only on the same host;
 containers and remote machines need an explicitly reachable backend. The default
@@ -134,8 +131,8 @@ application and sends `GET /`, `GET /test/slow`, `GET /test/error`, `GET /` thro
 HTTP. The slow route actually awaits three seconds; the error route actually raises.
 No request telemetry or metrics are hand-posted or fabricated.
 
-The four variables above are sufficient for SDK ingestion. For independent read-back
-verification, the script additionally accepts `KAIRON_OPERATOR_KEY` from a secure
+The integration example accepts first-run `KAIRON_PAIRING_CODE` or an existing stored credential.
+For independent read-back verification, the script additionally accepts `KAIRON_OPERATOR_KEY` from a secure
 operator-controlled environment: GET telemetry APIs require operator authorization.
 It is never passed to the collector. Without it, backend read-back is explicitly
 NOT VERIFIED, even if delivery counters indicate acceptance. Never extract the desktop

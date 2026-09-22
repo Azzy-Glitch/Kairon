@@ -10,6 +10,13 @@ public class KaironOptions
     public string Endpoint { get; set; } = "http://localhost:8000";
     public string? ApiKey { get; set; }
     public Guid ProjectId { get; set; }
+
+    /// <summary>
+    /// Optional path to the SDK's existing protected pairing-credential record. When omitted,
+    /// both standalone and ASP.NET Core integrations use
+    /// %LOCALAPPDATA%\Kairon\sdk\credential.json on Windows.
+    /// </summary>
+    public string? CredentialPath { get; set; }
     public Guid? MachineId { get; set; }
     public bool EnableTelemetry { get; set; } = true;
     public bool CaptureRequestBody { get; set; } = false;

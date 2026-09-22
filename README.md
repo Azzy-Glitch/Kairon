@@ -172,13 +172,13 @@ anything — supply the constructor's `endpoint` argument explicitly (as `https:
 connecting to a non-local KAIRON backend.
 
 Pairing does **not** create or modify environment variables. Application name, service name, and
-environment remain application configuration. Explicit constructor values and
-`KAIRON_ENDPOINT`/`KAIRON_PROJECT_ID`/`KAIRON_API_KEY` are used only for first-time onboarding,
-before anything has been stored. Once a pairing has completed, the stored connection —
-endpoint, project ID, and API key together — is used atomically on every later run; it is never
-mixed field-by-field with an explicit value or environment variable from a different source. To
-change an already-paired connection, redeem a fresh pairing code: re-pairing always replaces the
-whole stored connection as one unit.
+environment remain application configuration. Python and standalone .NET prefer a completed
+stored connection over ordinary constructor/environment configuration; endpoint, project ID and
+API key always come from one source and are never mixed field-by-field. ASP.NET Core preserves its
+existing complete explicit `AddKairon` configuration when one is supplied; when project/key are
+omitted, it loads the same stored connection as one unit. Partial project/key configuration is
+rejected. To change an already-paired connection, redeem a fresh pairing code: re-pairing always
+replaces the whole stored connection as one unit.
 
 Until a real AI provider is configured, KAIRON reports an explicit **provider not configured**
 state — it never silently substitutes mock analysis for a missing or unreachable provider, and a
@@ -281,22 +281,32 @@ reused automatically.
 
 ### ASP.NET Core request middleware
 
-ASP.NET Core applications that need per-request status and latency collection can use the DI
-middleware with an explicit project credential:
+ASP.NET Core applications that need per-request status and latency collection use the same
+protected pairing credential as the standalone client. First-run pairing is explicitly
+asynchronous; later runs omit the code and load the stored connection:
 
 ```csharp
-builder.Services.AddKairon(options =>
+var pairingCode = Environment.GetEnvironmentVariable("KAIRON_PAIRING_CODE");
+
+void ConfigureKairon(KaironOptions options)
 {
-    options.Endpoint = "http://127.0.0.1:8000";
-    options.ProjectId = Guid.Parse("your-project-id");
-    options.ApiKey = "your-project-api-key";
     options.ApplicationName = "PaymentsApi";
     options.ServiceName = "PaymentService";
     options.Environment = "Development";
-});
+}
+
+if (!string.IsNullOrWhiteSpace(pairingCode))
+    await builder.Services.AddKaironAsync(pairingCode, ConfigureKairon);
+else
+    builder.Services.AddKairon(ConfigureKairon);
 
 app.UseKairon();
 ```
+
+Local pairing uses `http://localhost:8000` by default. For remote/cloud first contact, set
+`options.Endpoint` to the reachable HTTPS backend inside `ConfigureKairon`. The endpoint returned
+by pairing is then stored and reused. Complete explicit endpoint/project/API-key configuration
+remains supported for managed deployments; partial credentials are rejected.
 
 The .NET SDK follows the same fail-open contract as the Python SDK: bounded buffering, independent
 timeouts, cancellation support, and no database, AI, or remediation responsibility inside the

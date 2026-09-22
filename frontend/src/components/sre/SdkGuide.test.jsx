@@ -114,10 +114,16 @@ it('states the remote/cloud KAIRON_ENDPOINT requirement in the primary pairing s
   expect(screen.getAllByText(/KAIRON_ENDPOINT/).length).toBeGreaterThan(0);
 });
 
-it('clarifies that AddKairon() does not consume a KaironClient pairing credential automatically', async () => {
+it('documents first-run ASP.NET pairing and automatic stored-credential reuse', async () => {
+  const user = userEvent.setup();
+  const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
   render(<SdkPage />);
-  await userEvent.click(screen.getByRole('tab', { name: /\.NET/ }));
-  expect(await screen.findByText(/AddKairon\(\) does not automatically read the credential a pairing-code KaironClient stored on disk/)).toBeInTheDocument();
+  await user.click(screen.getByRole('tab', { name: /\.NET/ }));
+  expect(await screen.findByText(/is only for first-run pairing because/)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Copy dotnet-usage example' }));
+  expect(write).toHaveBeenCalledWith(expect.stringContaining('AddKaironAsync'));
+  expect(write).toHaveBeenCalledWith(expect.stringContaining('builder.Services.AddKairon(ConfigureKairon)'));
+  write.mockRestore();
 });
 
 it('keeps Troubleshooting and Advanced collapsed until opened, each with real content', async () => {
