@@ -20,7 +20,9 @@ import logging
 import os
 import queue
 import random
+import re
 import socket
+import sys
 import threading
 import time
 import traceback
@@ -30,7 +32,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from . import _credential_store
 from ._endpoint_security import is_endpoint_allowed
@@ -137,9 +139,22 @@ def _utcnow_iso() -> str:
 
 def format_exception(exc: BaseException) -> Optional[str]:
     try:
-        return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        return _scrub_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
     except Exception:
         return None
+
+
+def _scrub_text(value: Optional[str]) -> Optional[str]:
+    """Mask common credential forms before telemetry enters the in-memory queue."""
+    if value is None:
+        return None
+    value = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [redacted]", value)
+    value = re.sub(
+        r"(?i)\b(api[_-]?key|authorization|token|secret|password|pwd|pairing[_-]?code)\b\s*[:=]\s*[^\s,;'\"]+",
+        lambda match: match.group(1) + "=[redacted]", value,
+    )
+    value = re.sub(r"(?i)\b(?:krn|ksi|pair)_[A-Za-z0-9_-]{8,}\b", "[redacted]", value)
+    return value
 
 
 def pair(endpoint: str, code: str, version: str = "1.1.0", timeout_seconds: float = 10.0) -> Optional[dict]:
@@ -350,6 +365,9 @@ class Kairon:
         metrics_interval_seconds: float = 5.0,
         machine_id: Optional[str] = None,
         config_path: Optional[str] = None,
+        normalized_telemetry: bool = False,
+        batch_size: int = 25,
+        delivery_attempts: int = 3,
     ) -> None:
         endpoint, project_id, api_key = _resolve_configuration(
             endpoint, project_id, api_key, pairing_code, config_path
@@ -373,6 +391,7 @@ class Kairon:
 
         self._queue: "queue.Queue[tuple]" = queue.Queue(maxsize=max(1, queue_capacity))
         self._queue_lock = threading.Lock()
+        self._start_lock = threading.Lock()
         self._dropped_count = 0
         self._delivered_count = 0
         self._failed_count = 0
@@ -390,6 +409,11 @@ class Kairon:
         self._metric_errors = 0
         self._metric_duration_ms = 0
         self.last_shutdown_drained: Optional[bool] = None
+        # Existing direct Kairon(...) callers keep the legacy wire contract. The one-call web
+        # integrations opt into the backend's idempotent normalized batch contract below.
+        self.normalized_telemetry = bool(normalized_telemetry and machine_id is None)
+        self.batch_size = min(200, max(1, int(batch_size)))
+        self.delivery_attempts = min(5, max(1, int(delivery_attempts)))
 
     @classmethod
     def attach(
@@ -413,26 +437,60 @@ class Kairon:
         machine_id: Optional[str] = None,
         config_path: Optional[str] = None,
         shutdown_timeout_seconds: float = 5.0,
+        batch_size: int = 25,
+        delivery_attempts: int = 3,
     ) -> "Kairon":
-        """Attach Kairon to a FastAPI/Starlette application in one step.
+        """Attach Kairon to a supported FastAPI/Starlette or Flask application.
 
-        This is the normal web-application API: it creates the existing collector, registers the
-        existing :class:`KaironMiddleware`, starts telemetry with the application's lifespan, and
-        performs a bounded drain during shutdown. The returned collector remains available for
-        advanced/manual recording, but ordinary applications do not need to call ``start()`` or
-        ``stop()`` themselves.
+        FastAPI/Starlette retain their lifespan and middleware. Flask wraps its real WSGI app;
+        because WSGI defines no portable shutdown hook, use ``app.wsgi_app.close()`` during
+        server shutdown for a bounded drain (a best-effort process-exit fallback is registered).
+        The returned collector remains available for advanced/manual recording.
 
         A pairing code is still an explicit security decision. When omitted, the same credential
         resolver used by the manual API reuses a completed stored connection. Remote first contact
         still requires an explicit HTTPS endpoint (argument or ``KAIRON_ENDPOINT``).
         """
-        try:
-            from .middleware import KaironMiddleware
-        except ImportError as exc:
-            raise ImportError(
-                "Kairon.attach requires FastAPI/Starlette. Install with "
-                "`pip install kairon-sdk[fastapi]`."
-            ) from exc
+        from .adapters import attach_application
+
+        return attach_application(
+            cls, app, pairing_code=pairing_code, endpoint=endpoint,
+            project_id=project_id, service=service, application=application,
+            environment=environment, api_key=api_key, enabled=enabled,
+            timeout_seconds=timeout_seconds, queue_capacity=queue_capacity,
+            success_sample_rate=success_sample_rate,
+            ignored_path_prefixes=ignored_path_prefixes,
+            enable_metrics=enable_metrics,
+            metrics_interval_seconds=metrics_interval_seconds,
+            machine_id=machine_id, config_path=config_path,
+            shutdown_timeout_seconds=shutdown_timeout_seconds,
+            normalized_telemetry=True,
+            batch_size=batch_size, delivery_attempts=delivery_attempts,
+        )
+
+    @classmethod
+    def wrap_asgi(cls, app, *, shutdown_timeout_seconds: float = 5.0, **kwargs):
+        """Wrap an ASGI 3 application; preserve its HTTP and lifespan messages."""
+        from .adapters import wrap_asgi
+        kwargs.setdefault("normalized_telemetry", True)
+        return wrap_asgi(cls, app, shutdown_timeout_seconds=shutdown_timeout_seconds, **kwargs)
+
+    @classmethod
+    def wrap_wsgi(cls, app, *, shutdown_timeout_seconds: float = 5.0, **kwargs):
+        """Wrap a WSGI application; call ``close()`` for a bounded final drain."""
+        from .adapters import wrap_wsgi
+        kwargs.setdefault("normalized_telemetry", True)
+        return wrap_wsgi(cls, app, shutdown_timeout_seconds=shutdown_timeout_seconds, **kwargs)
+
+    @classmethod
+    def _attach_starlette(
+        cls, app, *, pairing_code, endpoint, project_id, service, application,
+        environment, api_key, enabled, timeout_seconds, queue_capacity,
+        success_sample_rate, ignored_path_prefixes, enable_metrics,
+        metrics_interval_seconds, machine_id, config_path, shutdown_timeout_seconds,
+        normalized_telemetry, batch_size, delivery_attempts,
+    ):
+        from .middleware import KaironMiddleware
 
         if getattr(getattr(app, "state", None), "_kairon_sdk_attached", False):
             raise RuntimeError("Kairon is already attached to this application.")
@@ -468,6 +526,8 @@ class Kairon:
             metrics_interval_seconds=metrics_interval_seconds,
             machine_id=machine_id,
             config_path=config_path,
+            normalized_telemetry=normalized_telemetry,
+            batch_size=batch_size, delivery_attempts=delivery_attempts,
         )
 
         original_lifespan = app.router.lifespan_context
@@ -499,20 +559,21 @@ class Kairon:
     def start(self) -> "Kairon":
         """Starts the background sender thread and registers this as the process-wide default
         instance for KaironMiddleware() called with no explicit instance."""
-        if self._closed:
-            return self  # A stopped collector is closed; create a new instance.
-        if self._thread is None:
-            self._stop_event.clear()
-            self._thread = threading.Thread(target=self._run, name="kairon-sender", daemon=True)
-            self._thread.start()
-        if self.enabled and self.enable_metrics and self._metrics_thread is None:
-            self._metrics_thread = threading.Thread(
-                target=self._run_metrics, name="kairon-metrics", daemon=True
-            )
-            self._metrics_thread.start()
+        with self._start_lock:
+            if self._closed:
+                return self  # A stopped collector is closed; create a new instance.
+            if self._thread is None:
+                self._stop_event.clear()
+                self._thread = threading.Thread(target=self._run, name="kairon-sender", daemon=True)
+                self._thread.start()
+            if self.enabled and self.enable_metrics and self._metrics_thread is None:
+                self._metrics_thread = threading.Thread(
+                    target=self._run_metrics, name="kairon-metrics", daemon=True
+                )
+                self._metrics_thread.start()
 
-        global _default_instance
-        _default_instance = self
+            global _default_instance
+            _default_instance = self
         return self
 
     def flush(self, timeout_seconds: float = 5.0) -> bool:
@@ -530,8 +591,9 @@ class Kairon:
 
     def stop(self, timeout_seconds: float = 5.0) -> bool:
         """Stop producers and attempt a bounded drain; never guarantee delivery on timeout."""
-        with self._queue_lock:
-            self._closed = True
+        with self._start_lock:
+            with self._queue_lock:
+                self._closed = True
         self._stop_event.set()
         drained = self.flush(timeout_seconds)
         self._sender_stop.set()
@@ -600,11 +662,11 @@ class Kairon:
                 "ApplicationName": self.application,
                 "Environment": self.environment,
                 "Service": self.service,
-                "Endpoint": endpoint,
+                "Endpoint": _scrub_text(endpoint),
                 "Method": method,
                 "StatusCode": status_code,
                 "Duration": duration_ms,
-                "Error": str(exc),
+                "Error": _scrub_text(str(exc)),
                 "ExceptionType": type(exc).__name__,
                 "StackTrace": format_exception(exc),
                 "Timestamp": _utcnow_iso(),
@@ -651,6 +713,46 @@ class Kairon:
     def is_ignored(self, path: str) -> bool:
         return any(path.startswith(prefix) for prefix in self.ignored_path_prefixes)
 
+    def record_http_request(
+        self, method: str, path: str, status_code: int, duration_ms: int,
+        exception: Optional[BaseException] = None, request_id: Optional[str] = None,
+    ) -> None:
+        """The framework-independent HTTP observation boundary.
+
+        Adapters supply only safe metadata, never headers, query strings or bodies. Request IDs
+        are accepted only as short UUIDs to avoid forwarding arbitrary header contents.
+        """
+        try:
+            if not self.enabled or self.is_ignored(path):
+                return
+            is_error = exception is not None or status_code >= 500
+            self._record_request(duration_ms, is_error)
+            if not is_error and not self.should_sample():
+                return
+            safe_request_id = None
+            if request_id:
+                try:
+                    safe_request_id = str(UUID(request_id))
+                except (ValueError, TypeError, AttributeError):
+                    pass
+            self._enqueue_telemetry({
+                "ApplicationName": self.application,
+                "Environment": self.environment,
+                "Service": self.service,
+                "Endpoint": _scrub_text(path),
+                "Method": method,
+                "StatusCode": status_code,
+                "Duration": duration_ms,
+                "Error": _scrub_text(str(exception)) if exception else None,
+                "ExceptionType": type(exception).__name__ if exception else None,
+                "StackTrace": format_exception(exception) if exception else None,
+                "RequestId": safe_request_id,
+                "Timestamp": _utcnow_iso(),
+            })
+        except Exception:
+            # Observation never changes the host response or exception.
+            pass
+
     def _record_request(self, duration_ms: int, is_error: bool) -> None:
         """Accumulates middleware request measurements for the automatic metrics sample."""
         if not self.enabled or not self.enable_metrics:
@@ -677,11 +779,15 @@ class Kairon:
     def _enqueue_telemetry(self, payload: dict) -> bool:
         payload["ProjectId"] = self.project_id
         payload["MachineId"] = self.machine_id
+        if self.normalized_telemetry:
+            payload["_EventId"] = str(uuid4())
         return self._enqueue(("api/telemetry/incidents", payload))
 
     def _enqueue_metric(self, payload: dict) -> bool:
         payload["ProjectId"] = self.project_id
         payload["MachineId"] = self.machine_id
+        if self.normalized_telemetry:
+            payload["_EventId"] = str(uuid4())
         return self._enqueue(("api/telemetry/metrics", payload))
 
     def _enqueue(self, item: tuple) -> bool:
@@ -720,6 +826,32 @@ class Kairon:
             except queue.Empty:
                 continue
 
+            if self.normalized_telemetry:
+                items = [(path, payload)]
+                while len(items) < self.batch_size and not self._sender_stop.is_set():
+                    try:
+                        items.append(self._queue.get(timeout=0.02))
+                    except queue.Empty:
+                        break
+                if self._sender_stop.is_set():
+                    for _ in items:
+                        self._dropped_count += 1
+                        self._finish()
+                    continue
+                delivered = False
+                try:
+                    delivered = self._send_normalized(items)
+                except Exception:
+                    self._delivery_failure("Transport or serialization failure")
+                finally:
+                    if isinstance(delivered, list) and len(delivered) == len(items):
+                        for result in delivered:
+                            self._finish(result is True)
+                    else:
+                        for _ in items:
+                            self._finish(delivered is True)
+                continue
+
             if self._sender_stop.is_set():
                 self._dropped_count += 1
                 self._finish()
@@ -731,6 +863,100 @@ class Kairon:
                 pass
             finally:
                 self._finish(delivered is True)
+
+    def _normalized_event(self, path: str, payload: dict) -> dict:
+        metric = path.endswith("/metrics")
+        application = (payload.get("ApplicationName") or payload.get("Application") or self.application)[:200]
+        event = {
+            "EventId": payload["_EventId"], "ProjectId": self.project_id,
+            "Timestamp": payload.get("Timestamp") or _utcnow_iso(),
+            "EventType": "metric" if metric else "http",
+            "Severity": "Error" if payload.get("ExceptionType") or (payload.get("StatusCode") or 0) >= 500 else "Information",
+            "Source": "python-sdk", "Application": application,
+            "Service": (payload.get("Service") or self.service)[:200],
+            "Environment": (payload.get("Environment") or self.environment)[:100],
+            "Runtime": "Python " + ".".join(map(str, sys.version_info[:2])),
+            "SourceVersion": "1.1.0", "RequestId": payload.get("RequestId"),
+        }
+        if metric:
+            event["ResourceMetrics"] = {
+                "CpuPercent": payload.get("CpuPercent"),
+                "MemoryPercent": payload.get("MemoryPercent"),
+                "ResponseTimeMs": payload.get("ResponseTimeMs"),
+                "RequestCount": payload.get("RequestCount") or 0,
+                "ErrorCount": payload.get("ErrorCount") or 0,
+                "RetryCount": payload.get("RetryCount"),
+                "QueueDepth": payload.get("QueueDepth"),
+            }
+        else:
+            event["Message"] = (payload.get("Error") or "")[:4000] or None
+            event["ExceptionType"] = (payload.get("ExceptionType") or "")[:500] or None
+            event["StackTrace"] = (payload.get("StackTrace") or "")[:8000] or None
+            event["HttpContext"] = {
+                "Endpoint": (payload.get("Endpoint") or "")[:500],
+                "Method": (payload.get("Method") or "GET")[:10],
+                "StatusCode": payload.get("StatusCode") or 0,
+                "DurationMs": payload.get("Duration") or 0,
+            }
+        return event
+
+    def _send_normalized(self, items: list[tuple]):
+        if not is_endpoint_allowed(self.endpoint):
+            return self._delivery_failure("Endpoint rejected: insecure transport")
+        try:
+            events = [self._normalized_event(path, payload) for path, payload in items]
+            body = json.dumps({"events": events}).encode("utf-8")
+        except (ValueError, TypeError, KeyError):
+            return self._delivery_failure("Serialization failure")
+        if len(body) > 1_048_576:
+            return self._delivery_failure("Telemetry batch exceeds backend size limit")
+        for attempt in range(self.delivery_attempts):
+            request = urllib.request.Request(
+                self.endpoint + "/api/v1/telemetry/events", data=body, method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            if self.api_key:
+                request.add_header("X-Kairon-API-Key", self.api_key)
+            try:
+                with _open(request, timeout=self.timeout_seconds) as response:
+                    result = json.loads(response.read(65537))
+                    if (isinstance(result, dict)
+                            and result.get("accepted", 0) + result.get("duplicates", 0) == len(events)
+                            and result.get("rejected") == 0):
+                        self.last_delivery_error = None
+                        return True
+                    if (isinstance(result, dict) and len(items) > 1
+                            and all(isinstance(result.get(key), int) and result[key] >= 0
+                                    for key in ("accepted", "duplicates", "rejected"))
+                            and result["accepted"] + result["duplicates"] + result["rejected"] == len(items)
+                            and result["rejected"] > 0):
+                        # Recheck members individually. Previously accepted members come back as
+                        # duplicates by EventId; invalid members fail alone. This preserves
+                        # accurate counters without replaying an unsafe legacy request.
+                        member_results = []
+                        first_error = None
+                        for item in items:
+                            ok = self._send_normalized([item]) is True
+                            member_results.append(ok)
+                            if not ok and first_error is None:
+                                first_error = self.last_delivery_error
+                        self.last_delivery_error = first_error
+                        return member_results
+                    return self._delivery_failure("Collector rejected telemetry batch")
+            except RedirectNotAllowedError as exc:
+                return self._delivery_failure("Endpoint rejected: HTTP " + str(exc.status) + " redirect not followed")
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+                exc.close()
+                if status not in (429, 500, 502, 503, 504) or attempt + 1 == self.delivery_attempts:
+                    return self._delivery_failure("HTTP " + str(status))
+            except (urllib.error.URLError, TimeoutError, OSError):
+                if attempt + 1 == self.delivery_attempts:
+                    return self._delivery_failure("Transport failure")
+            except (ValueError, TypeError):
+                return self._delivery_failure("Malformed collector response")
+            time.sleep(min(0.1 * (attempt + 1), 0.5))
+        return False
 
     def _run_metrics(self) -> None:
         last_wall = time.perf_counter()

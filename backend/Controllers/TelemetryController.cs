@@ -80,13 +80,14 @@ public class TelemetryController : ControllerBase
         {
             ProjectId = dto.ProjectId,
             MachineId = dto.MachineId,
-            Endpoint = dto.Endpoint,
+            Endpoint = Redaction.Scrub(dto.Endpoint) ?? string.Empty,
             Method = dto.Method,
             StatusCode = dto.StatusCode,
             DurationMs = dto.Duration,
-            ErrorMessage = dto.Error,
+            ErrorMessage = Redaction.Scrub(dto.Error),
             ErrorType = dto.ExceptionType,
-            StackTrace = dto.StackTrace,
+            StackTrace = Redaction.Scrub(dto.StackTrace),
+            RequestId = Redaction.Scrub(dto.RequestId),
             Environment = string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
             Timestamp = dto.Timestamp == default ? DateTime.UtcNow : UtcDateTimeJsonConverter.Normalize(dto.Timestamp),
             // The SDK has always sent ApplicationName; persisting it (and the service name) is what

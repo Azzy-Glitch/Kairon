@@ -15,7 +15,9 @@ dependencies = []
 
 [project.optional-dependencies]
 fastapi = ["starlette>=0.27"]
-test = ["pytest>=7.0", "starlette>=0.27", "fastapi>=0.100", "httpx>=0.24"]
+flask = ["flask>=2.3"]
+django = ["django>=4.2"]
+test = ["pytest>=7.0", "starlette>=0.27", "fastapi>=0.100", "httpx>=0.24", "flask>=2.3", "django>=4.2"]
 
 [tool.setuptools.packages.find]
 include = ["kairon*"]

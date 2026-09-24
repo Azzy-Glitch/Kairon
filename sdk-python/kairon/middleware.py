@@ -22,7 +22,7 @@ except ImportError as exc:  # pragma: no cover - exercised only when starlette i
         "KaironMiddleware requires starlette/fastapi. Install with `pip install kairon-sdk[fastapi]`."
     ) from exc
 
-from .client import Kairon, format_exception, get_default_instance, _utcnow_iso
+from .client import Kairon, get_default_instance
 
 
 class KaironMiddleware:
@@ -72,30 +72,12 @@ class KaironMiddleware:
     def _report(self, kairon: Kairon, scope: Scope, status_code: int, exception, start: float) -> None:
         try:
             duration_ms = int((time.monotonic() - start) * 1000)
-            is_error = exception is not None or status_code >= 500
-
-            # Match the .NET SDK: every non-ignored request contributes to the periodic Metrics
-            # sample, independently of success-event sampling below.
-            kairon._record_request(duration_ms, is_error)
-
-            # Errors are always reported; only successes are sampled - losing an error to
-            # sampling would be the one loss that actually matters.
-            if is_error or kairon.should_sample():
-                kairon._enqueue_telemetry(
-                    {
-                        "ApplicationName": kairon.application,
-                        "Environment": kairon.environment,
-                        "Service": kairon.service,
-                        "Endpoint": scope.get("path", ""),
-                        "Method": scope.get("method", ""),
-                        "StatusCode": status_code,
-                        "Duration": duration_ms,
-                        "Error": str(exception) if exception else None,
-                        "ExceptionType": type(exception).__name__ if exception else None,
-                        "StackTrace": format_exception(exception) if exception else None,
-                        "Timestamp": _utcnow_iso(),
-                    }
-                )
+            kairon.record_http_request(
+                scope.get("method", ""), scope.get("path", ""), status_code,
+                duration_ms, exception,
+                next((value.decode("ascii", "ignore") for name, value in scope.get("headers", [])
+                      if name.lower() == b"x-request-id"), None),
+            )
         except Exception:
             # Telemetry reporting must never affect the host, even here.
             pass

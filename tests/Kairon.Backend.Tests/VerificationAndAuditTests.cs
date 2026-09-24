@@ -191,6 +191,8 @@ public class VerificationAndAuditTests : IDisposable
     [InlineData("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9", "eyJhbGciOiJIUzI1NiJ9")]
     [InlineData("GEMINI_API_KEY=AIzaSyD1234567890abcdefghijklmnop", "AIzaSyD1234567890abcdefghijklmnop")]
     [InlineData("password=hunter2 was rejected", "hunter2")]
+    [InlineData("key krn_abcdefghijklmnop was rejected", "krn_abcdefghijklmnop")]
+    [InlineData("expired pair_abcdefghijklmnop", "pair_abcdefghijklmnop")]
     [InlineData("Server=db;User ID=sa;Password=P@ssw0rd!;", "P@ssw0rd!")]
     public void SecretsAreScrubbedFromAuditText(string input, string secret)
     {

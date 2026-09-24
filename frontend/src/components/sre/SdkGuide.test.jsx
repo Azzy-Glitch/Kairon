@@ -34,7 +34,7 @@ describe('SDK onboarding interactions', () => {
 
   it('shows the real .NET and Python integration examples with no extra click required', async () => {
     render(<SdkPage />);
-    expect(await screen.findByText(/Kairon\.attach\(app, pairing_code="YOUR_PAIRING_CODE"\)/)).toBeInTheDocument();
+    expect((await screen.findAllByText(/Kairon\.attach\(app, pairing_code="YOUR_PAIRING_CODE"\)/)).length).toBeGreaterThan(0);
     await userEvent.click(screen.getByRole('tab', { name: /\.NET/ }));
     expect(await screen.findByText(/AddKaironAsync\(pairingCode\)/)).toBeInTheDocument();
     expect(await screen.findByText(/builder\.Services\.AddKairon\(\)/)).toBeInTheDocument();
@@ -48,6 +48,22 @@ describe('SDK onboarding interactions', () => {
     expect(write).toHaveBeenCalledWith(expect.stringContaining('Kairon.attach(app, pairing_code="YOUR_PAIRING_CODE")'));
     expect(write).toHaveBeenCalledWith(expect.not.stringContaining('add_middleware'));
     expect(write).toHaveBeenCalledWith(expect.not.stringContaining('.start()'));
+    write.mockRestore();
+  });
+
+  it('shows tested Flask, Django and generic protocol integrations without pretending Django uses FastAPI', async () => {
+    const user = userEvent.setup();
+    const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+    render(<SdkPage />);
+    await user.click(screen.getByText('Flask, Django, or another ASGI/WSGI application'));
+    await user.click(await screen.findByRole('button', { name: 'Copy python-flask-paired example' }));
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('Kairon.attach(app, pairing_code='));
+    await user.click(screen.getByRole('button', { name: 'Copy python-django-paired example' }));
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('kairon.django.KaironMiddleware'));
+    await user.click(screen.getByRole('button', { name: 'Copy python-asgi-paired example' }));
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('Kairon.wrap_asgi'));
+    await user.click(screen.getByRole('button', { name: 'Copy python-wsgi-paired example' }));
+    expect(write).toHaveBeenCalledWith(expect.stringContaining('Kairon.wrap_wsgi'));
     write.mockRestore();
   });
 

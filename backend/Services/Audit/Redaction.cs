@@ -33,6 +33,9 @@ public static partial class Redaction
         RegexOptions.CultureInvariant)]
     private static partial Regex AdditionalTokenPattern();
 
+    [GeneratedRegex(@"(?i)\b(?:krn|ksi|pair)_[A-Za-z0-9_-]{8,}\b", RegexOptions.CultureInvariant)]
+    private static partial Regex KaironCredentialPattern();
+
     [GeneratedRegex(@"(?i)\b[A-Z]:\\Users\\[^\\\s]+", RegexOptions.CultureInvariant)]
     private static partial Regex UserProfilePathPattern();
 
@@ -56,6 +59,7 @@ public static partial class Redaction
         scrubbed = GoogleStylePattern().Replace(scrubbed, Mask);
         scrubbed = ConnectionStringPattern().Replace(scrubbed, m => $"{m.Groups[1].Value}={Mask}");
         scrubbed = AdditionalTokenPattern().Replace(scrubbed, Mask);
+        scrubbed = KaironCredentialPattern().Replace(scrubbed, Mask);
         scrubbed = UserProfilePathPattern().Replace(scrubbed, @"C:\Users\[redacted-user]");
         scrubbed = IpAddressPattern().Replace(scrubbed, "[redacted-ip]");
         scrubbed = EmailPattern().Replace(scrubbed, Mask);

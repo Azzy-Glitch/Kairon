@@ -41,7 +41,11 @@ class _KaironHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        body = b'{"success":true}'
+        if self.path == "/api/v1/telemetry/events":
+            count = len(json.loads(raw)["events"])
+            body = json.dumps({"accepted": count, "duplicates": 0, "rejected": 0}).encode()
+        else:
+            body = b'{"success":true}'
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -103,12 +107,12 @@ def test_attach_pairs_locally_registers_middleware_and_manages_lifecycle(
     paths = [request[0] for request in kairon_server.requests]
     assert paths.count("/api/v1/sdk/pair") == 1
     assert paths.count("/api/v1/sdk/pair/22222222-2222-2222-2222-222222222222/confirm") == 1
-    assert paths.count("/api/telemetry/incidents") == 1
-    telemetry = next(request for request in kairon_server.requests if request[0] == "/api/telemetry/incidents")
-    payload = json.loads(telemetry[2])
-    assert payload["ApplicationName"] == "OrdersApp"
+    assert paths.count("/api/v1/telemetry/events") == 1
+    telemetry = next(request for request in kairon_server.requests if request[0] == "/api/v1/telemetry/events")
+    payload = json.loads(telemetry[2])["events"][0]
+    assert payload["Application"] == "OrdersApp"
     assert payload["Service"] == "OrdersApp"
-    assert payload["Endpoint"] == "/orders"
+    assert payload["HttpContext"]["Endpoint"] == "/orders"
     assert telemetry[1]["x-kairon-api-key"] == "krn_attach_test_key"
     assert config_path.exists()
     assert b"pair_attach_first_run" not in config_path.read_bytes()

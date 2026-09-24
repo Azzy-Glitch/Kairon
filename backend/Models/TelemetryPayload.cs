@@ -14,6 +14,8 @@ public class TelemetryPayload
     public string? ExceptionType { get; set; }
     public string? StackTrace { get; set; }
     public DateTime Timestamp { get; set; }
+    /// <summary>Optional request correlation UUID. Never derived from an unvalidated header.</summary>
+    public string? RequestId { get; set; }
 
     /// <summary>
     /// Logical service name for correlation. Optional: older SDK builds do not send it, and the

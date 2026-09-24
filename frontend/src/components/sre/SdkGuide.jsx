@@ -51,6 +51,36 @@ Kairon.attach(app, pairing_code="YOUR_PAIRING_CODE")  # First run only.
 def orders():
     return {"status": "ok"}`;
 
+const pythonFlaskPaired = `from flask import Flask
+from kairon import Kairon
+
+app = Flask(__name__)
+Kairon.attach(app, pairing_code="YOUR_PAIRING_CODE")  # First run only.
+
+@app.get("/orders")
+def orders():
+    return {"status": "ok"}`;
+
+const pythonDjangoPaired = `# settings.py
+import os
+
+MIDDLEWARE = ["kairon.django.KaironMiddleware", *MIDDLEWARE]
+KAIRON = {"pairing_code": os.getenv("KAIRON_PAIRING_CODE")}
+# Remove KAIRON_PAIRING_CODE after first successful pairing.`;
+
+const pythonAsgiPaired = `from kairon import Kairon
+from my_application import app
+
+app = Kairon.wrap_asgi(app, pairing_code="YOUR_PAIRING_CODE")
+# On subsequent runs: app = Kairon.wrap_asgi(app)`;
+
+const pythonWsgiPaired = `from kairon import Kairon
+from my_application import app
+
+app = Kairon.wrap_wsgi(app, pairing_code="YOUR_PAIRING_CODE")
+# On subsequent runs: app = Kairon.wrap_wsgi(app)
+# WSGI has no portable shutdown hook; call app.close() at server shutdown.`;
+
 const pythonPairing = `from kairon import Kairon
 
 kairon = Kairon(pairing_code="YOUR_PAIRING_CODE")
@@ -257,16 +287,29 @@ function VerifyCard({ projectId, onTelemetry }) {
 function PythonGuide({ CodeBlock, projectId, onTelemetry }) {
   return (
     <div className="sdk-tab-panel">
-      <p className="sdk-tab-intro">Connect a Python or FastAPI application to KAIRON.</p>
+      <p className="sdk-tab-intro">Install the SDK, connect once, and KAIRON handles request telemetry and delivery.</p>
       <SubStep number="1" title="Install">
         <p>From the KAIRON repository root, with your application's virtual environment active:</p>
         <CodeBlock copyKey="python-install" code={'python -m pip install "./sdk-python[fastapi]"'} />
-        <p className="sdk-hint">That installs the core SDK plus the FastAPI/Starlette middleware. Using a different framework or a plain script? Install just <code>./sdk-python</code> — see Advanced.</p>
+        <p className="sdk-hint">Choose the matching optional extra for your framework: <code>[fastapi]</code>, <code>[flask]</code>, or <code>[django]</code>. Raw ASGI/WSGI and workers use the dependency-free core.</p>
       </SubStep>
       <SubStep number="2" title="Connect with your pairing code">
         <p>Add one line to your FastAPI application. KAIRON securely resolves the project, credential and endpoint for you.</p>
         <CodeBlock copyKey="python-fastapi-paired" code={pythonFastapiPaired} />
         <p className="sdk-hint">After the first successful run, change that line to <code>Kairon.attach(app)</code>. The protected stored connection is reused automatically.</p>
+        <details className="sdk-guide-details">
+          <summary>Flask, Django, or another ASGI/WSGI application</summary>
+          <p><strong>Flask</strong> — install <code>./sdk-python[flask]</code> and attach before serving requests:</p>
+          <CodeBlock copyKey="python-flask-paired" code={pythonFlaskPaired} />
+          <p><strong>Django (ASGI or WSGI)</strong> — install <code>./sdk-python[django]</code> and add the middleware near the start of your settings. Django uses its own request lifecycle; it does not use <code>Kairon.attach(app)</code>.</p>
+          <CodeBlock copyKey="python-django-paired" code={pythonDjangoPaired} />
+          <p><strong>Generic ASGI 3</strong> — wrap the application callable:</p>
+          <CodeBlock copyKey="python-asgi-paired" code={pythonAsgiPaired} />
+          <p><strong>Generic WSGI</strong> — wrap the application callable:</p>
+          <CodeBlock copyKey="python-wsgi-paired" code={pythonWsgiPaired} />
+          <p className="sdk-hint">These wrappers cover compatible protocols, not every Python framework. WSGI and Flask have no portable application shutdown hook: arrange a bounded <code>close()</code> on server shutdown when possible; otherwise an exit handler makes a best-effort drain. Raw ASGI uses the server lifespan when available.</p>
+          <p className="sdk-hint">For multiple workers, pair once with one worker or a setup process, then remove the single-use code before starting the remaining workers. Explicit pairing always wins, so reusing the same code in every worker fails safely.</p>
+        </details>
         <details className="sdk-guide-details">
           <summary>Remote/cloud or explicit configuration</summary>
           <p><strong>Remote first pairing:</strong> set <code>KAIRON_ENDPOINT</code> to the reachable HTTPS backend before starting the app. Local KAIRON needs no endpoint.</p>
@@ -284,7 +327,7 @@ function PythonGuide({ CodeBlock, projectId, onTelemetry }) {
       <SubStep number="3" title="What KAIRON handles automatically">
         <Checklist items={[
           'Secure pairing and stored-credential reuse',
-          'FastAPI/Starlette request middleware',
+          'Framework adapters sharing one request telemetry core',
           'Errors, status codes and latency telemetry',
           'Background delivery and process metrics',
           'Startup, shutdown and a bounded final telemetry drain'
@@ -500,7 +543,7 @@ function AdvancedSection({ CodeBlock }) {
         </section>
         <section className="section-card">
           <h3>Delivery and shutdown</h3>
-          <p>Both SDKs use a bounded in-memory queue (default 1,000 items) and best-effort delivery, without a disk spool or automatic retries. Queue pressure drops the oldest items. A collector outage should not block application requests, but telemetry can be lost.</p>
+          <p>Both SDKs use a bounded in-memory queue (default 1,000 items) and best-effort delivery without a disk spool. Python's one-call web adapters batch observations and retry transient failures with stable event IDs; the backend deduplicates them. Python's lower-level legacy sender and the existing .NET SDK retain their own delivery behavior. Queue pressure drops the oldest items; a collector outage must not block application requests.</p>
           <p>Python exposes <code>delivered_count</code>, <code>failed_count</code>, <code>dropped_count</code> and <code>pending_count</code>; .NET exposes corresponding PascalCase members on <code>IKaironTelemetryQueue</code>. Pending counts exclude in-flight sends. Stop producers before a final drain: Python <code>stop(timeout_seconds=5)</code> and .NET <code>FlushAsync(token)</code> return false after a lifetime failure/drop or an incomplete drain. The .NET hosted sender also attempts a bounded shutdown drain. Queue emptiness alone is not delivery confirmation.</p>
           <p>Metrics intervals default to 10 seconds (.NET) and 5 seconds (Python).</p>
         </section>

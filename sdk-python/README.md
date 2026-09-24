@@ -1,9 +1,10 @@
 # Kairon Python SDK
 
 The Python counterpart to `sdk/Kairon.SDK/` (the .NET client SDK) — a telemetry collector, not
-a Kairon platform dependency. It talks to the same `/api/telemetry/incidents` and
-`/api/telemetry/metrics` endpoints the .NET SDK already uses, with the same PascalCase field
-names, so no backend changes were needed to add it.
+a Kairon platform dependency. One-call framework integrations send idempotent batches to
+`/api/v1/telemetry/events`. The lower-level direct client retains the existing
+`/api/telemetry/incidents` and `/api/telemetry/metrics` routes for compatibility.
+The backend also accepts an optional request-correlation ID.
 
 ## Install and authentication
 
@@ -39,6 +40,10 @@ On every later run use `Kairon.attach(app)`; no pairing code, project ID, API ke
 middleware registration, `start()` or `stop()` call is needed. The low-level `Kairon` constructor
 and `KaironMiddleware` remain available for workers and applications that need manual control.
 
+For multi-worker servers, perform the one-time pairing with a single worker or setup process
+before scaling out. A pairing code is single-use, and explicitly passing it to every worker
+does not fall back to an existing stored credential after the first worker redeems it.
+
 **Pairing against a remote or cloud KAIRON backend?** Set `KAIRON_ENDPOINT` (or pass
 `endpoint=`) to that backend's real HTTPS address *first* - the pairing call itself has
 to reach the right backend to redeem the code. `Kairon.attach(app, pairing_code=...)` with no
@@ -56,6 +61,27 @@ It does not use a Groq key, operator key or pairing code for telemetry. Revoked 
 inactive/unregistered projects are rejected. Backend custom telemetry header settings
 must remain compatible with this header. A scoped MachineId additionally requires the
 operator's exact project/machine/service/environment and credential association.
+
+## Supported web integrations
+
+FastAPI and Starlette use `Kairon.attach(app, pairing_code=...)` on the first run and
+`Kairon.attach(app)` thereafter. Flask uses the same call; install the matching optional
+extra with `python -m pip install "./sdk-python[flask]"`. The core collector and generic
+ASGI/WSGI wrappers need no web-framework dependency.
+
+For Django 4.2+, install `./sdk-python[django]`, add
+`"kairon.django.KaironMiddleware"` near the start of `MIDDLEWARE`, and set
+`KAIRON = {"pairing_code": os.getenv("KAIRON_PAIRING_CODE")}` in settings for the first
+run. Remove the environment variable after pairing. This middleware works with Django's
+ASGI and WSGI handlers; no FastAPI lifecycle hook is involved.
+
+For another ASGI 3 app, wrap its callable with `Kairon.wrap_asgi(app, pairing_code=...)`.
+For a WSGI app use `Kairon.wrap_wsgi(app, pairing_code=...)`. On later runs omit the code.
+Both wrappers expose `.kairon` and `.close()`. ASGI lifespan and FastAPI/Starlette manage
+shutdown automatically. WSGI and Flask lack a portable application-shutdown hook: call
+the wrapper's `close()` during your server shutdown for a bounded drain, or rely on its
+best-effort process-exit fallback. Do not claim untested framework-specific semantics
+merely because its server speaks ASGI or WSGI.
 
 ## FastAPI usage
 
@@ -156,9 +182,9 @@ Mirrors the .NET SDK's resilience contract exactly:
 
 - One bounded, drop-oldest in-memory queue (`queue_capacity`, default 1000) — never blocks the
   calling request, never grows unbounded.
-- One background sender thread plus a lightweight process-metrics sampler, one telemetry item
-  per HTTP POST (no batching), short independent per-request timeout (`timeout_seconds`, default
-  5s). Automatic metrics can be tuned with `metrics_interval_seconds` or disabled with
+- One background sender thread plus a lightweight process-metrics sampler. One-call web adapters
+  batch up to 25 observations per idempotent POST (configurable through the advanced constructor),
+  with a short independent request timeout (`timeout_seconds`, default 5s). Automatic metrics can be tuned with `metrics_interval_seconds` or disabled with
   `enable_metrics=False`.
 - Fail-open everywhere: every network call is wrapped, nothing here ever raises into your
   application code. The one exception path that *does* re-raise is the host application's own
@@ -176,9 +202,12 @@ attempts the same bounded drain. Work still queued after the deadline is counted
 failure/drop; an empty queue alone is not a delivery confirmation. A stopped instance is
 closed; create a new instance to restart collection.
 
-Delivery remains best effort: there is no disk spool or automatic retry. An ambiguous
-transport failure may have reached the collector; blindly retrying the legacy endpoints
-could duplicate incidents. Observe the counters and handle a failed drain operationally.
+Delivery remains best effort: there is no disk spool. The one-call framework adapters use stable
+event IDs and bounded retries for transport errors, HTTP 429 and selected 5xx responses; the
+backend deduplicates retries. Authentication failures (401/403), redirects and invalid batches
+are not retried. The older direct-client legacy routes do not retry, because an ambiguous
+response could otherwise duplicate incidents. Observe the counters and handle a failed drain
+operationally.
 
 ## Tests
 

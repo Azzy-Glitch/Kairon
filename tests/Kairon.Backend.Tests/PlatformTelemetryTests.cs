@@ -1,5 +1,6 @@
 using Kairon.Backend.DTOs;
 using Kairon.Backend.Services;
+using System.Text.Json;
 using Xunit;
 
 namespace Kairon.Backend.Tests;
@@ -11,6 +12,35 @@ namespace Kairon.Backend.Tests;
 /// </summary>
 public sealed class PlatformTelemetryTests : IDisposable
 {
+    [Fact]
+    public async Task PythonSdkBatchJsonDeserializesAndPersistsAnHttpIncident()
+    {
+        var projectId = Guid.NewGuid();
+        var eventId = Guid.NewGuid();
+        var json = $$"""
+            {"events":[{
+              "EventId":"{{eventId}}", "ProjectId":"{{projectId}}",
+              "Timestamp":"2026-09-25T00:00:00Z", "EventType":"http",
+              "Severity":"Error", "Source":"python-sdk", "Application":"OrdersApp",
+              "Service":"OrdersService", "Environment":"Development",
+              "Runtime":"Python 3.14", "SourceVersion":"1.1.0",
+              "RequestId":"22222222-2222-2222-2222-222222222222",
+              "ExceptionType":"ValueError", "Message":"failed",
+              "HttpContext":{"Endpoint":"/orders", "Method":"GET", "StatusCode":500, "DurationMs":12}
+            }]}
+            """;
+        var batch = JsonSerializer.Deserialize<NormalizedTelemetryBatchDto>(json,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        var result = await Service.IngestAsync(batch!, default);
+
+        Assert.Equal(1, result.Accepted);
+        var incident = Assert.Single(_h.Db.Incidents, x => x.ProjectId == projectId);
+        Assert.Equal("OrdersService", incident.Service);
+        Assert.Equal("/orders", incident.Endpoint);
+        Assert.Equal("22222222-2222-2222-2222-222222222222", incident.RequestId);
+    }
+
     private readonly TestHarness _h = new();
     private PlatformTelemetryService Service => new(_h.Db, _h.Queue, TimeProvider.System);
 
