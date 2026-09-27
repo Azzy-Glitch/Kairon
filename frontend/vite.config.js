@@ -3,6 +3,24 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          // Keep charting code in a reusable chunk instead of bundling it into every page's
+          // eagerly loaded application entry. Vite normalizes paths differently on Windows.
+          const path = id.replaceAll('\\', '/');
+          if (path.includes('/node_modules/recharts/')) {
+            return 'charts';
+          }
+          if (path.includes('/node_modules/d3-') ||
+              path.includes('/node_modules/victory-vendor/')) {
+            return 'charts-vendor';
+          }
+        }
+      }
+    }
+  },
   server: {
     // Local by default. A developer may opt into LAN exposure explicitly, but the standard
     // command must not expose the operator-authenticated proxy on every interface.

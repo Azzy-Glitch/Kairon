@@ -26,4 +26,12 @@
     <ProjectReference Include="..\..\desktop\Kairon.Desktop\Kairon.Desktop.csproj" />
   </ItemGroup>
 
+  <!-- WebView2's transitive targets also add its unused WPF wrapper to this WinForms test
+       project; exclude it for the same reason as the Desktop application. -->
+  <Target Name="RemoveUnusedWebView2WpfReference" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+
 </Project>

@@ -1,2 +1,6 @@
 -r requirements.txt
 pyinstaller==6.22.2
+# Windows does not provide an IANA timezone database in the locations used by zoneinfo.
+# Include the fallback in the frozen executable; PyInstaller otherwise warns that its
+# optional tzdata hidden import is missing.
+tzdata==2026.4

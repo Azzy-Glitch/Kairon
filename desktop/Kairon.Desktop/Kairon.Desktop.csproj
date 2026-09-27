@@ -17,4 +17,12 @@
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
   </ItemGroup>
 
+  <!-- WebView2 includes both UI wrappers; this application only uses WinForms. The unused
+       WPF wrapper references WindowsBase 5 while .NET 10 supplies WindowsBase 4. -->
+  <Target Name="RemoveUnusedWebView2WpfReference" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Reference.Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+
 </Project>

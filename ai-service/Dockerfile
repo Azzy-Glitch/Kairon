@@ -4,7 +4,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN groupadd --system kairon && useradd --system --gid kairon --create-home kairon
 WORKDIR /app
 COPY ai-service/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+ENV PATH="/opt/venv/bin:$PATH"
 COPY --chown=kairon:kairon ai-service/ ./
 COPY --chown=kairon:kairon LICENSE NOTICE ./
 USER kairon
