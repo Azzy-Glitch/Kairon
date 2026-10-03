@@ -8,10 +8,10 @@ operator through approval, remediation, and verification.
 
 | Current release | Platform | Core stack | License |
 |---|---|---|---|
-| **1.1.0** | Windows x64 | .NET 10, React 18/Vite 7, Python/FastAPI | Apache-2.0 |
+| **1.1.0** | Windows x64 | .NET 10, React 18/Vite 7, Python SDK | Apache-2.0 |
 
 Every .NET executable produced from a Git checkout includes the source commit in its product
-version, for example `1.1.0+d8d46f68...`. This distinguishes builds that share the same release
+version, for example `1.1.0+<git-sha>`. This distinguishes builds that share the same release
 version.
 
 ## What KAIRON does
@@ -29,7 +29,7 @@ OBSERVE -> DETECT -> CORRELATE -> INVESTIGATE -> DIAGNOSE -> PREDICT
 - Restricts remediation to registered typed tools; the model cannot provide an arbitrary command.
 - Requires human approval and revalidates policy immediately before execution.
 - Resolves an incident only after fresh telemetry verifies recovery.
-- Provides project pairing and fail-open telemetry SDKs for .NET and Python/FastAPI.
+- Provides project pairing and fail-open telemetry SDKs for .NET and Python applications.
 - Exports or permanently deletes locally stored data from the Settings page.
 
 KAIRON does **not** fabricate telemetry on a clean database. With no connected project there are
@@ -77,7 +77,7 @@ The desktop dashboard is organized around the operator workflow:
 | `agent/Kairon.UserAgent` | Per-interactive-session process inventory through an at-logon Scheduled Task |
 | `frontend` | Operator dashboard served by the backend in production and Vite during development |
 | `sdk/Kairon.SDK` | Fail-open ASP.NET Core telemetry client and middleware |
-| `sdk-python` | Dependency-light Python client and optional FastAPI/Starlette middleware |
+| `sdk-python` | Standard-library Python core with tested FastAPI/Starlette, Flask, Django, ASGI, and WSGI integrations |
 | `demo/Kairon.DemoApp` | Explicitly started retry-loop scenario for end-to-end testing |
 
 The installed desktop application binds the backend to `127.0.0.1:8000` and the AI service to
@@ -186,15 +186,17 @@ provider outage is reported distinctly from "not configured". Deterministic mock
 only for local development/testing and must be explicitly selected; it is never a hidden
 production fallback.
 
-## Connect a Python FastAPI application
+## Connect a Python application
 
-Install the SDK from this checkout:
+Install the SDK in your application's environment from this checkout. Select the extra for your
+framework; a generic ASGI or WSGI application needs only the core package:
 
 ```powershell
-pip install -e ".\sdk-python[fastapi]"
+python -m pip install -e ".\sdk-python[fastapi]"
 ```
 
-Minimal `main.py`:
+For a FastAPI application, the first run can be as small as this `main.py` (Starlette uses the same
+`Kairon.attach(app, ...)` call):
 
 ```python
 import os
@@ -218,10 +220,26 @@ $env:KAIRON_PAIRING_CODE = Read-Host "KAIRON pairing code"
 uvicorn main:app --port 8088
 ```
 
-Set `KAIRON_PAIRING_CODE` only for the first successful run. The Python SDK stores the redeemed
-connection using Windows DPAPI; on later runs, leave the variable unset and `Kairon.attach(app)`
-loads it. The high-level API registers middleware and manages SDK startup, shutdown and bounded
-telemetry drain automatically.
+Set `KAIRON_PAIRING_CODE` only for the first successful run. On later runs, leave it unset;
+`Kairon.attach(app)` loads the stored connection. For first contact with a remote KAIRON backend,
+also set `KAIRON_ENDPOINT` to its reachable HTTPS URL before starting the application. Without an
+explicit endpoint, pairing contacts `http://localhost:8000` on the application's own machine.
+The high-level FastAPI/Starlette integration registers request telemetry and manages startup,
+shutdown, and bounded telemetry drain automatically.
+
+Other tested Python integrations use the same collector:
+
+| Application | First-run integration | Later runs / lifecycle |
+|---|---|---|
+| Flask 2.3+ | Install `.\sdk-python[flask]`; call `Kairon.attach(app, pairing_code=code)` before the first request | Use `Kairon.attach(app)`; call `app.wsgi_app.close()` during server shutdown for a bounded drain |
+| Django 4.2+ | Install `.\sdk-python[django]`; add `kairon.django.KaironMiddleware` to `MIDDLEWARE` and set `KAIRON = {"pairing_code": os.getenv("KAIRON_PAIRING_CODE")}` in settings | Remove the pairing-code variable; the middleware supports Django's ASGI and WSGI handlers |
+| Raw ASGI 3 | `app = Kairon.wrap_asgi(app, pairing_code=code)` | Omit the code; ASGI lifespan manages shutdown when supported |
+| Raw WSGI | `app = Kairon.wrap_wsgi(app, pairing_code=code)` | Omit the code; call `app.close()` during server shutdown for a bounded drain |
+
+`Kairon.attach()` accepts FastAPI/Starlette and Flask instances; Django uses its own middleware,
+while other compatible applications use the generic wrappers. On Windows, the stored credential is
+protected with DPAPI. On non-Windows systems, the SDK uses an owner-only credential file rather
+than OS-backed encryption; protect the application's account and home directory accordingly.
 
 The middleware records request status and latency. A lightweight background sampler reports
 process CPU and memory plus accumulated request/error counts every five seconds. It ignores health,
@@ -559,17 +577,11 @@ python -m pip install -e ".[test]"
 pytest -q
 ```
 
-The latest full local run for version 1.1.0 passed **1179 tests**:
-
-- 722 .NET tests (Backend, .NET SDK, Agent, UserAgent, Desktop) — the Backend suite's two
-  SQL-Server-backed tests require a real SQL Server/LocalDB instance reachable via
-  `KAIRON_TEST_SQLSERVER` (or `(localdb)\MSSQLLocalDB`); they are skipped automatically on a
-  non-Windows machine with neither available.
-- 181 frontend tests
-- 148 AI-service tests
-- 128 Python SDK tests
-
-(Earlier published counts for 1.0.1 - 737 tests - are historical and are not current.)
+Run these suites against the checkout being evaluated rather than relying on a historical test
+total. Backend SQL Server integration tests require a reachable SQL Server/LocalDB instance via
+`KAIRON_TEST_SQLSERVER` (or `(localdb)\MSSQLLocalDB`); they may be skipped when neither is
+available. The Python suite includes the FastAPI/Starlette, Flask, Django, raw ASGI, and raw WSGI
+adapters as well as the collector and pairing behavior.
 
 CI runs the solution tests, frontend tests/build/audit, Python tests/package audit/build, NuGet
 vulnerability inspection, SDK packaging, and both Docker image builds. The Windows installer
@@ -675,7 +687,7 @@ docs/                     Architecture, migration, and verification notes
 frontend/                 React/Vite operator dashboard
 installer/                Inno Setup definition and complete build script
 sdk/Kairon.SDK/           .NET telemetry SDK
-sdk-python/               Python/FastAPI telemetry SDK
+sdk-python/               Python telemetry SDK and framework adapters
 tests/                    .NET unit, integration, and acceptance tests
 .github/workflows/        Cross-platform CI and Windows installer workflow
 ```
@@ -696,8 +708,6 @@ tests/                    .NET unit, integration, and acceptance tests
 - Data deletion is global; per-project deletion is not implemented.
 - External AI-provider connectivity still depends on the user's provider account, key, model,
   region, network, and endpoint. Passing mock-mode tests does not verify those external systems.
-- The current frontend production bundle triggers Vite's `>500 kB` chunk warning, and the desktop
-  build emits a non-fatal WebView2/`WindowsBase` reference-version warning.
 - Interactive logout/login and full-reboot behavior is configured through the service and at-logon
   task but cannot be exercised without ending the current Windows session.
 
