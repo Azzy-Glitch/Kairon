@@ -150,8 +150,8 @@ public class KaironTelemetrySender : BackgroundService
                 string? error = null;
                 try {
                     var result = item.Telemetry is not null
-                        ? await _client.SendAsync(item.Telemetry, stoppingToken)
-                        : await _client.SendMetricAsync(item.Metric!, stoppingToken);
+                        ? await _client.SendNormalizedAsync(item.Telemetry, stoppingToken)
+                        : await _client.SendNormalizedAsync(item.Metric!, stoppingToken);
                     delivered = result?.Success == true;
                     if (!delivered) error = result?.Message;
                 } catch { error = "Transport or serialization failure"; /* Fail open; loss remains visible in FailedCount. */ }

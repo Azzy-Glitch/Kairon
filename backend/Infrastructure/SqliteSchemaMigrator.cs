@@ -19,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 9;
+    public const int CurrentVersion = 10;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -229,6 +229,51 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                 _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: RemediationTargets.EnvironmentNormalized case-insensitive uniqueness", version);
             }
 
+            // Version 10 records Agent-confirmed SDK machine associations and one-use proof
+            // challenges. Existing project credentials are deliberately NOT backfilled: possession of
+            // an old SDK key alone cannot establish physical machine identity.
+            if (version == 9) {
+                var receiptColumns = await ColumnsAsync(connection, transaction, "TelemetryReceipts", cancellationToken);
+                if (!receiptColumns.Contains("MachineId"))
+                    await ExecuteAsync(connection, transaction,
+                        "ALTER TABLE \"TelemetryReceipts\" ADD COLUMN \"MachineId\" TEXT NULL;", cancellationToken);
+                await ExecuteAsync(connection, transaction, """
+                    CREATE TABLE IF NOT EXISTS "SdkMachineBindings" (
+                        "CredentialId" TEXT NOT NULL CONSTRAINT "PK_SdkMachineBindings" PRIMARY KEY,
+                        "ProjectId" TEXT NOT NULL,
+                        "MachineId" TEXT NOT NULL,
+                        "AgentCredentialHash" TEXT NOT NULL,
+                        "LastConfirmedAt" TEXT NOT NULL
+                    );
+                    """, cancellationToken);
+                await ExecuteAsync(connection, transaction, """
+                    CREATE INDEX IF NOT EXISTS "IX_SdkMachineBindings_ProjectId_MachineId"
+                    ON "SdkMachineBindings" ("ProjectId", "MachineId");
+                    """, cancellationToken);
+                await ExecuteAsync(connection, transaction, """
+                    CREATE TABLE IF NOT EXISTS "SdkMachineProofChallenges" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_SdkMachineProofChallenges" PRIMARY KEY,
+                        "CredentialId" TEXT NOT NULL,
+                        "ProjectId" TEXT NOT NULL,
+                        "EnvironmentNormalized" TEXT NOT NULL,
+                        "Service" TEXT NOT NULL,
+                        "BodySha256" TEXT NOT NULL,
+                        "ExpiresAt" TEXT NOT NULL,
+                        "MachineId" TEXT NULL,
+                        "AgentCredentialHash" TEXT NULL,
+                        "ConfirmedAt" TEXT NULL,
+                        "ConsumedAt" TEXT NULL,
+                        "RowVersion" TEXT NOT NULL
+                    );
+                    """, cancellationToken);
+                await ExecuteAsync(connection, transaction, """
+                    CREATE INDEX IF NOT EXISTS "IX_SdkMachineProofChallenges_ExpiresAt"
+                    ON "SdkMachineProofChallenges" ("ExpiresAt");
+                    """, cancellationToken);
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 10;", cancellationToken);
+                version = 10;
+            }
+
             if (version != CurrentVersion)
                 throw new InvalidOperationException($"No SQLite migration path exists from version {version}.");
 
@@ -254,7 +299,8 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
     /// see SqliteSchemaMigratorTests's genuine-legacy-fixture test for the corrected version.</summary>
     private IEnumerable<IEntityType> EntitiesAsOf(int version) => version switch
     {
-        1 => _db.Model.GetEntityTypes().Where(e => e.ClrType != typeof(AiProviderConfig) && e.ClrType != typeof(RemediationTarget)),
+        1 => _db.Model.GetEntityTypes().Where(e => e.ClrType != typeof(AiProviderConfig) && e.ClrType != typeof(RemediationTarget) &&
+            e.ClrType != typeof(SdkMachineBinding) && e.ClrType != typeof(SdkMachineProofChallenge)),
         _ => _db.Model.GetEntityTypes(),
     };
 
@@ -332,6 +378,7 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                     expected.Remove("CompletedAt");
                 }
                 if (table == "ProjectApiCredentials") expected.Remove("RowVersion"); // added at version 8
+                if (table == "TelemetryReceipts") expected.Remove("MachineId"); // added at version 10
             }
             var missing = expected.Except(actual, StringComparer.OrdinalIgnoreCase).Order().ToArray();
             if (actual.Count == 0 || missing.Length > 0)

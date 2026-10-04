@@ -25,6 +25,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\backend\Kairon.Backend.csproj" />
+    <ProjectReference Include="..\..\sdk\Kairon.SDK\Kairon.SDK.csproj" />
   </ItemGroup>
 
 </Project>

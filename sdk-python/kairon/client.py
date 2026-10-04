@@ -35,6 +35,7 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from . import _credential_store
+from . import _machine_proof
 from ._endpoint_security import is_endpoint_allowed
 
 _logger = logging.getLogger("kairon")
@@ -917,6 +918,18 @@ class Kairon:
             )
             if self.api_key:
                 request.add_header("X-Kairon-API-Key", self.api_key)
+            # A machine scope is granted by the enrolled Agent for these exact bytes, never by
+            # a hostname or machine ID supplied by this application. Without an Agent, ordinary
+            # telemetry remains valid but cannot authorize machine remediation.
+            if events:
+                first = events[0]
+                proof = _machine_proof.acquire(
+                    self.endpoint, str(self.project_id), first.get("Service") or self.service,
+                    first.get("Environment") or self.environment, self.api_key, body,
+                    _open, self.timeout_seconds,
+                )
+                if proof:
+                    request.add_header("X-Kairon-Machine-Proof", proof)
             try:
                 with _open(request, timeout=self.timeout_seconds) as response:
                     result = json.loads(response.read(65537))
@@ -996,11 +1009,20 @@ class Kairon:
         if not is_endpoint_allowed(self.endpoint):
             return self._delivery_failure("Endpoint rejected: insecure transport")
         try:
+            body = json.dumps(payload, default=str).encode("utf-8")
             request = urllib.request.Request(
-                f"{self.endpoint}/{path}", data=json.dumps(payload, default=str).encode("utf-8"),
+                f"{self.endpoint}/{path}", data=body,
                 method="POST", headers={"Content-Type": "application/json"})
             if self.api_key:
                 request.add_header("X-Kairon-API-Key", self.api_key)
+            proof = _machine_proof.acquire(
+                self.endpoint, str(self.project_id),
+                payload.get("Service") or payload.get("ApplicationName") or self.service,
+                payload.get("Environment") or self.environment, self.api_key, body,
+                _open, self.timeout_seconds,
+            )
+            if proof:
+                request.add_header("X-Kairon-Machine-Proof", proof)
             with _open(request, timeout=self.timeout_seconds) as response:
                 if not 200 <= response.status < 300:
                     return self._delivery_failure("HTTP " + str(response.status))

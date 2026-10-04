@@ -13,6 +13,26 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
         Path.GetTempPath(), $"kairon-schema-{Guid.NewGuid():N}.db");
 
     [Fact]
+    public async Task VersionNineUpgradeAddsMachineProofTablesWithoutBackfillingIdentity()
+    {
+        await using var db = CreateContext();
+        await db.Database.EnsureCreatedAsync();
+        await db.Database.ExecuteSqlRawAsync("DROP TABLE \"SdkMachineProofChallenges\";");
+        await db.Database.ExecuteSqlRawAsync("DROP TABLE \"SdkMachineBindings\";");
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"TelemetryReceipts\" DROP COLUMN \"MachineId\";");
+        await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 9;");
+
+        await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
+
+        Assert.Equal(10, await UserVersionAsync(db));
+        Assert.Empty(await db.SdkMachineBindings.ToListAsync());
+        Assert.Empty(await db.SdkMachineProofChallenges.ToListAsync());
+        var columns = await db.Database.SqlQueryRaw<string>(
+            "SELECT name AS Value FROM pragma_table_info('TelemetryReceipts')").ToListAsync();
+        Assert.Contains("MachineId", columns);
+    }
+
+    [Fact]
     public async Task FreshDatabaseIsCreatedAndVersioned()
     {
         await using var db = CreateContext();

@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Kairon.Backend.Configuration;
+using Microsoft.Extensions.Options;
 using Kairon.Backend.DTOs;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models.Platform;
@@ -73,12 +74,15 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
     private readonly AppDbContext _db;
     private readonly IPlatformAuditService _audit;
     private readonly TimeProvider _time;
+    private readonly WindowsRemediationOptions _windows;
 
-    public RemediationTargetManagementService(AppDbContext db, IPlatformAuditService audit, TimeProvider time)
+    public RemediationTargetManagementService(AppDbContext db, IPlatformAuditService audit, TimeProvider time,
+        IOptions<WindowsRemediationOptions>? windows = null)
     {
         _db = db;
         _audit = audit;
         _time = time;
+        _windows = windows?.Value ?? new WindowsRemediationOptions();
     }
 
     public async Task<IReadOnlyList<RemediationTargetResponse>> ListAsync(RemediationTargetFilter filter, CancellationToken ct = default)
@@ -383,10 +387,27 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
 
         var projectNames = await _db.Projects.AsNoTracking()
             .Where(p => projectIds.Contains(p.Id)).ToDictionaryAsync(p => p.Id, p => p.Name, ct);
-        var machineHosts = await _db.Machines.AsNoTracking()
-            .Where(m => machineIds.Contains(m.Id)).ToDictionaryAsync(m => m.Id, m => m.HostName, ct);
-        var credentialNames = await _db.ProjectApiCredentials.AsNoTracking()
-            .Where(c => credentialIds.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.Name, ct);
+        var machineRows = await _db.Machines.AsNoTracking()
+            .Where(m => machineIds.Contains(m.Id)).ToDictionaryAsync(m => m.Id, ct);
+        var credentialRows = await _db.ProjectApiCredentials.AsNoTracking()
+            .Where(c => credentialIds.Contains(c.Id)).ToDictionaryAsync(c => c.Id, ct);
+        var bindings = await _db.SdkMachineBindings.AsNoTracking()
+            .Where(b => credentialIds.Contains(b.CredentialId)).ToDictionaryAsync(b => b.CredentialId, ct);
+        var now = _time.GetUtcNow().UtcDateTime;
+
+        string BindingStatus(RemediationTarget e)
+        {
+            if (!bindings.TryGetValue(e.TelemetryCredentialId, out var binding)) return "PendingAgentConfirmation";
+            if (binding.ProjectId != e.ProjectId || binding.MachineId != e.MachineId) return "MachineMismatch";
+            if (!credentialRows.TryGetValue(e.TelemetryCredentialId, out var credential) || credential.RevokedAt is not null)
+                return "CredentialRevoked";
+            if (!machineRows.TryGetValue(e.MachineId, out var machine) ||
+                machine.AgentCredentialHash != binding.AgentCredentialHash ||
+                machine.LastSeenAt < now.AddSeconds(-Math.Clamp(_windows.MachineHeartbeatMaxAgeSeconds, 10, 300)) ||
+                binding.LastConfirmedAt < e.UpdatedAt ||
+                binding.LastConfirmedAt < now.AddMinutes(-5)) return "AgentConfirmationStale";
+            return "AgentConfirmed";
+        }
 
         return entities.Select(e => new RemediationTargetResponse
         {
@@ -396,9 +417,11 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             Environment = e.Environment,
             Service = e.Service,
             MachineId = e.MachineId,
-            MachineHostName = machineHosts.GetValueOrDefault(e.MachineId),
+            MachineHostName = machineRows.GetValueOrDefault(e.MachineId)?.HostName,
             TelemetryCredentialId = e.TelemetryCredentialId,
-            TelemetryCredentialName = credentialNames.GetValueOrDefault(e.TelemetryCredentialId),
+            TelemetryCredentialName = credentialRows.GetValueOrDefault(e.TelemetryCredentialId)?.Name,
+            MachineBindingStatus = BindingStatus(e),
+            MachineBindingLastConfirmedAt = bindings.GetValueOrDefault(e.TelemetryCredentialId)?.LastConfirmedAt,
             ExpectedHostName = e.ExpectedHostName,
             WindowsServiceName = e.WindowsServiceName,
             AllowedOperations = RemediationTargetOperations.Deserialize(e.AllowedOperationsJson),

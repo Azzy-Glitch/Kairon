@@ -42,9 +42,19 @@ builder.Services.AddHttpClient<MachineRegistrationService>((sp, http) =>
 })
     .ConfigurePrimaryHttpMessageHandler(AgentEndpointSecurity.CreateNonRedirectingHandler);
 
+builder.Services.AddHttpClient<AgentMachineProofServer>((sp, http) =>
+{
+    var options = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<AgentOptions>>().Value;
+    AgentEndpointSecurity.EnsureAllowed(options.Endpoint);
+    http.BaseAddress = new Uri(options.Endpoint.TrimEnd('/') + "/");
+    http.Timeout = TimeSpan.FromSeconds(Math.Max(2, options.TimeoutSeconds + 1));
+    http.MaxResponseContentBufferSize = 128 * 1024;
+}).ConfigurePrimaryHttpMessageHandler(AgentEndpointSecurity.CreateNonRedirectingHandler);
+
 builder.Services.AddHostedService<LogTailer>();
 builder.Services.AddHostedService<ProcessWatcher>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MachineRegistrationService>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentMachineProofServer>());
 
 var host = builder.Build();
 host.Run();

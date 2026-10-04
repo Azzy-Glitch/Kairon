@@ -47,6 +47,8 @@ public class AppDbContext : DbContext
     public DbSet<TelemetrySourceRegistration> TelemetrySources { get; set; }
     public DbSet<SdkInstallation> SdkInstallations { get; set; }
     public DbSet<TelemetryReceipt> TelemetryReceipts { get; set; }
+    public DbSet<SdkMachineBinding> SdkMachineBindings { get; set; }
+    public DbSet<SdkMachineProofChallenge> SdkMachineProofChallenges { get; set; }
 
     // Database-backed replacement for WindowsRemediation:Targets (Configuration/
     // WindowsRemediationOptions.cs) - see Models/Platform/RemediationTarget.cs.
@@ -306,6 +308,24 @@ public class AppDbContext : DbContext
             // See ProjectApiCredential.RowVersion's remarks: a genuine, database-enforced
             // optimistic-concurrency guard against two confirmed re-pair sessions both completing
             // against the same old credential.
+            entity.Property(e => e.RowVersion).IsConcurrencyToken();
+        });
+
+        modelBuilder.Entity<SdkMachineBinding>(entity =>
+        {
+            entity.HasKey(e => e.CredentialId);
+            entity.HasIndex(e => new { e.ProjectId, e.MachineId });
+            entity.Property(e => e.AgentCredentialHash).HasMaxLength(200).IsRequired();
+        });
+
+        modelBuilder.Entity<SdkMachineProofChallenge>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.ExpiresAt);
+            entity.Property(e => e.EnvironmentNormalized).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.Service).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.BodySha256).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.AgentCredentialHash).HasMaxLength(200);
             entity.Property(e => e.RowVersion).IsConcurrencyToken();
         });
 

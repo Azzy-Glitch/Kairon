@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.Extensions.Options;
 using Kairon.SDK.Models;
 
@@ -15,6 +16,7 @@ public class KaironTelemetryClient
 {
     private readonly HttpClient _http;
     private readonly KaironOptions _options;
+    private readonly int? _agentProofPort;
 
     /// <summary>
     /// Internal by design, not merely by convention: an already-constructed <see cref="HttpClient"/>
@@ -31,15 +33,112 @@ public class KaironTelemetryClient
     /// <c>IHttpClientFactory</c>, its primary handler forced through
     /// <see cref="KaironEndpointSecurity.CreateNonRedirectingHandler"/>) and
     /// <see cref="KaironClient"/>'s own private constructor (same pattern, no DI). Both live in this
-    /// assembly, so the internal accessibility here costs them nothing. <c>Kairon.SDK.Tests</c> is
-    /// the one friend assembly (<c>InternalsVisibleTo</c> in the project file) allowed to construct
-    /// this directly, and only ever does so with in-memory <c>HttpMessageHandler</c> test doubles
-    /// that stub responses without a real handler chain to redirect through in the first place.
+    /// assembly, so the internal accessibility here costs them nothing. The SDK and backend test
+    /// assemblies are friends (<c>InternalsVisibleTo</c> in the project file) so tests can
+    /// exercise the transport and exact normalized wire shape without adding a public constructor.
     /// </summary>
-    internal KaironTelemetryClient(HttpClient http, IOptions<KaironOptions> options)
+    internal KaironTelemetryClient(HttpClient http, IOptions<KaironOptions> options, int? agentProofPort = null)
     {
         _http = http;
         _options = options.Value;
+        _agentProofPort = agentProofPort;
+    }
+
+    /// <summary>
+    /// Normal host delivery uses the backend's idempotent normalized contract. The existing
+    /// public SendAsync/SendMetricAsync methods remain legacy-compatible for direct callers;
+    /// both routes use the same Agent proof and server-side machine resolution.
+    /// </summary>
+    internal Task<TelemetryResponse?> SendNormalizedAsync(TelemetryPayload payload,
+        CancellationToken cancellationToken = default) =>
+        PostNormalizedAsync(NormalizedTelemetryEvent.From(payload, _options), cancellationToken);
+
+    internal Task<TelemetryResponse?> SendNormalizedAsync(MetricPayload payload,
+        CancellationToken cancellationToken = default) =>
+        PostNormalizedAsync(NormalizedTelemetryEvent.From(payload, _options), cancellationToken);
+
+    private async Task<TelemetryResponse?> PostNormalizedAsync(NormalizedTelemetryEvent item,
+        CancellationToken cancellationToken)
+    {
+        if (!_options.EnableTelemetry) return null;
+        if (!KaironEndpointSecurity.IsAllowed(_http.BaseAddress))
+            return new TelemetryResponse { Success = false, Message = "Kairon endpoint rejected: insecure transport." };
+
+        byte[] body;
+        try
+        {
+            body = JsonSerializer.SerializeToUtf8Bytes(new { Events = new[] { item } },
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        }
+        catch
+        {
+            return new TelemetryResponse { Success = false, Message = "Telemetry serialization failed." };
+        }
+        if (body.Length > 1_048_576)
+            return new TelemetryResponse { Success = false, Message = "Telemetry batch exceeds backend size limit." };
+
+        // The same EventId and exact bytes are reused across transient retries. The backend
+        // treats a response lost after commit as a duplicate, never a second incident.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.TimeoutSeconds)));
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, "api/v1/telemetry/events")
+                {
+                    Content = new ByteArrayContent(body)
+                };
+                request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+                if (!string.IsNullOrWhiteSpace(_options.ApiKey))
+                    request.Headers.TryAddWithoutValidation("X-Kairon-API-Key", _options.ApiKey);
+                var proof = await AgentMachineProof.TryAcquireAsync(_http, _options,
+                    item.Service, item.Environment, body, timeout.Token, _agentProofPort);
+                if (proof.HasValue)
+                    request.Headers.TryAddWithoutValidation("X-Kairon-Machine-Proof", proof.Value.ToString());
+
+                using var response = await _http.SendAsync(request, timeout.Token);
+                var status = (int)response.StatusCode;
+                if (!response.IsSuccessStatusCode)
+                {
+                    if (attempt == 0 && status is 429 or 500 or 502 or 503 or 504)
+                        continue;
+                    var suffix = status is 401 or 403 ? " (project authentication rejected)" : "";
+                    return new TelemetryResponse { Success = false, Message = $"Kairon server returned {status}.{suffix}" };
+                }
+
+                using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(timeout.Token));
+                var result = document.RootElement;
+                if (result.ValueKind == JsonValueKind.Object &&
+                    result.TryGetProperty("accepted", out var accepted) && accepted.TryGetInt32(out var acceptedCount) &&
+                    result.TryGetProperty("duplicates", out var duplicates) && duplicates.TryGetInt32(out var duplicateCount) &&
+                    result.TryGetProperty("rejected", out var rejected) && rejected.TryGetInt32(out var rejectedCount))
+                {
+                    var success = acceptedCount + duplicateCount == 1 && rejectedCount == 0;
+                    return new TelemetryResponse { Success = success,
+                        Message = success ? "Delivered." : "Collector rejected telemetry." };
+                }
+                if (attempt == 1)
+                    return new TelemetryResponse { Success = false, Message = "Collector returned an invalid response." };
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return new TelemetryResponse { Success = false, Message = "Telemetry send cancelled." };
+            }
+            catch (OperationCanceledException)
+            {
+                return new TelemetryResponse { Success = false, Message = "Telemetry send timed out." };
+            }
+            catch (Exception) when (attempt == 0)
+            {
+                // A lost response may follow a successful commit. Retry only the same EventId.
+            }
+            catch
+            {
+                return new TelemetryResponse { Success = false, Message = "Unable to send telemetry to Kairon." };
+            }
+        }
+        return new TelemetryResponse { Success = false, Message = "Unable to send telemetry to Kairon." };
     }
 
     public Task<TelemetryResponse?> SendAsync(
@@ -74,13 +173,8 @@ public class KaironTelemetryClient
         object payload,
         CancellationToken cancellationToken)
     {
-        // The actual, effective destination - not _options.Endpoint - because this HttpClient may
-        // not have been the one AddKairon/KaironClient configured: this class's constructor is
-        // public and a caller can supply any HttpClient directly, bypassing every endpoint check
-        // upstream of here. This is the lowest public transport boundary before a real network
-        // send, so it is validated on every call rather than trusted because "something else
-        // already checked this" - including the case where BaseAddress and _options.Endpoint
-        // disagree (whichever HttpClient actually resolves is what must be safe).
+        // Validate the actual effective destination at the lowest transport boundary. Both
+        // production constructors supply a non-redirecting handler; callers cannot supply one.
         if (!KaironEndpointSecurity.IsAllowed(_http.BaseAddress))
         {
             return new TelemetryResponse
@@ -92,10 +186,13 @@ public class KaironTelemetryClient
 
         try
         {
+            var requestBody = JsonSerializer.SerializeToUtf8Bytes(payload, payload.GetType(),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
             using var request = new HttpRequestMessage(HttpMethod.Post, path)
             {
-                Content = JsonContent.Create(payload, payload.GetType())
+                Content = new ByteArrayContent(requestBody)
             };
+            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
 
             if (!string.IsNullOrWhiteSpace(_options.ApiKey))
                 request.Headers.Add("X-Kairon-API-Key", _options.ApiKey);
@@ -104,6 +201,26 @@ public class KaironTelemetryClient
             // CancellationToken.None still cannot be held indefinitely by a hung collector.
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.TimeoutSeconds)));
+
+            var service = payload switch
+            {
+                TelemetryPayload incident => incident.Service ?? incident.ApplicationName ?? "",
+                MetricPayload metric => metric.Service ?? metric.Application ?? "",
+                _ => ""
+            };
+            var environment = payload switch
+            {
+                TelemetryPayload incident => incident.Environment,
+                MetricPayload metric => metric.Environment,
+                _ => ""
+            };
+            if (!string.IsNullOrWhiteSpace(service) && !string.IsNullOrWhiteSpace(environment))
+            {
+                var proof = await AgentMachineProof.TryAcquireAsync(_http, _options,
+                    service, environment, requestBody, timeout.Token, _agentProofPort);
+                if (proof.HasValue)
+                    request.Headers.TryAddWithoutValidation("X-Kairon-Machine-Proof", proof.Value.ToString());
+            }
 
             using var response = await _http.SendAsync(request, timeout.Token);
 

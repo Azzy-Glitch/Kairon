@@ -35,6 +35,7 @@ const target = {
   machineHostName: 'enrolled-host',
   telemetryCredentialId: 'cred-1',
   telemetryCredentialName: 'prod-cred',
+  machineBindingStatus: 'PendingAgentConfirmation',
   expectedHostName: 'enrolled-host',
   windowsServiceName: 'ScopedService',
   allowedOperations: ['RestartService', 'RunHealthCheck'],
@@ -77,6 +78,14 @@ describe('RemediationTargetsPage', () => {
     expect(screen.getByText('ScopedService')).toBeInTheDocument();
     expect(screen.getByText('RestartService, RunHealthCheck')).toBeInTheDocument();
     expect(screen.getByText('Enabled')).toBeInTheDocument();
+    expect(screen.getByText('Awaiting Agent telemetry')).toBeInTheDocument();
+  });
+
+  it('only displays Agent confirmed when the backend reports proof, not because a machine is selected', async () => {
+    remediationTargetsApi.list.mockResolvedValue([{ ...target, machineBindingStatus: 'AgentConfirmed' }]);
+    renderPage();
+    expect(await screen.findByText('Agent confirmed')).toBeInTheDocument();
+    expect(screen.queryByText('Awaiting Agent telemetry')).not.toBeInTheDocument();
   });
 
   it('shows an empty state with a create action when there are no targets', async () => {

@@ -155,6 +155,18 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
             machine.LastSeenAt < DateTime.UtcNow.AddSeconds(-Math.Clamp(_legacyOptions.MachineHeartbeatMaxAgeSeconds, 10, 300)))
             return null;
 
+        // A selected target and a machine-shaped incident are not proof of SDK origin. Require
+        // recent evidence that this exact credential was confirmed by this enrolled Agent.
+        // Re-pairing, Agent-key rotation, credential revocation and target rebinding all fail
+        // closed here, including during the repeated pre-SCM fingerprint checks.
+        var binding = await _db.SdkMachineBindings.AsNoTracking().SingleOrDefaultAsync(
+            b => b.CredentialId == target.TelemetryCredentialId, ct);
+        if (binding is null || binding.ProjectId != projectId || binding.MachineId != machine.Id ||
+            binding.AgentCredentialHash != machine.AgentCredentialHash ||
+            binding.LastConfirmedAt < entity.UpdatedAt ||
+            binding.LastConfirmedAt < DateTime.UtcNow.AddMinutes(-5))
+            return null;
+
         // Bundled into the same result WindowsServiceTool.TargetFingerprint needs, rather than
         // making that caller re-query this exact Machine row a second time.
         target.AgentCredentialHash = machine.AgentCredentialHash;

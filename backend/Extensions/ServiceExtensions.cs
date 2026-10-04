@@ -58,6 +58,7 @@ public static class ServiceExtensions
         services.AddScoped<IProjectCredentialService, ProjectCredentialService>();
         services.AddScoped<ISdkPairingService, SdkPairingService>();
         services.AddScoped<IAgentRegistrationService, AgentRegistrationService>();
+        services.AddScoped<IMachineTelemetryBindingService, MachineTelemetryBindingService>();
 
         // Normalized telemetry pipeline + SDK installation identity (docs/DESKTOP_SHELL.md) -
         // additive alongside the services above, not a replacement for any of them.

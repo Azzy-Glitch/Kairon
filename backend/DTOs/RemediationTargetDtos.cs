@@ -26,6 +26,9 @@ public sealed class RemediationTargetResponse
 
     public Guid TelemetryCredentialId { get; set; }
     public string? TelemetryCredentialName { get; set; }
+    /// <summary>Agent-confirmed evidence, never inferred from the selected target machine.</summary>
+    public string MachineBindingStatus { get; set; } = "PendingAgentConfirmation";
+    public DateTime? MachineBindingLastConfirmedAt { get; set; }
     public string ExpectedHostName { get; set; } = string.Empty;
     public string WindowsServiceName { get; set; } = string.Empty;
     public List<string> AllowedOperations { get; set; } = new();

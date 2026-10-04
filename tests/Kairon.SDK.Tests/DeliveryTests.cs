@@ -17,7 +17,10 @@ public class DeliveryTests
         var client = new KaironTelemetryClient(new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") }, options);
         return (queue, new KaironTelemetrySender(queue, client));
     }
-    private static HttpResponseMessage Ok() => new(HttpStatusCode.OK) { Content = new StringContent("{\"status\":\"recorded\"}") };
+    private static HttpResponseMessage Ok() => new(HttpStatusCode.OK)
+    {
+        Content = new StringContent("{\"accepted\":1,\"duplicates\":0,\"rejected\":0}")
+    };
 
     /// <summary>
     /// Polls a condition instead of racing a fixed wall-clock window. <see cref="KaironTelemetrySender.StopAsync"/>

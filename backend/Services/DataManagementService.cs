@@ -74,6 +74,8 @@ public sealed class DataManagementService : IDataManagementService
             deleted += await _db.Analyses.ExecuteDeleteAsync(cancellationToken);
             deleted += await _db.AgentEvents.ExecuteDeleteAsync(cancellationToken);
             deleted += await _db.TelemetryReceipts.ExecuteDeleteAsync(cancellationToken);
+            deleted += await _db.SdkMachineProofChallenges.ExecuteDeleteAsync(cancellationToken);
+            deleted += await _db.SdkMachineBindings.ExecuteDeleteAsync(cancellationToken);
             deleted += await _db.SdkInstallations.ExecuteDeleteAsync(cancellationToken);
             deleted += await _db.TelemetrySources.ExecuteDeleteAsync(cancellationToken);
             deleted += await _db.Environments.ExecuteDeleteAsync(cancellationToken);

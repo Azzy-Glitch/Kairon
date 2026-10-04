@@ -114,6 +114,15 @@ builder.Services.AddRateLimiter(options =>
         {
             PermitLimit = 600, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true
         }));
+    // A machine-scoped telemetry send makes two additional authenticated proof calls. Keep
+    // them in a separate bounded bucket so the proof handshake cannot reduce the existing
+    // telemetry ceiling from 600 to 200 sends/minute for an installed local workload.
+    options.AddPolicy("machine-proof", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "local",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 1200, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true
+        }));
     // SdkPairingController.Pair/Confirm: unattended, no-operator-key endpoints - the pairing code
     // (or, for confirm, the freshly issued API key) is the only proof of intent. The code itself
     // has 192 bits of random entropy (SdkPairingService.Token(24)), so brute-forcing it is
@@ -192,6 +201,18 @@ else
 
 app.UseSerilogRequestLogging();
 app.UseMiddleware<ErrorHandlingMiddleware>();
+// The proof is bound to the actual bytes MVC receives. Buffer only proof-bearing telemetry
+// bodies, in memory, before model binding; never trust a digest sent by the SDK as the payload.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Method == HttpMethods.Post &&
+        context.Request.Headers.ContainsKey("X-Kairon-Machine-Proof") &&
+        (context.Request.Path.Equals("/api/v1/telemetry/events", StringComparison.OrdinalIgnoreCase) ||
+         context.Request.Path.Equals("/api/telemetry/incidents", StringComparison.OrdinalIgnoreCase) ||
+         context.Request.Path.Equals("/api/telemetry/metrics", StringComparison.OrdinalIgnoreCase)))
+        context.Request.EnableBuffering(bufferThreshold: 1_048_576, bufferLimit: 1_048_576);
+    await next();
+});
 app.UseRateLimiter();
 
 // Serves the React production build from wwwroot (populated by `npm run build` + a copy step -

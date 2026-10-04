@@ -34,6 +34,16 @@ public sealed class RemediationTargetManagementTests : IDisposable
     private RemediationTargetManagementService Service() =>
         new(_h.Db, new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
 
+    private void SeedConfirmedBinding(Machine machine, ProjectApiCredential credential)
+    {
+        _h.Db.SdkMachineBindings.Add(new SdkMachineBinding
+        {
+            CredentialId = credential.Id, ProjectId = credential.ProjectId, MachineId = machine.Id,
+            AgentCredentialHash = machine.AgentCredentialHash, LastConfirmedAt = DateTime.UtcNow
+        });
+        _h.Db.SaveChanges();
+    }
+
     private CreateRemediationTargetRequest ValidRequest(Machine machine, ProjectApiCredential credential) => new()
     {
         ProjectId = _h.ProjectId,
@@ -577,6 +587,7 @@ public sealed class RemediationTargetManagementTests : IDisposable
         var credential = _h.SeedCredential(_h.ProjectId);
         var service = Service();
         var created = (await service.CreateAsync(ValidRequest(machine, credential), "op", default)).Target!;
+        SeedConfirmedBinding(machine, credential);
 
         var incident = _h.SeedIncident();
         var snapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
@@ -632,6 +643,7 @@ public sealed class RemediationTargetManagementTests : IDisposable
         var machine = _h.SeedMachine();
         var credential = _h.SeedCredential(_h.ProjectId);
         await Service().CreateAsync(ValidRequest(machine, credential), "op", default);
+        SeedConfirmedBinding(machine, credential);
 
         var resolved = await _h.Targets.ResolveExecutionTargetAsync(_h.ProjectId, _h.Environment, _h.Service, ServiceToolNames.RestartService, default);
 
@@ -646,6 +658,7 @@ public sealed class RemediationTargetManagementTests : IDisposable
         var machine = _h.SeedMachine();
         var credential = _h.SeedCredential(_h.ProjectId);
         await Service().CreateAsync(ValidRequest(machine, credential), "op", default);
+        SeedConfirmedBinding(machine, credential);
 
         var incident = _h.SeedIncident();
         var snapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
@@ -672,7 +685,7 @@ public sealed class RemediationTargetManagementTests : IDisposable
     }
 
     [Fact]
-    public async Task TelemetryAuthorizationReflectsATargetCreatedThroughTheManagementApi()
+    public async Task SelectedTargetAndClientMachineIdAloneDoNotAuthorizeMachineTelemetry()
     {
         var machine = _h.SeedMachine();
         var credential = _h.SeedCredential(_h.ProjectId);
@@ -700,7 +713,7 @@ public sealed class RemediationTargetManagementTests : IDisposable
         }, default);
 
         Assert.IsType<OkObjectResult>(result);
-        Assert.Equal(machine.Id, _h.Db.Metrics.Single().MachineId);
+        Assert.Null(_h.Db.Metrics.Single().MachineId);
     }
 
     [Fact]

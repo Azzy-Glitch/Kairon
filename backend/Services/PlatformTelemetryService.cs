@@ -22,7 +22,8 @@ namespace Kairon.Backend.Services;
 /// </summary>
 public interface IPlatformTelemetryService
 {
-    Task<NormalizedTelemetryResultDto> IngestAsync(NormalizedTelemetryBatchDto batch, CancellationToken cancellationToken);
+    Task<NormalizedTelemetryResultDto> IngestAsync(NormalizedTelemetryBatchDto batch, CancellationToken cancellationToken,
+        Guid? authenticatedMachineId = null);
 }
 
 public sealed class PlatformTelemetryService : IPlatformTelemetryService
@@ -39,7 +40,8 @@ public sealed class PlatformTelemetryService : IPlatformTelemetryService
     }
 
     public async Task<NormalizedTelemetryResultDto> IngestAsync(
-        NormalizedTelemetryBatchDto batch, CancellationToken cancellationToken)
+        NormalizedTelemetryBatchDto batch, CancellationToken cancellationToken,
+        Guid? authenticatedMachineId = null)
     {
         var candidates = batch.Events.Where(IsValid).DistinctBy(x => x.EventId).Take(200).ToList();
         var rejected = batch.Events.Count - candidates.Count;
@@ -62,8 +64,8 @@ public sealed class PlatformTelemetryService : IPlatformTelemetryService
             var source = await EnsureSourceAsync(project, application, item, now, cancellationToken);
             application.LastTelemetryAt = now;
 
-            _db.TelemetryReceipts.Add(ToReceipt(item, source.Id, now));
-            AddCompatibilitySignal(item);
+            _db.TelemetryReceipts.Add(ToReceipt(item, source.Id, now, authenticatedMachineId));
+            AddCompatibilitySignal(item, authenticatedMachineId);
             accepted.Add(item.EventId);
             evaluations.Add((item.ProjectId, EnvironmentOf(item), ServiceOf(item)));
         }
@@ -143,12 +145,14 @@ public sealed class PlatformTelemetryService : IPlatformTelemetryService
         return source;
     }
 
-    private static TelemetryReceipt ToReceipt(NormalizedTelemetryEventDto item, Guid sourceId, DateTime now)
+    private static TelemetryReceipt ToReceipt(NormalizedTelemetryEventDto item, Guid sourceId, DateTime now,
+        Guid? authenticatedMachineId)
     {
         var sanitized = Sanitize(item);
         return new TelemetryReceipt
         {
-            Id = Guid.NewGuid(), EventId = item.EventId, ProjectId = item.ProjectId, SourceId = sourceId,
+            Id = Guid.NewGuid(), EventId = item.EventId, ProjectId = item.ProjectId,
+            MachineId = authenticatedMachineId, SourceId = sourceId,
             EventTimestamp = TimestampOf(item), EventType = item.EventType, Severity = item.Severity,
             Source = item.Source, Application = item.Application, Service = ServiceOf(item),
             Environment = EnvironmentOf(item), PayloadJson = Bound(JsonSerializer.Serialize(sanitized), 16000) ?? "{}",
@@ -160,7 +164,7 @@ public sealed class PlatformTelemetryService : IPlatformTelemetryService
     /// normalized events too, without duplicating its logic - a normalized "exception"/"http"
     /// event becomes an Incident row, a "metric" event becomes a Metric row, exactly like the
     /// legacy ingestion path already produces.</summary>
-    private void AddCompatibilitySignal(NormalizedTelemetryEventDto item)
+    private void AddCompatibilitySignal(NormalizedTelemetryEventDto item, Guid? authenticatedMachineId)
     {
         var kind = item.EventType.Trim().ToLowerInvariant();
         if (kind is "metric" or "metrics" or "resource" or "resource_metric")
@@ -168,7 +172,8 @@ public sealed class PlatformTelemetryService : IPlatformTelemetryService
             var values = item.ResourceMetrics ?? new ResourceTelemetryMetricsDto();
             _db.Metrics.Add(new Metric
             {
-                Id = Guid.NewGuid(), ProjectId = item.ProjectId, Timestamp = TimestampOf(item),
+                Id = Guid.NewGuid(), ProjectId = item.ProjectId, MachineId = authenticatedMachineId,
+                Timestamp = TimestampOf(item),
                 CpuPercent = values.CpuPercent, MemoryPercent = values.MemoryPercent,
                 ResponseTimeMs = values.ResponseTimeMs, RequestCount = values.RequestCount,
                 ErrorCount = values.ErrorCount, RetryCount = values.RetryCount, QueueDepth = values.QueueDepth,
@@ -183,7 +188,8 @@ public sealed class PlatformTelemetryService : IPlatformTelemetryService
         var dependency = item.DependencyContext;
         _db.Incidents.Add(new Incident
         {
-            Id = Guid.NewGuid(), ProjectId = item.ProjectId, Timestamp = TimestampOf(item),
+            Id = Guid.NewGuid(), ProjectId = item.ProjectId, MachineId = authenticatedMachineId,
+            Timestamp = TimestampOf(item),
             Endpoint = Redaction.Scrub(http?.Endpoint ?? dependency?.Target ?? item.Application) ?? item.Application,
             Method = http?.Method ?? (dependency is null ? "EVENT" : "DEPENDENCY"),
             StatusCode = http?.StatusCode ?? (dependency?.Success == false ? 503 : 500),

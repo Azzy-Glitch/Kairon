@@ -238,6 +238,18 @@ export default function RemediationTargetsPage({ preselectMachineId }) {
     { key: 'environment', label: 'Environment', sortable: true },
     { key: 'service', label: 'Service', sortable: true },
     { key: 'machineHostName', label: 'Machine', priority: 1, render: (t) => t.machineHostName || t.machineId },
+    {
+      key: 'machineBindingStatus', label: 'SDK → Agent', priority: 1,
+      render: (t) => (
+        <Badge tone={t.machineBindingStatus === 'AgentConfirmed' ? 'healthy' : 'neutral'}>
+          {t.machineBindingStatus === 'AgentConfirmed' ? 'Agent confirmed' :
+            t.machineBindingStatus === 'MachineMismatch' ? 'Different machine' :
+              t.machineBindingStatus === 'CredentialRevoked' ? 'Credential revoked' :
+                t.machineBindingStatus === 'AgentConfirmationStale' ? 'Agent confirmation stale' :
+                  'Awaiting Agent telemetry'}
+        </Badge>
+      )
+    },
     { key: 'windowsServiceName', label: 'Windows Service', priority: 1 },
     {
       key: 'allowedOperations',
@@ -294,7 +306,8 @@ export default function RemediationTargetsPage({ preselectMachineId }) {
               <h3>Remediation Targets</h3>
               <p className="section-desc">
                 The exact machine, Windows service and allowed operations KAIRON is authorized to remediate for a
-                project/environment/service. Configuration only - approval and execution are unchanged.
+                project/environment/service. The SDK → Agent status is confirmed by live Agent proof,
+                not by selecting a machine. Approval and execution are unchanged.
               </p>
             </div>
           </div>

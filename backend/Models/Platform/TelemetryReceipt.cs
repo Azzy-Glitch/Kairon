@@ -12,6 +12,8 @@ public sealed class TelemetryReceipt
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid EventId { get; set; }
     public Guid ProjectId { get; set; }
+    /// <summary>Assigned by authenticated Agent relay and operator target resolution, never from the event JSON.</summary>
+    public Guid? MachineId { get; set; }
     public Guid? SourceId { get; set; }
     public DateTime EventTimestamp { get; set; }
     public string EventType { get; set; } = string.Empty;

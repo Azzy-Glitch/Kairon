@@ -329,7 +329,8 @@ public sealed class TestHarness : IDisposable
         string? environment = null,
         string? service = null,
         IEnumerable<string>? allowedOperations = null,
-        bool enabled = true)
+        bool enabled = true,
+        bool seedConfirmedBinding = true)
     {
         EnsureProject();
         var resolvedEnvironment = environment ?? Environment;
@@ -347,6 +348,18 @@ public sealed class TestHarness : IDisposable
             Enabled = enabled
         };
         Db.RemediationTargets.Add(target);
+        // Windows execution tests start after the Agent-proof phase. Seed that prerequisite
+        // explicitly; proof-protocol tests pass false and exercise the real exchange instead.
+        var machine = Db.Machines.SingleOrDefault(m => m.Id == machineId);
+        var credential = Db.ProjectApiCredentials.SingleOrDefault(c => c.Id == telemetryCredentialId);
+        if (seedConfirmedBinding && machine is not null && credential is not null &&
+            !Db.SdkMachineBindings.Any(b => b.CredentialId == telemetryCredentialId))
+            Db.SdkMachineBindings.Add(new SdkMachineBinding
+            {
+                CredentialId = telemetryCredentialId, ProjectId = credential.ProjectId,
+                MachineId = machineId, AgentCredentialHash = machine.AgentCredentialHash,
+                LastConfirmedAt = DateTime.UtcNow
+            });
         Db.SaveChanges();
         return target;
     }

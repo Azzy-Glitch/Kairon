@@ -17,6 +17,11 @@ public class KaironOptions
     /// %LOCALAPPDATA%\Kairon\sdk\credential.json on Windows.
     /// </summary>
     public string? CredentialPath { get; set; }
+    /// <summary>
+    /// Legacy payload hint retained for API compatibility. It is not machine proof: the backend
+    /// ignores caller-supplied MachineId and assigns scope only after enrolled Agent confirmation.
+    /// Normal normalized telemetry does not serialize this value.
+    /// </summary>
     public Guid? MachineId { get; set; }
     public bool EnableTelemetry { get; set; } = true;
     public bool CaptureRequestBody { get; set; } = false;

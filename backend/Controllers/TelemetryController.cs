@@ -22,7 +22,7 @@ public class TelemetryController : ControllerBase
     private readonly IIncidentProcessingQueue _queue;
     private readonly IProjectCredentialService _credentials;
     private readonly PlatformSecurityOptions _security;
-    private readonly IRemediationTargetResolver _targets;
+    private readonly IMachineTelemetryBindingService _machineBinding;
 
     public TelemetryController(
         AppDbContext db,
@@ -30,29 +30,17 @@ public class TelemetryController : ControllerBase
         IIncidentProcessingQueue queue,
         IProjectCredentialService credentials,
         IOptions<PlatformSecurityOptions> security,
-        IRemediationTargetResolver targets)
+        IRemediationTargetResolver targets,
+        IMachineTelemetryBindingService? machineBinding = null)
     {
         _db = db;
         _context = context;
         _queue = queue;
         _credentials = credentials;
         _security = security.Value;
-        _targets = targets;
-    }
-
-    private async Task<bool> AuthorizeMachineScopeAsync(Guid projectId, Guid? machineId, string environment, string? service, CancellationToken ct)
-    {
-        if (!machineId.HasValue) return true; // Legacy telemetry is readable but cannot verify a machine target.
-        // A null/blank service scope never matches a configured target (a real target always has
-        // a concrete service name), matching the prior in-memory comparison's behavior exactly.
-        var resolution = string.IsNullOrWhiteSpace(service)
-            ? null
-            : await _targets.ResolveTelemetryTargetAsync(projectId, machineId.Value, environment, service, ct);
-        if (resolution is null) return false;
-        var supplied = Request.Headers[_security.TelemetryKeyHeader].ToString();
-        if (string.IsNullOrWhiteSpace(supplied)) return false;
-        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(supplied)));
-        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(System.Text.Encoding.ASCII.GetBytes(hash), System.Text.Encoding.ASCII.GetBytes(resolution.CredentialKeyHash));
+        _machineBinding = machineBinding ?? new MachineTelemetryBindingService(db,
+            new AgentRegistrationService(db, TimeProvider.System), targets,
+            Options.Create(new WindowsRemediationOptions()));
     }
 
     /// <summary>
@@ -72,14 +60,16 @@ public class TelemetryController : ControllerBase
         if (!await AuthorizeAsync(dto.ProjectId, cancellationToken))
             return Unauthorized(new { error = "A valid project API key is required." });
 
-        if (!await AuthorizeMachineScopeAsync(dto.ProjectId, dto.MachineId, string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
-            string.IsNullOrWhiteSpace(dto.Service) ? dto.ApplicationName : dto.Service, cancellationToken))
-            return Unauthorized(new { error = "The credential is not authorized for this machine and service scope." });
+        var scope = await _machineBinding.ResolveAsync(Request, dto.ProjectId,
+            string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
+            string.IsNullOrWhiteSpace(dto.Service) ? dto.ApplicationName : dto.Service, cancellationToken);
+        if (scope.InvalidAgentProof)
+            return Unauthorized(new { error = "Agent relay proof is invalid or expired." });
 
         var incident = new Incident
         {
             ProjectId = dto.ProjectId,
-            MachineId = dto.MachineId,
+            MachineId = scope.MachineId,
             Endpoint = Redaction.Scrub(dto.Endpoint) ?? string.Empty,
             Method = dto.Method,
             StatusCode = dto.StatusCode,
@@ -123,13 +113,16 @@ public class TelemetryController : ControllerBase
         if (!await AuthorizeAsync(dto.ProjectId, cancellationToken))
             return Unauthorized(new { error = "A valid project API key is required." });
 
-        if (!await AuthorizeMachineScopeAsync(dto.ProjectId, dto.MachineId, string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment, dto.Service, cancellationToken))
-            return Unauthorized(new { error = "The credential is not authorized for this machine and service scope." });
+        var scope = await _machineBinding.ResolveAsync(Request, dto.ProjectId,
+            string.IsNullOrWhiteSpace(dto.Environment) ? "Development" : dto.Environment,
+            dto.Service, cancellationToken);
+        if (scope.InvalidAgentProof)
+            return Unauthorized(new { error = "Agent relay proof is invalid or expired." });
 
         var metric = new Metric
         {
             ProjectId = dto.ProjectId,
-            MachineId = dto.MachineId,
+            MachineId = scope.MachineId,
             CpuPercent = dto.CpuPercent,
             MemoryPercent = dto.MemoryPercent,
             ResponseTimeMs = dto.ResponseTimeMs,

@@ -14,6 +14,7 @@ namespace Kairon.Backend.Services;
 public interface IAgentRegistrationService
 {
     Task RegisterAsync(AgentRegistrationDto registration, CancellationToken cancellationToken);
+    Task<Machine?> AuthenticateMachineAsync(Guid machineId, string agentKey, CancellationToken cancellationToken);
     Task<bool> RecordHeartbeatAsync(Guid machineId, string agentKey, AgentHeartbeatDto heartbeat,
         CancellationToken cancellationToken);
     Task<bool> RecordUserSessionHeartbeatAsync(Guid machineId, string agentKey, UserSessionHeartbeatDto heartbeat,
@@ -36,6 +37,14 @@ public sealed class AgentRegistrationService : IAgentRegistrationService
     private const string InsecureDefaultUserAgentKey = "kairon-useragent-default-key-change-me";
     private static readonly string InsecureDefaultAgentKeyHash = Hash(InsecureDefaultAgentKey);
     private const string CredentialV2Prefix = "v2$";
+
+    public async Task<Machine?> AuthenticateMachineAsync(Guid machineId, string agentKey, CancellationToken cancellationToken)
+    {
+        if (machineId == Guid.Empty || string.IsNullOrWhiteSpace(agentKey)) return null;
+        var machine = await _db.Machines.AsNoTracking().SingleOrDefaultAsync(x => x.Id == machineId, cancellationToken);
+        return machine is not null && FixedEquals(DecodeCredentials(machine.AgentCredentialHash).AgentHash, Hash(agentKey))
+            ? machine : null;
+    }
 
     public async Task RegisterAsync(AgentRegistrationDto registration, CancellationToken cancellationToken)
     {

@@ -128,6 +128,9 @@ public sealed class PersistenceMaintenanceService : BackgroundService
             deleted += await db.TelemetryReceipts
                 .Where(x => x.ReceivedAt < now.AddDays(-Days(_options.RawTelemetryRetentionDays, 1)))
                 .ExecuteDeleteAsync(cancellationToken);
+            deleted += await db.SdkMachineProofChallenges
+                .Where(x => x.ExpiresAt < now.AddDays(-1))
+                .ExecuteDeleteAsync(cancellationToken);
             deleted += await db.Metrics
                 .Where(x => x.Timestamp < now.AddDays(-Days(_options.LegacySignalRetentionDays, 1)))
                 .ExecuteDeleteAsync(cancellationToken);

@@ -15,6 +15,7 @@ public class TelemetryPayload
     public string Method { get; set; } = string.Empty;
     public int StatusCode { get; set; }
     public long Duration { get; set; }
+    public string? RequestId { get; set; }
 
     public string? Error { get; set; }
     public string? ExceptionType { get; set; }

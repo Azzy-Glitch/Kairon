@@ -118,6 +118,7 @@ public class KaironMiddleware
                         Endpoint = context.Request.Path,
                         StatusCode = statusCode,
                         Duration = stopwatch.ElapsedMilliseconds,
+                        RequestId = context.TraceIdentifier,
                         Error = exception?.Message,
                         ExceptionType = exception?.GetType().FullName,
                         StackTrace = exception?.StackTrace,

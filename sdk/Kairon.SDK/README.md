@@ -24,6 +24,15 @@ app.UseKairon();
 `UseKairon` adds the middleware that captures every request: status code, duration, and
 exceptions.
 
+The normal background sender posts idempotent normalized events to
+`/api/v1/telemetry/events`. When an enrolled Kairon Agent is running on the same Windows
+machine, the SDK automatically obtains a short-lived proof for the exact event body. The Agent
+confirms it with its separate credential, and only the backend may assign `MachineId`. An
+unbound app can still send telemetry, but it cannot authorize Windows remediation. Developers
+do not configure a machine ID or call a remediation API. The older direct
+`KaironTelemetryClient.SendAsync`/`SendMetricAsync` methods remain available and use the same
+backend-authoritative proof mechanism on the legacy ingestion routes.
+
 On a first run, explicitly opt into asynchronous pairing before building the application:
 
 ```csharp

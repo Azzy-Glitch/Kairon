@@ -441,8 +441,10 @@ public sealed class SdkPairingTests : IDisposable
         Assert.Null(_h.Db.ProjectApiCredentials.Single(c => c.Id == oldCredential.Id).RevokedAt);
     }
 
-    [Fact]
-    public async Task CompleteRepairRebindsEnabledTargetsAndRevokesTheOldCredentialOnceConfirmed()
+    [Theory]
+    [InlineData("python")]
+    [InlineData("dotnet")]
+    public async Task CompleteRepairRebindsEnabledTargetsAndRevokesTheOldCredentialOnceConfirmed(string sdkType)
     {
         _h.EnsureProject();
         var service = Service();
@@ -450,8 +452,8 @@ public sealed class SdkPairingTests : IDisposable
         var machine = _h.SeedMachine();
         var target = _h.SeedRemediationTarget(machine.Id, oldCredential.Id, machine.HostName);
 
-        var created = (await service.CreateAsync(_h.ProjectId, "python", default, replacesCredentialId: oldCredential.Id))!;
-        var paired = (await service.RedeemAsync(created.Code, "python", "1.0.0", default))!;
+        var created = (await service.CreateAsync(_h.ProjectId, sdkType, default, replacesCredentialId: oldCredential.Id))!;
+        var paired = (await service.RedeemAsync(created.Code, sdkType, "1.0.0", default))!;
         Assert.True(await service.ConfirmAsync(created.PairingId, paired.ApiKey, default));
 
         var result = await service.CompleteRepairAsync(created.PairingId, oldCredential.Id, default);
@@ -462,6 +464,11 @@ public sealed class SdkPairingTests : IDisposable
         Assert.Equal(newCredentialId, result.NewCredentialId);
         Assert.Equal(newCredentialId, _h.Db.RemediationTargets.Single(t => t.Id == target.Id).TelemetryCredentialId);
         Assert.NotNull(_h.Db.ProjectApiCredentials.Single(c => c.Id == oldCredential.Id).RevokedAt);
+        // A target rebind does not silently turn the old Agent-confirmed association into proof
+        // for the NEW SDK bearer credential. Its own Agent confirmation must occur first.
+        Assert.DoesNotContain(_h.Db.SdkMachineBindings, b => b.CredentialId == newCredentialId);
+        Assert.Null(await _h.Targets.ResolveExecutionTargetAsync(_h.ProjectId, _h.Environment,
+            _h.Service, Kairon.Backend.Services.Remediation.Tools.ServiceToolNames.RestartService));
     }
 
     [Fact]

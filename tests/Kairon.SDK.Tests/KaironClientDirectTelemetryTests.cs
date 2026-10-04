@@ -1,6 +1,11 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Kairon.SDK;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Kairon.SDK.Tests;
@@ -27,6 +32,49 @@ public sealed class KaironClientDirectTelemetryTests : IDisposable
     public void Dispose() => _server.Dispose();
 
     [Fact]
+    public async Task AddKaironMiddlewareUsesTheSameNormalizedSenderWithoutExtraUserConfiguration()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKairon(options =>
+        {
+            options.Endpoint = _server.Url;
+            options.ProjectId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+            options.ApiKey = "krn_test_key";
+            options.ApplicationName = "aspnet-app";
+            options.ServiceName = "aspnet-service";
+            options.Environment = "Development";
+            options.EnableMetrics = false;
+        });
+        await using var provider = services.BuildServiceProvider();
+        var sender = Assert.Single(provider.GetServices<IHostedService>().OfType<KaironTelemetrySender>());
+        await sender.StartAsync(default);
+        try
+        {
+            var middleware = new KaironMiddleware(context =>
+            {
+                context.Response.StatusCode = 503;
+                return Task.CompletedTask;
+            }, provider.GetRequiredService<IKaironTelemetryQueue>(),
+                provider.GetRequiredService<IKaironMetrics>(),
+                provider.GetRequiredService<IOptions<KaironOptions>>());
+            var context = new DefaultHttpContext();
+            context.Request.Path = "/orders";
+            context.Request.Method = "GET";
+            context.Response.Body = new MemoryStream();
+            await middleware.InvokeAsync(context);
+
+            var item = await _server.WaitForIncidentAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal("dotnet-sdk", item.GetProperty("source").GetString());
+            Assert.Equal("33333333-3333-3333-3333-333333333333", item.GetProperty("projectId").GetString());
+            Assert.Equal("aspnet-service", item.GetProperty("service").GetString());
+            Assert.Equal(503, item.GetProperty("httpContext").GetProperty("statusCode").GetInt32());
+            Assert.False(item.TryGetProperty("machineId", out _));
+        }
+        finally { await sender.StopAsync(CancellationToken.None); }
+    }
+
+    [Fact]
     public async Task CaptureExceptionDeliversAFullIncidentThroughTheRealQueueAndSender()
     {
         await using var client = new KaironClient(
@@ -40,20 +88,22 @@ public sealed class KaironClientDirectTelemetryTests : IDisposable
 
         var incident = await _server.WaitForIncidentAsync(TimeSpan.FromSeconds(10));
 
-        // JsonContent.Create(payload, payload.GetType()) (KaironTelemetryClient.PostAsync) uses no
-        // explicit options, so System.Net.Http.Json's own default (JsonSerializerDefaults.Web)
-        // applies - camelCase on the wire, exactly what the backend's own case-insensitive MVC
-        // binding expects (see the SDK-backend contract audit).
+        // The normal queue/sender path uses the backend's normalized, idempotent event contract.
+        Assert.Equal("http", incident.GetProperty("eventType").GetString());
+        Assert.Equal("dotnet-sdk", incident.GetProperty("source").GetString());
+        Assert.NotEqual(Guid.Empty, incident.GetProperty("eventId").GetGuid());
         Assert.Equal("11111111-1111-1111-1111-111111111111", incident.GetProperty("projectId").GetString());
-        Assert.Equal("worker-app", incident.GetProperty("applicationName").GetString());
+        Assert.Equal("worker-app", incident.GetProperty("application").GetString());
         Assert.Equal("worker-service", incident.GetProperty("service").GetString());
         Assert.Equal("Staging", incident.GetProperty("environment").GetString());
-        Assert.Equal("/jobs/nightly-sync", incident.GetProperty("endpoint").GetString());
-        Assert.Equal("JOB", incident.GetProperty("method").GetString());
-        Assert.Equal(500, incident.GetProperty("statusCode").GetInt32());
-        Assert.Equal(250, incident.GetProperty("duration").GetInt64());
-        Assert.Equal("something broke", incident.GetProperty("error").GetString());
+        var http = incident.GetProperty("httpContext");
+        Assert.Equal("/jobs/nightly-sync", http.GetProperty("endpoint").GetString());
+        Assert.Equal("JOB", http.GetProperty("method").GetString());
+        Assert.Equal(500, http.GetProperty("statusCode").GetInt32());
+        Assert.Equal(250, http.GetProperty("durationMs").GetInt64());
+        Assert.Equal("something broke", incident.GetProperty("message").GetString());
         Assert.Contains("InvalidOperationException", incident.GetProperty("exceptionType").GetString());
+        Assert.False(incident.TryGetProperty("machineId", out _));
 
         Assert.Equal("krn_test_key", _server.LastApiKeyHeader);
     }
@@ -72,20 +122,22 @@ public sealed class KaironClientDirectTelemetryTests : IDisposable
 
         var metric = await _server.WaitForMetricAsync(TimeSpan.FromSeconds(10));
 
+        Assert.Equal("metric", metric.GetProperty("eventType").GetString());
         Assert.Equal("22222222-2222-2222-2222-222222222222", metric.GetProperty("projectId").GetString());
-        Assert.Equal(72.5, metric.GetProperty("cpuPercent").GetDouble());
-        Assert.Equal(41.2, metric.GetProperty("memoryPercent").GetDouble());
-        Assert.Equal(12, metric.GetProperty("requestCount").GetInt64());
-        Assert.Equal(1, metric.GetProperty("errorCount").GetInt64());
-        Assert.Equal(3, metric.GetProperty("retryCount").GetInt64());
-        Assert.Equal(7, metric.GetProperty("queueDepth").GetInt64());
-        Assert.Equal("ingest-worker", metric.GetProperty("component").GetString());
+        var values = metric.GetProperty("resourceMetrics");
+        Assert.Equal(72.5, values.GetProperty("cpuPercent").GetDouble());
+        Assert.Equal(41.2, values.GetProperty("memoryPercent").GetDouble());
+        Assert.Equal(12, values.GetProperty("requestCount").GetInt64());
+        Assert.Equal(1, values.GetProperty("errorCount").GetInt64());
+        Assert.Equal(3, values.GetProperty("retryCount").GetInt64());
+        Assert.Equal(7, values.GetProperty("queueDepth").GetInt64());
         Assert.Equal("worker-app", metric.GetProperty("application").GetString());
         Assert.Equal("worker-service", metric.GetProperty("service").GetString());
+        Assert.False(metric.TryGetProperty("machineId", out _));
     }
 
-    /// <summary>Captures whatever POST body/headers actually arrive at api/telemetry/incidents or
-    /// api/telemetry/metrics - a REAL loopback listener, not a stub, so this proves delivery through
+    /// <summary>Captures normalized event POSTs - a REAL loopback listener, not a stub, proving
+    /// delivery through
     /// the SDK's real queue -> sender -> HttpClient -> network path, not merely that a method was
     /// called.</summary>
     private sealed class CapturingServer : IDisposable
@@ -128,12 +180,17 @@ public sealed class KaironClientDirectTelemetryTests : IDisposable
                 LastApiKeyHeader = ctx.Request.Headers["X-Kairon-API-Key"];
 
                 var path = ctx.Request.Url!.AbsolutePath;
-                if (path.Contains("incidents"))
-                    _incident.TrySetResult(JsonDocument.Parse(raw).RootElement.Clone());
-                else if (path.Contains("metrics"))
-                    _metric.TrySetResult(JsonDocument.Parse(raw).RootElement.Clone());
+                if (path.Equals("/api/v1/telemetry/events", StringComparison.Ordinal))
+                {
+                    using var document = JsonDocument.Parse(raw);
+                    var events = document.RootElement.GetProperty("events");
+                    Assert.Single(events.EnumerateArray());
+                    var item = events[0].Clone();
+                    if (item.GetProperty("eventType").GetString() == "metric") _metric.TrySetResult(item);
+                    else _incident.TrySetResult(item);
+                }
 
-                var body = "{\"success\":true}"u8.ToArray();
+                var body = "{\"accepted\":1,\"duplicates\":0,\"rejected\":0}"u8.ToArray();
                 ctx.Response.StatusCode = 200;
                 ctx.Response.ContentType = "application/json";
                 ctx.Response.ContentLength64 = body.Length;

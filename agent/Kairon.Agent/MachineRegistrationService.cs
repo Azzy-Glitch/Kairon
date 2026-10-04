@@ -24,6 +24,7 @@ public class MachineRegistrationService : BackgroundService
     private readonly AgentOptions _options;
     private readonly ILogger<MachineRegistrationService> _logger;
     private readonly Guid _machineId;
+    public Guid MachineId => _machineId;
 
     public MachineRegistrationService(HttpClient http, IOptions<AgentOptions> options,
         ILogger<MachineRegistrationService> logger)

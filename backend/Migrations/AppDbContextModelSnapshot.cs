@@ -788,6 +788,37 @@ namespace Kairon.Backend.Migrations
                     b.ToTable("SdkPairingSessions");
                 });
 
+            modelBuilder.Entity("Kairon.Backend.Models.Platform.SdkMachineBinding", b =>
+                {
+                    b.Property<Guid>("CredentialId").HasColumnType("uniqueidentifier");
+                    b.Property<string>("AgentCredentialHash").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");
+                    b.Property<DateTime>("LastConfirmedAt").HasColumnType("datetime2");
+                    b.Property<Guid>("MachineId").HasColumnType("uniqueidentifier");
+                    b.Property<Guid>("ProjectId").HasColumnType("uniqueidentifier");
+                    b.HasKey("CredentialId");
+                    b.HasIndex("ProjectId", "MachineId");
+                    b.ToTable("SdkMachineBindings");
+                });
+
+            modelBuilder.Entity("Kairon.Backend.Models.Platform.SdkMachineProofChallenge", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<string>("AgentCredentialHash").HasMaxLength(200).HasColumnType("nvarchar(200)");
+                    b.Property<string>("BodySha256").IsRequired().HasMaxLength(64).HasColumnType("nvarchar(64)");
+                    b.Property<DateTime?>("ConfirmedAt").HasColumnType("datetime2");
+                    b.Property<DateTime?>("ConsumedAt").HasColumnType("datetime2");
+                    b.Property<Guid>("CredentialId").HasColumnType("uniqueidentifier");
+                    b.Property<string>("EnvironmentNormalized").IsRequired().HasMaxLength(50).HasColumnType("nvarchar(50)");
+                    b.Property<DateTime>("ExpiresAt").HasColumnType("datetime2");
+                    b.Property<Guid?>("MachineId").HasColumnType("uniqueidentifier");
+                    b.Property<Guid>("ProjectId").HasColumnType("uniqueidentifier");
+                    b.Property<Guid>("RowVersion").IsConcurrencyToken().HasColumnType("uniqueidentifier");
+                    b.Property<string>("Service").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");
+                    b.HasKey("Id");
+                    b.HasIndex("ExpiresAt");
+                    b.ToTable("SdkMachineProofChallenges");
+                });
+
             modelBuilder.Entity("Kairon.Backend.Models.Platform.TelemetryReceipt", b =>
                 {
                     b.Property<Guid>("Id")
@@ -805,6 +836,9 @@ namespace Kairon.Backend.Migrations
                         .HasColumnType("nvarchar(100)");
 
                     b.Property<Guid>("EventId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("MachineId")
                         .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime>("EventTimestamp")
