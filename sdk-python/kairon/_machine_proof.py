@@ -5,6 +5,8 @@ backend-confirmed, one-use proof can make an observation remediation-capable. Th
 exchange carries an opaque challenge id, NOT the saved SDK API key.
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
 import socket
