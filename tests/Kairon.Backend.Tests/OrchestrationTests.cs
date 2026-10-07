@@ -54,6 +54,20 @@ public class OrchestrationTests : IDisposable
     }
 
     [Fact]
+    public async Task ActionTypeIsStoredAsTheRegisteredToolNameNotTheModelsSpelling()
+    {
+        var incident = _h.SeedIncident();
+        var result = FakeAiService.DefaultResult();
+        result.Recommendations[0].Action = result.Recommendations[0].Action.ToLowerInvariant();
+        _h.Ai.NextResult = result;
+
+        await _h.CreateOrchestrator().InvestigateAsync(incident.Id);
+
+        var updated = await _h.Db.SreIncidents.Include(i => i.Actions).FirstAsync(i => i.Id == incident.Id);
+        Assert.Equal(DemoToolNames.DisableDemoRetryLoop, Assert.Single(updated.Actions).ActionType);
+    }
+
+    [Fact]
     public async Task InvestigationWritesEveryLifecycleAuditEvent()
     {
         var incident = _h.SeedIncident();

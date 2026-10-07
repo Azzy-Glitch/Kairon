@@ -3,24 +3,26 @@ using Kairon.Backend.DTOs.Sre;
 namespace Kairon.Backend.Services;
 
 /// <summary>
-/// Re-applies a saved AI Configuration to the AI service on every backend startup.
+/// Keeps a saved AI Configuration applied to the AI service.
 ///
-/// The AI service builds its provider configuration once from ai-service/.env at process
-/// startup and never re-reads it; it also restarts alongside the backend on every KAIRON launch
-/// (both are sibling child processes the desktop shell starts together, with no way for one to
-/// signal the other directly). So a user's saved provider/key would otherwise only apply until the
-/// next restart, defeating the whole point of "restart preserves configuration". This is what
-/// closes that gap: if a row is stored, push it live, retrying briefly while the AI service is
-/// still starting.
+/// The AI service builds its provider configuration once at process startup and never re-reads
+/// it; it also restarts alongside the backend on every KAIRON launch (both are sibling child
+/// processes the desktop shell starts, with no way for one to signal the other directly). A saved
+/// provider/key would otherwise only apply until the next restart.
 ///
-/// A deployment that has never saved anything through the new UI has no stored row, so this is a
-/// no-op for it - the AI service's existing env/appsettings-based behaviour is completely
-/// untouched (frontend PRD section 13: backward compatibility).
+/// This is a reconcile loop rather than a one-shot startup push: it retries every few seconds
+/// until the saved configuration is applied (the AI service starts after the backend, possibly
+/// well beyond a minute later), then re-checks periodically and re-applies whenever the AI service
+/// reports "unconfigured" again (AI process restarted, a Save's live push failed, a /configure
+/// call was rate limited). The saved row is re-read every pass, so a later Save is picked up.
+///
+/// A deployment that has never saved anything through the UI has no stored row, so this never
+/// pushes anything - the AI service's env/appsettings-based behaviour is untouched.
 /// </summary>
 public sealed class AiConfigSyncHostedService : BackgroundService
 {
-    private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(2);
-    private static readonly TimeSpan GiveUpAfter = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan PendingRetryDelay = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan AppliedCheckInterval = TimeSpan.FromSeconds(30);
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<AiConfigSyncHostedService> _logger;
@@ -33,65 +35,83 @@ public sealed class AiConfigSyncHostedService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var scope = _scopeFactory.CreateScope();
-        var providerConfig = scope.ServiceProvider.GetRequiredService<IAiProviderConfigService>();
+        var applied = false;
+        var warnedUndecryptable = false;
+        var pendingSince = DateTime.UtcNow;
+        var warnedPending = false;
 
-        var selection = await SafeGetSelectionAsync(providerConfig, stoppingToken);
-        if (selection is null)
+        while (!stoppingToken.IsCancellationRequested)
         {
-            _logger.LogInformation("No saved AI Configuration - AI service keeps its env/appsettings-based defaults.");
-            return;
-        }
-
-        var apiKey = await providerConfig.GetDecryptedApiKeyAsync(stoppingToken);
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            _logger.LogWarning("A saved AI Configuration exists but its key could not be decrypted; skipping sync.");
-            return;
-        }
-
-        var request = new AiConfigureRequestDto
-        {
-            Provider = selection.Value.Provider,
-            ApiKey = apiKey,
-            Model = selection.Value.Model,
-            Endpoint = selection.Value.Endpoint,
-        };
-
-        var deadline = DateTime.UtcNow + GiveUpAfter;
-        while (!stoppingToken.IsCancellationRequested && DateTime.UtcNow < deadline)
-        {
-            using var attemptScope = _scopeFactory.CreateScope();
-            var ai = attemptScope.ServiceProvider.GetRequiredService<IAiMicroservice>();
-
             try
             {
-                var applied = await ai.ConfigureProviderAsync(request, stoppingToken);
-                _logger.LogInformation(
-                    "Saved AI Configuration applied to the AI service: provider={Provider} effective={Effective} model={Model}",
-                    applied.Provider, applied.EffectiveProvider, applied.Model);
+                using var scope = _scopeFactory.CreateScope();
+                var providerConfig = scope.ServiceProvider.GetRequiredService<IAiProviderConfigService>();
+                var ai = scope.ServiceProvider.GetRequiredService<IAiMicroservice>();
+
+                var selection = await SafeGetSelectionAsync(providerConfig, stoppingToken);
+                if (selection is null)
+                {
+                    applied = false;
+                }
+                else if (applied && await ai.GetModeAsync(stoppingToken) != "unconfigured")
+                {
+                    // Still applied (or the AI service is simply unreachable right now, which a
+                    // push cannot fix). Nothing to do.
+                }
+                else
+                {
+                    var apiKey = await providerConfig.GetDecryptedApiKeyAsync(stoppingToken);
+                    if (string.IsNullOrWhiteSpace(apiKey))
+                    {
+                        if (!warnedUndecryptable)
+                            _logger.LogWarning("A saved AI Configuration exists but its key could not be decrypted; re-save it in Settings.");
+                        warnedUndecryptable = true;
+                        applied = false;
+                    }
+                    else
+                    {
+                        var result = await ai.ConfigureProviderAsync(new AiConfigureRequestDto
+                        {
+                            Provider = selection.Value.Provider,
+                            ApiKey = apiKey,
+                            Model = selection.Value.Model,
+                            Endpoint = selection.Value.Endpoint,
+                        }, stoppingToken);
+                        _logger.LogInformation(
+                            "Saved AI Configuration applied to the AI service: provider={Provider} effective={Effective} model={Model}",
+                            result.Provider, result.EffectiveProvider, result.Model);
+                        applied = true;
+                        warnedPending = false;
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
                 return;
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
             {
-                // Expected while the AI service is still starting - not worth more than a debug
-                // note per attempt.
-                _logger.LogDebug(ex, "AI service not ready yet for configuration sync, will retry.");
+                // Expected while the AI service is still starting or briefly rate limiting.
+                if (applied) { pendingSince = DateTime.UtcNow; warnedPending = false; }
+                applied = false;
+                _logger.LogDebug(ex, "AI service not ready for configuration sync; will retry.");
+                if (!warnedPending && DateTime.UtcNow - pendingSince > TimeSpan.FromSeconds(60))
+                {
+                    _logger.LogWarning("The saved AI Configuration has not been applied yet; still retrying every {Seconds}s.",
+                        PendingRetryDelay.TotalSeconds);
+                    warnedPending = true;
+                }
             }
 
             try
             {
-                await Task.Delay(RetryDelay, stoppingToken);
+                await Task.Delay(applied ? AppliedCheckInterval : PendingRetryDelay, stoppingToken);
             }
             catch (OperationCanceledException)
             {
                 return;
             }
         }
-
-        _logger.LogWarning(
-            "Could not apply the saved AI Configuration within {Seconds}s - it will be retried on the next Save or Test Connection.",
-            GiveUpAfter.TotalSeconds);
     }
 
     private async Task<(string Provider, string Model, string Endpoint)?> SafeGetSelectionAsync(

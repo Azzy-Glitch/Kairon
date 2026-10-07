@@ -16,10 +16,11 @@ public static class ServiceExtensions
 {
     public static IServiceCollection AddAiServices(this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddSingleton<AiAvailabilityState>();
         services.AddHttpClient<IAiMicroservice, AiMicroservice>(client =>
         {
             client.BaseAddress = new Uri(configuration["AiService:BaseUrl"] ?? "http://localhost:8000");
-            client.Timeout = TimeSpan.FromSeconds(configuration.GetValue<int>("AiService:TimeoutSeconds", 30));
+            client.Timeout = TimeSpan.FromSeconds(configuration.GetValue<int>("AiService:TimeoutSeconds", 100));
             // The Python service bounds provider output, but the transport boundary must not
             // assume its peer is healthy or authentic merely because it is on loopback. Keep the
             // complete JSON envelope bounded before ReadAsStringAsync buffers it in memory.

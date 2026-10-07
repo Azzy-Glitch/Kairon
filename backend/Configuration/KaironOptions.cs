@@ -140,7 +140,9 @@ public class AiOrchestrationOptions
 
     public bool Enabled { get; set; } = true;
 
-    public int TimeoutSeconds { get; set; } = 30;
+    // Must outlast the AI service's own bounded provider retries (3 attempts x 30s + backoff);
+    // a shorter backend deadline abandoned the request while the AI service kept spending quota.
+    public int TimeoutSeconds { get; set; } = 100;
     // Provider clients already own bounded retry/backoff. Retrying again at this layer multiplies
     // one incident into (backend attempts x provider attempts) external calls.
     public int MaxRetries { get; set; } = 0;

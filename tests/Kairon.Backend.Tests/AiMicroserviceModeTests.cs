@@ -147,6 +147,41 @@ public sealed class AiMicroserviceModeTests : IDisposable
     }
 
     [Fact]
+    public async Task ReachabilityIsSharedAcrossTransientClientInstances()
+    {
+        // AiMicroservice is a transient typed HttpClient; DI shares one AiAvailabilityState so a
+        // failure observed by one request is still reported by the next request's instance.
+        var time = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var state = new AiAvailabilityState();
+        AiMicroservice Create(HttpMessageHandler handler) => new(
+            new HttpClient(handler) { BaseAddress = new Uri("http://127.0.0.1:1") },
+            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["AiService:MockMode"] = "false" }).Build(),
+            Options.Create(new AiOrchestrationOptions()), _configService, NullLogger<AiMicroservice>.Instance, time, state);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => Create(new ScriptedHandler(HttpStatusCode.ServiceUnavailable)).AnalyzeErrorAsync("boom"));
+
+        Assert.False(Create(new ScriptedHandler()).IsAvailable);
+    }
+
+    [Fact]
+    public async Task TheAiServicesOwnFailureReasonIsPreserved()
+    {
+        var ai = CreateMicroserviceWithHandler(new BodyHandler(HttpStatusCode.ServiceUnavailable,
+            "{\"error\":\"AI provider 'groq' is unavailable: groq returned HTTP 401\"}"), TimeProvider.System);
+
+        var error = await Assert.ThrowsAnyAsync<Exception>(() => ai.AnalyzeErrorAsync("boom"));
+
+        Assert.Contains("groq returned HTTP 401", error.ToString());
+        Assert.Contains("503", error.ToString());
+    }
+
+    private sealed class BodyHandler(HttpStatusCode status, string body) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body) });
+    }
+
+    [Fact]
     public async Task CooldownExpiringWithNoNewCallNeverFlipsReachableBackToTrue()
     {
         var time = new ManualTimeProvider(DateTimeOffset.UtcNow);

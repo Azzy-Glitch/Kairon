@@ -431,7 +431,7 @@ public class IncidentOrchestrator : IIncidentOrchestrator
             var risk = ParseRisk(recommendation.RiskLevel);
             var decision = await _policy.ValidateProposalAsync(incident, recommendation.Action, risk, cancellationToken);
 
-            annotated.Add(new RecommendationDto
+            var note = new RecommendationDto
             {
                 Action = recommendation.Action,
                 Reason = recommendation.Reason,
@@ -439,7 +439,8 @@ public class IncidentOrchestrator : IIncidentOrchestrator
                 RiskLevel = risk.ToString(),
                 IsRegisteredTool = _tools.Contains(recommendation.Action),
                 PolicyNote = decision.Allowed ? null : decision.Reason
-            });
+            };
+            annotated.Add(note);
 
             if (!decision.Allowed)
             {
@@ -453,19 +454,29 @@ public class IncidentOrchestrator : IIncidentOrchestrator
             var parameters = recommendation.Parameters ?? new Dictionary<string, string>();
             if (_tools.TryGet(recommendation.Action, out var scopedTool) && scopedTool is IScopedRemediationTool scoped) {
                 if (parameters.Count != 0) {
+                    note.PolicyNote = "Windows service tools do not accept AI-supplied target parameters.";
                     _audit.Record(incident, IncidentEventTypes.PolicyEvaluated, "policy", result: "denied",
                         message: "Windows service tools do not accept AI-supplied target parameters.");
                     continue;
                 }
                 var binding = await scoped.TargetFingerprintAsync(incident, cancellationToken);
-                if (binding is null) continue;
+                if (binding is null) {
+                    // Previously dropped silently, leaving the operator a recommendation with no
+                    // approval and no explanation. The target itself stays server-side.
+                    note.PolicyNote = "No enabled, ready remediation target authorizes this operation for this service and machine.";
+                    _audit.Record(incident, IncidentEventTypes.PolicyEvaluated, "policy", result: "denied",
+                        message: $"Recommendation '{recommendation.Action}' has no ready remediation target for this incident's service and machine.");
+                    continue;
+                }
                 parameters = new Dictionary<string, string> { ["targetFingerprint"] = binding };
             }
             var action = new RemediationAction
             {
                 IncidentId = incident.Id,
                 ActionKey = await _keys.NextActionKeyAsync(cancellationToken),
-                ActionType = recommendation.Action,
+                // The registered tool's own name, not the model's spelling: lookups are
+                // case-insensitive but verification and the UI compare exact tool names.
+                ActionType = _tools.TryGet(recommendation.Action, out var registered) ? registered.Name : recommendation.Action,
                 Reason = recommendation.Reason,
                 ExpectedOutcome = recommendation.ExpectedOutcome,
                 RiskLevel = risk,

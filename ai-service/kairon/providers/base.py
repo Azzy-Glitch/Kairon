@@ -21,12 +21,28 @@ logger = logging.getLogger("kairon.providers")
 class ProviderError(RuntimeError):
     """A provider failed to produce a usable response."""
 
-    def __init__(self, message: str, *, transient: bool = False, status_code: int | None = None):
+    def __init__(self, message: str, *, transient: bool = False, status_code: int | None = None,
+                 retry_after: float | None = None):
         super().__init__(message)
         # Transient failures (timeouts, 5xx, rate limits) are worth retrying; permanent ones
         # (bad credentials, unknown model) are not, and retrying them just burns the budget.
         self.transient = transient
         self.status_code = status_code
+        # Seconds the provider asked us to wait (HTTP Retry-After), when it said so.
+        self.retry_after = retry_after
+
+
+# A rate-limited provider is retried no sooner than it asks, but never waits longer than this per
+# attempt: the whole retry budget must stay inside the backend's investigation deadline.
+MAX_RETRY_WAIT_SECONDS = 5.0
+
+
+def retry_delay(attempt: int, error: BaseException | None) -> float:
+    """Delay before the next attempt: honour Retry-After / back off on 429, else short linear."""
+    if isinstance(error, ProviderError) and error.status_code == 429:
+        requested = error.retry_after if error.retry_after is not None else 2.0 * attempt
+        return min(max(requested, 0.5), MAX_RETRY_WAIT_SECONDS)
+    return 0.25 * attempt
 
 
 class AIProvider(abc.ABC):
@@ -104,8 +120,8 @@ class AIProvider(abc.ABC):
                 )
 
             if attempt < attempts:
-                # Bounded linear backoff. Never retries indefinitely.
-                await asyncio.sleep(0.25 * attempt)
+                # Bounded backoff (longer, Retry-After aware, for rate limits). Never indefinite.
+                await asyncio.sleep(retry_delay(attempt, last_error))
 
         # NB-003: the exhausted-retries wrapper must never launder a PERMANENT failure into a
         # transient-looking one, or lose the HTTP status a caller might act on. A ProviderError
@@ -118,6 +134,7 @@ class AIProvider(abc.ABC):
                 f"{self.name} failed after {attempts} attempt(s): {last_error}",
                 transient=last_error.transient,
                 status_code=last_error.status_code,
+                retry_after=last_error.retry_after,
             ) from last_error
 
         # Any other failure that exhausted the retry budget (malformed model output, an

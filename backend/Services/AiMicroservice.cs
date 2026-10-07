@@ -11,6 +11,24 @@ using System.Text.Json;
 
 namespace Kairon.Backend.Services;
 
+/// <summary>Process-wide AI reachability/circuit-breaker state. AiMicroservice is a typed
+/// HttpClient (transient), so per-instance fields were reset on every request: a revoked key kept
+/// reporting "reachable" and the cooldown never applied. One singleton instance is shared by every
+/// AiMicroservice the container creates.</summary>
+public sealed class AiAvailabilityState
+{
+    private readonly object _gate = new();
+    private bool _available = true;
+    private DateTime _failedAt = DateTime.MinValue;
+
+    public bool IsAvailable { get { lock (_gate) return _available; } }
+    public DateTime LastFailure { get { lock (_gate) return _failedAt; } }
+
+    public void Succeeded() { lock (_gate) _available = true; }
+
+    public void Failed(DateTime at) { lock (_gate) { _available = false; _failedAt = at; } }
+}
+
 public class AiMicroservice : IAiMicroservice
 {
     private readonly HttpClient _httpClient;
@@ -21,8 +39,7 @@ public class AiMicroservice : IAiMicroservice
     private readonly bool _staticMockModeDefault;
     private readonly TimeProvider _time;
 
-    private bool _isAvailable = true;
-    private DateTime _lastFailure = DateTime.MinValue;
+    private readonly AiAvailabilityState _state;
     private static readonly TimeSpan RecoveryCooldown = TimeSpan.FromMinutes(2);
 
     /// <summary>
@@ -35,7 +52,7 @@ public class AiMicroservice : IAiMicroservice
     /// A provider that is still down keeps reporting unreachable, however long its cooldown has
     /// been over, until an attempt genuinely succeeds again.
     /// </summary>
-    public bool IsAvailable => _isAvailable;
+    public bool IsAvailable => _state.IsAvailable;
 
     /// <summary>Internal gate only: whether a NEW call attempt should even be tried right now.
     /// After the cooldown window, exactly one attempt is let through again (a half-open circuit-
@@ -43,7 +60,7 @@ public class AiMicroservice : IAiMicroservice
     /// <see cref="IsAvailable"/>), only that it is worth trying. A failed probe immediately resets
     /// the cooldown clock, so a still-down provider is retried at most once per window rather than
     /// on every request.</summary>
-    private bool ShouldAttempt => _isAvailable || (_time.GetUtcNow().UtcDateTime - _lastFailure) > RecoveryCooldown;
+    private bool ShouldAttempt => _state.IsAvailable || (_time.GetUtcNow().UtcDateTime - _state.LastFailure) > RecoveryCooldown;
 
     public AiMicroservice(
         HttpClient httpClient,
@@ -51,8 +68,10 @@ public class AiMicroservice : IAiMicroservice
         IOptions<AiOrchestrationOptions> aiOptions,
         IAiProviderConfigService providerConfig,
         ILogger<AiMicroservice> logger,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        AiAvailabilityState? state = null)
     {
+        _state = state ?? new AiAvailabilityState();
         _httpClient = httpClient;
         _configuration = configuration;
         _aiOptions = aiOptions.Value;
@@ -110,14 +129,13 @@ public class AiMicroservice : IAiMicroservice
         {
             var request = new { log };
             var response = await PostAsync<ErrorAnalysisResponse>("/analyze-error", request, cancellationToken);
-            _isAvailable = true;
+            _state.Succeeded();
             return response ?? throw new InvalidOperationException("Empty response from AI service");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to call AI service for error analysis");
-            _isAvailable = false;
-            _lastFailure = _time.GetUtcNow().UtcDateTime;
+            _state.Failed(_time.GetUtcNow().UtcDateTime);
             throw;
         }
     }
@@ -134,14 +152,13 @@ public class AiMicroservice : IAiMicroservice
         {
             var request = new { recent_logs = recentLogs, current_log = currentLog };
             var response = await PostAsync<PredictionResponse>("/predict", request, cancellationToken);
-            _isAvailable = true;
+            _state.Succeeded();
             return response ?? throw new InvalidOperationException("Empty response from AI service");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to call AI service for prediction");
-            _isAvailable = false;
-            _lastFailure = _time.GetUtcNow().UtcDateTime;
+            _state.Failed(_time.GetUtcNow().UtcDateTime);
             throw;
         }
     }
@@ -158,14 +175,13 @@ public class AiMicroservice : IAiMicroservice
         {
             var request = new { context };
             var response = await PostAsync<RecommendationResponse>("/recommend", request, cancellationToken);
-            _isAvailable = true;
+            _state.Succeeded();
             return response ?? throw new InvalidOperationException("Empty response from AI service");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to call AI service for recommendations");
-            _isAvailable = false;
-            _lastFailure = _time.GetUtcNow().UtcDateTime;
+            _state.Failed(_time.GetUtcNow().UtcDateTime);
             throw;
         }
     }
@@ -182,14 +198,13 @@ public class AiMicroservice : IAiMicroservice
         {
             var request = new { mismatches };
             var response = await PostAsync<SuggestFixesResponse>("/suggest-fixes", request, cancellationToken);
-            _isAvailable = true;
+            _state.Succeeded();
             return response?.Suggestions ?? new List<FixSuggestionDto>();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to call AI service for fix suggestions");
-            _isAvailable = false;
-            _lastFailure = _time.GetUtcNow().UtcDateTime;
+            _state.Failed(_time.GetUtcNow().UtcDateTime);
             throw;
         }
     }
@@ -231,7 +246,7 @@ public class AiMicroservice : IAiMicroservice
                     throw new AiUnavailableException("AI service returned an empty or unusable investigation result");
                 }
 
-                _isAvailable = true;
+                _state.Succeeded();
 
                 _logger.LogInformation(
                     "AI investigation for {IncidentKey} succeeded in {Ms}ms on attempt {Attempt} (provider={Provider}, model={Model}, confidence={Confidence})",
@@ -261,8 +276,7 @@ public class AiMicroservice : IAiMicroservice
             }
         }
 
-        _isAvailable = false;
-        _lastFailure = _time.GetUtcNow().UtcDateTime;
+        _state.Failed(_time.GetUtcNow().UtcDateTime);
 
         throw new AiUnavailableException(
             $"AI investigation failed after {attempts} attempt(s): {Redaction.Describe(last!)}", last!);
@@ -352,14 +366,39 @@ public class AiMicroservice : IAiMicroservice
         var json = JsonSerializer.Serialize(request);
         var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-        var response = await _httpClient.PostAsync(endpoint, content, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        using var response = await _httpClient.PostAsync(endpoint, content, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException(await DescribeFailureAsync(response, cancellationToken), null, response.StatusCode);
 
         var responseJson = await response.Content.ReadAsStringAsync(cancellationToken);
         return JsonSerializer.Deserialize<T>(responseJson, new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true
         });
+    }
+
+    /// <summary>The AI service answers failures with {"error": "..."} naming the real cause
+    /// (invalid provider key, provider rate limit, timeout, malformed model output). Keep that
+    /// reason - bounded - so an incident shows WHY investigation failed, not just "503".</summary>
+    private static async Task<string> DescribeFailureAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var status = $"AI service returned HTTP {(int)response.StatusCode}";
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (body.Length > 4096) body = body[..4096];
+            using var json = JsonDocument.Parse(body);
+            foreach (var name in new[] { "error", "detail", "message" })
+                if (json.RootElement.ValueKind == JsonValueKind.Object &&
+                    json.RootElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String &&
+                    !string.IsNullOrWhiteSpace(value.GetString()))
+                {
+                    var reason = value.GetString()!;
+                    return $"{status}: {(reason.Length > 500 ? reason[..500] : reason)}";
+                }
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or HttpRequestException) { }
+        return status;
     }
 
     // --- Mock helpers (only used when AiService:MockMode = true) ---
