@@ -35,6 +35,74 @@ public sealed class RemediationTargetResponse
     public bool Enabled { get; set; }
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
+
+    /// <summary>Execution readiness right now (TargetReadiness name: Ready, Disabled,
+    /// PermissionMissing, ServiceMissing, MachineOffline, AwaitingAgentConfirmation, StaleTarget,
+    /// ServiceIdentityChanged, Denylisted, RemoteNotSupported, UnsupportedPlatform, ...). Computed
+    /// from the database and a read-only probe of the local SCM; never stored, never trusted as
+    /// authorization - execution re-derives it independently.</summary>
+    public string Readiness { get; set; } = "Disabled";
+    public string? ReadinessDetail { get; set; }
+    public string? ServiceDisplayName { get; set; }
+    public bool ServiceIdentityConfirmed { get; set; }
+}
+
+/// <summary>One line of a remediation pre-flight. Blocking checks prevent enabling a target;
+/// non-blocking ones (heartbeat, Agent confirmation of app telemetry) are expected to become true
+/// once the application is running and only prevent execution.</summary>
+public sealed class RemediationPreflightCheck
+{
+    public string Key { get; set; } = "";
+    public string Label { get; set; } = "";
+    public bool Passed { get; set; }
+    public bool Blocking { get; set; }
+    public string? Detail { get; set; }
+    /// <summary>The TargetReadiness this check maps to when it fails.</summary>
+    public string? Readiness { get; set; }
+}
+
+public sealed class WindowsServiceDetails
+{
+    public string ServiceName { get; set; } = "";
+    public string? DisplayName { get; set; }
+    public string? State { get; set; }
+    public string? ImagePath { get; set; }
+    public string? StartAccount { get; set; }
+    public bool CanQuery { get; set; }
+    public bool CanStart { get; set; }
+    public bool CanStop { get; set; }
+    public string Eligibility { get; set; } = "Unknown";
+    public string? EligibilityDetail { get; set; }
+    public int? Win32Error { get; set; }
+}
+
+public sealed class RemediationPreflightResponse
+{
+    /// <summary>"Ready" when every check passes; otherwise the first failing check's readiness.</summary>
+    public string Readiness { get; set; } = "";
+    /// <summary>True when no blocking check failed - the target may be saved enabled.</summary>
+    public bool CanEnable { get; set; }
+    public List<RemediationPreflightCheck> Checks { get; set; } = new();
+    public WindowsServiceDetails? Service { get; set; }
+    /// <summary>Windows rights the selected operations require (Query/Start/Stop).</summary>
+    public List<string> RequiredRights { get; set; } = new();
+    public List<string> MissingRights { get; set; } = new();
+    /// <summary>The Windows account the KAIRON backend executes SCM operations as.</summary>
+    public string? ExecutorAccount { get; set; }
+    public string? ExecutorSid { get; set; }
+    /// <summary>Exact elevated command an administrator can run to grant only the missing rights
+    /// on only this service to only the executor identity (tools/remediation). Never run by KAIRON.</summary>
+    public string? FixCommand { get; set; }
+}
+
+public sealed class WindowsServiceListItem
+{
+    public string ServiceName { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+    public string State { get; set; } = "";
+    public bool Eligible { get; set; }
+    public string Eligibility { get; set; } = "";
+    public string? EligibilityDetail { get; set; }
 }
 
 public class CreateRemediationTargetRequest

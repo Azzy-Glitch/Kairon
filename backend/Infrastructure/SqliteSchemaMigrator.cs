@@ -19,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 10;
+    public const int CurrentVersion = 11;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -272,6 +272,19 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                     """, cancellationToken);
                 await ExecuteAsync(connection, transaction, "PRAGMA user_version = 10;", cancellationToken);
                 version = 10;
+            }
+
+            // Version 11 records the authorized Windows service's executable identity on each
+            // remediation target. Existing rows are deliberately NOT backfilled: a target whose
+            // identity was never confirmed against the live SCM must be re-confirmed by an operator
+            // before it can execute, rather than trusting whatever service now owns that name.
+            if (version == 10) {
+                var targetColumns = await ColumnsAsync(connection, transaction, "RemediationTargets", cancellationToken);
+                if (!targetColumns.Contains("ServiceIdentityHash"))
+                    await ExecuteAsync(connection, transaction,
+                        "ALTER TABLE \"RemediationTargets\" ADD COLUMN \"ServiceIdentityHash\" TEXT NULL;", cancellationToken);
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 11;", cancellationToken);
+                version = 11;
             }
 
             if (version != CurrentVersion)

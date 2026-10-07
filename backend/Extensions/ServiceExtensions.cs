@@ -137,6 +137,10 @@ public static class ServiceExtensions
         // --- Remediation. The registry is built from the registered tools, which is what makes
         // "only a registered tool can execute" structurally true rather than a convention.
         services.AddSingleton<IWindowsServiceControl, WindowsServiceControl>();
+        // Read-only local SCM inspection (pre-flight, discovery, live identity) and the local-only
+        // remediation boundary. Neither can change a service or its permissions.
+        services.AddSingleton<IWindowsServiceInspector>(WindowsServiceInspector.Instance);
+        services.AddSingleton<ILocalMachine>(LocalMachine.Instance);
         services.AddScoped<IRemediationTool, RestartServiceTool>();
         services.AddScoped<IRemediationTool, StartServiceTool>();
         services.AddScoped<IRemediationTool, StopServiceTool>();

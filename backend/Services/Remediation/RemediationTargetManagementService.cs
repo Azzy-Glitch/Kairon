@@ -60,6 +60,18 @@ public interface IRemediationTargetManagementService
     Task<RemediationTargetOperationResult> UpdateAsync(Guid id, UpdateRemediationTargetRequest request, string actor, CancellationToken ct = default);
     Task<RemediationTargetOperationResult> SetEnabledAsync(Guid id, bool enabled, string actor, CancellationToken ct = default);
     Task<IReadOnlyList<string>> ValidateAsync(CreateRemediationTargetRequest request, CancellationToken ct = default);
+
+    /// <summary>Read-only pre-flight for a prospective target: every relationship, local-host,
+    /// service and Windows-permission check, each reported individually. Persists nothing.</summary>
+    Task<RemediationPreflightResponse> PreflightAsync(CreateRemediationTargetRequest request, CancellationToken ct = default);
+
+    /// <summary>Read-only pre-flight for a saved target, including service identity and Agent
+    /// confirmation of the application's telemetry. Null when the target does not exist.</summary>
+    Task<RemediationPreflightResponse?> PreflightAsync(Guid id, CancellationToken ct = default);
+
+    /// <summary>Windows services on an enrolled machine, with eligibility. Local machine only; null
+    /// when the machine is unknown, throws InvalidOperationException when it is not this host.</summary>
+    Task<IReadOnlyList<WindowsServiceListItem>?> ListWindowsServicesAsync(Guid machineId, CancellationToken ct = default);
 }
 
 public sealed class RemediationTargetManagementService : IRemediationTargetManagementService
@@ -75,14 +87,21 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
     private readonly IPlatformAuditService _audit;
     private readonly TimeProvider _time;
     private readonly WindowsRemediationOptions _windows;
+    private readonly IWindowsServiceInspector _inspector;
+    private readonly ILocalMachine _localMachine;
+    private readonly IRemediationTargetResolver _resolver;
 
     public RemediationTargetManagementService(AppDbContext db, IPlatformAuditService audit, TimeProvider time,
-        IOptions<WindowsRemediationOptions>? windows = null)
+        IOptions<WindowsRemediationOptions>? windows = null, IWindowsServiceInspector? inspector = null,
+        ILocalMachine? localMachine = null, IRemediationTargetResolver? resolver = null)
     {
         _db = db;
         _audit = audit;
         _time = time;
         _windows = windows?.Value ?? new WindowsRemediationOptions();
+        _inspector = inspector ?? WindowsServiceInspector.Instance;
+        _localMachine = localMachine ?? LocalMachine.Instance;
+        _resolver = resolver ?? new RemediationTargetResolver(db, Options.Create(_windows), _localMachine);
     }
 
     public async Task<IReadOnlyList<RemediationTargetResponse>> ListAsync(RemediationTargetFilter filter, CancellationToken ct = default)
@@ -125,6 +144,9 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
                 return RemediationTargetOperationResult.ConflictResult(
                     "An enabled remediation target already exists for this project, environment and service.", "duplicate-target");
         }
+        string? identity = null;
+        if (request.Enabled && errors.Count == 0)
+            identity = ValidateWindowsService(request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, errors);
         if (errors.Count > 0) return RemediationTargetOperationResult.Invalid(string.Join(" ", errors), "invalid-target");
 
         var now = _time.GetUtcNow().UtcDateTime;
@@ -139,6 +161,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             ExpectedHostName = request.ExpectedHostName.Trim(),
             WindowsServiceName = request.WindowsServiceName.Trim(),
             AllowedOperationsJson = RemediationTargetOperations.Serialize(request.AllowedOperations),
+            ServiceIdentityHash = identity,
             Enabled = request.Enabled,
             CreatedAt = now,
             UpdatedAt = now
@@ -182,6 +205,15 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
                 return RemediationTargetOperationResult.ConflictResult(
                     "An enabled remediation target already exists for this project, environment and service.", "duplicate-target");
         }
+        // Saving an enabled target is the operator re-confirming it: the live service identity is
+        // captured again. A disabled target keeps its identity only while it still names the same
+        // service on the same host; otherwise it must be confirmed again when enabled.
+        string? identity = null;
+        if (request.Enabled && errors.Count == 0)
+            identity = ValidateWindowsService(request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, errors);
+        else if (string.Equals(entity.WindowsServiceName, request.WindowsServiceName.Trim(), StringComparison.OrdinalIgnoreCase) &&
+                 string.Equals(entity.ExpectedHostName, request.ExpectedHostName.Trim(), StringComparison.OrdinalIgnoreCase))
+            identity = entity.ServiceIdentityHash;
         if (errors.Count > 0) return RemediationTargetOperationResult.Invalid(string.Join(" ", errors), "invalid-target");
 
         var before = Snapshot(entity);
@@ -194,6 +226,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         entity.ExpectedHostName = request.ExpectedHostName.Trim();
         entity.WindowsServiceName = request.WindowsServiceName.Trim();
         entity.AllowedOperationsJson = RemediationTargetOperations.Serialize(request.AllowedOperations);
+        entity.ServiceIdentityHash = identity;
         entity.Enabled = request.Enabled;
         entity.UpdatedAt = _time.GetUtcNow().UtcDateTime;
         entity.RowVersion = Guid.NewGuid();
@@ -235,7 +268,10 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         var entity = await _db.RemediationTargets.SingleOrDefaultAsync(t => t.Id == id, ct);
         if (entity is null) return RemediationTargetOperationResult.NotFoundResult("Remediation target not found.", "target-not-found");
 
-        if (enabled && !entity.Enabled)
+        string? confirmedIdentity = null;
+        var reconfirm = enabled && entity.Enabled && _inspector.IsSupported &&
+            (string.IsNullOrEmpty(entity.ServiceIdentityHash) || _inspector.Probe(entity.WindowsServiceName).IdentityHash != entity.ServiceIdentityHash);
+        if ((enabled && !entity.Enabled) || reconfirm)
         {
             // A disabled target may have gone stale while disabled (Enabled's own documented
             // invariant). Enabling it must not skip straight past validation just because it was
@@ -244,6 +280,9 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
                 RemediationTargetOperations.Deserialize(entity.AllowedOperationsJson));
             if (errors.Count == 0)
                 await ValidateRelationshipsAsync(entity.ProjectId, entity.MachineId, entity.TelemetryCredentialId, entity.ExpectedHostName, errors, ct);
+            if (errors.Count == 0)
+                confirmedIdentity = ValidateWindowsService(entity.ExpectedHostName, entity.WindowsServiceName,
+                    RemediationTargetOperations.Deserialize(entity.AllowedOperationsJson), errors);
             if (errors.Count > 0)
                 return RemediationTargetOperationResult.Invalid("This target cannot be enabled: " + string.Join(" ", errors), "invalid-target");
 
@@ -252,8 +291,9 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
                     "An enabled remediation target already exists for this project, environment and service.", "duplicate-target");
         }
 
-        if (entity.Enabled != enabled)
+        if (entity.Enabled != enabled || (reconfirm && confirmedIdentity != entity.ServiceIdentityHash))
         {
+            if (confirmedIdentity is not null) entity.ServiceIdentityHash = confirmedIdentity;
             entity.Enabled = enabled;
             entity.UpdatedAt = _time.GetUtcNow().UtcDateTime;
             entity.RowVersion = Guid.NewGuid();
@@ -288,8 +328,177 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             await ValidateRelationshipsAsync(request.ProjectId, request.MachineId, request.TelemetryCredentialId, request.ExpectedHostName, errors, ct);
         if (errors.Count == 0 && await ConflictsWithEnabledTargetAsync(request.ProjectId, request.Environment, request.Service, excludeId: null, ct))
             errors.Add("An enabled remediation target already exists for this project, environment and service.");
+        if (errors.Count == 0)
+            ValidateWindowsService(request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, errors);
         return errors;
     }
+
+    // --- Windows service gate, pre-flight and discovery ---
+
+    /// <summary>Blocking Windows-side checks for enabling a target. Returns the live service
+    /// identity to bind on success. Read-only: never changes the service or its permissions.</summary>
+    private string? ValidateWindowsService(string expectedHostName, string windowsServiceName, IEnumerable<string> operations, List<string> errors)
+    {
+        if (!_inspector.IsSupported) { errors.Add("Windows service remediation requires a Windows backend."); return null; }
+        if (!_localMachine.IsLocal(expectedHostName.Trim()))
+        {
+            errors.Add("Remote remediation is not supported: the target must be the machine the KAIRON backend runs on.");
+            return null;
+        }
+        var probe = _inspector.Probe(windowsServiceName.Trim());
+        if (!probe.Exists) { errors.Add($"Windows service '{windowsServiceName.Trim()}' does not exist on this machine."); return null; }
+        if (probe.Eligibility != ServiceEligibility.Eligible) { errors.Add(ServiceEligibilityPolicy.Describe(probe.Eligibility)); return null; }
+        var ops = operations.ToList();
+        var missing = MissingRights(probe, ops);
+        if (missing.Count > 0)
+        {
+            errors.Add($"KAIRON's Windows identity lacks the {string.Join("/", missing)} permission on this service. " +
+                       "Grant it with tools/remediation/Set-KaironServicePermission.ps1 (run as administrator) or remove the operations that need it.");
+            return null;
+        }
+        return probe.IdentityHash;
+    }
+
+    private static List<string> MissingRights(WindowsServiceProbe probe, IEnumerable<string> operations)
+    {
+        var missing = new List<string>();
+        foreach (var right in WindowsServiceProbe.RequiredRights(operations))
+        {
+            var has = right switch { "Query" => probe.CanQueryStatus, "Start" => probe.CanStart, "Stop" => probe.CanStop, _ => false };
+            if (!has) missing.Add(right);
+        }
+        return missing;
+    }
+
+    public Task<RemediationPreflightResponse> PreflightAsync(CreateRemediationTargetRequest request, CancellationToken ct = default) =>
+        BuildPreflightAsync(request.ProjectId, request.Environment, request.Service, request.MachineId, request.TelemetryCredentialId,
+            request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, entity: null, ct);
+
+    public async Task<RemediationPreflightResponse?> PreflightAsync(Guid id, CancellationToken ct = default)
+    {
+        var entity = await _db.RemediationTargets.AsNoTracking().SingleOrDefaultAsync(t => t.Id == id, ct);
+        if (entity is null) return null;
+        return await BuildPreflightAsync(entity.ProjectId, entity.Environment, entity.Service, entity.MachineId, entity.TelemetryCredentialId,
+            entity.ExpectedHostName, entity.WindowsServiceName, RemediationTargetOperations.Deserialize(entity.AllowedOperationsJson), entity, ct);
+    }
+
+    public async Task<IReadOnlyList<WindowsServiceListItem>?> ListWindowsServicesAsync(Guid machineId, CancellationToken ct = default)
+    {
+        var machine = await _db.Machines.AsNoTracking().SingleOrDefaultAsync(m => m.Id == machineId, ct);
+        if (machine is null) return null;
+        if (!_inspector.IsSupported) throw new InvalidOperationException("Windows service discovery requires a Windows backend.");
+        if (!_localMachine.IsLocal(machine.HostName))
+            throw new InvalidOperationException("Remote remediation is not supported: services can only be listed for the machine the KAIRON backend runs on.");
+        return _inspector.ListServices().Select(s => new WindowsServiceListItem
+        {
+            ServiceName = s.ServiceName,
+            DisplayName = string.IsNullOrWhiteSpace(s.DisplayName) ? s.ServiceName : s.DisplayName,
+            State = StateName(s.State),
+            Eligible = s.Eligibility == ServiceEligibility.Eligible,
+            Eligibility = s.Eligibility.ToString(),
+            EligibilityDetail = s.Eligibility == ServiceEligibility.Eligible ? null : ServiceEligibilityPolicy.Describe(s.Eligibility)
+        }).ToList();
+    }
+
+    private async Task<RemediationPreflightResponse> BuildPreflightAsync(Guid projectId, string environment, string service, Guid machineId,
+        Guid credentialId, string expectedHostName, string windowsServiceName, IEnumerable<string> operationsIn, RemediationTarget? entity, CancellationToken ct)
+    {
+        var operations = (operationsIn ?? []).Where(RemediationTargetOperations.IsKnown).Distinct().ToList();
+        var checks = new List<RemediationPreflightCheck>();
+        void Add(string key, string label, bool passed, bool blocking, TargetReadiness readiness, string? detail = null) =>
+            checks.Add(new RemediationPreflightCheck { Key = key, Label = label, Passed = passed, Blocking = blocking, Detail = detail,
+                Readiness = passed ? null : readiness.ToString() });
+
+        var shape = ValidateShape(environment, service, expectedHostName, windowsServiceName, operations);
+        Add("shape", "Target details are complete", shape.Count == 0, true, TargetReadiness.InvalidTarget, shape.Count == 0 ? null : string.Join(" ", shape));
+        Add("project", "Project is active", await _db.Projects.AnyAsync(p => p.Id == projectId && p.IsActive, ct), true, TargetReadiness.ProjectInactive);
+        Add("credential", "App credential is valid for this project",
+            await _db.ProjectApiCredentials.AnyAsync(c => c.Id == credentialId && c.ProjectId == projectId && c.RevokedAt == null, ct),
+            true, TargetReadiness.CredentialInvalid);
+
+        var machine = await _db.Machines.AsNoTracking().SingleOrDefaultAsync(m => m.Id == machineId, ct);
+        var enrolled = machine is not null && !string.IsNullOrWhiteSpace(machine.AgentCredentialHash) &&
+            machine.OperatingSystem.Contains("Windows", StringComparison.OrdinalIgnoreCase);
+        Add("machine", "Machine is enrolled with the KAIRON Agent", enrolled, true, TargetReadiness.MachineMismatch);
+        Add("host", "Host name matches the enrolled machine",
+            machine is not null && machine.HostName.Equals(expectedHostName?.Trim(), StringComparison.OrdinalIgnoreCase),
+            true, TargetReadiness.MachineMismatch);
+        Add("local", "Machine is this KAIRON host (remediation is local-only)", _localMachine.IsLocal((expectedHostName ?? "").Trim()),
+            true, TargetReadiness.RemoteNotSupported);
+        var now = _time.GetUtcNow().UtcDateTime;
+        Add("heartbeat", "Agent heartbeat is fresh",
+            machine is not null && machine.LastSeenAt >= now.AddSeconds(-Math.Clamp(_windows.MachineHeartbeatMaxAgeSeconds, 10, 300)) &&
+            machine.LastSeenAt <= now.AddSeconds(5), false, TargetReadiness.MachineOffline);
+
+        WindowsServiceDetails? details = null;
+        var required = WindowsServiceProbe.RequiredRights(operations).ToList();
+        var missing = new List<string>();
+        Add("platform", "Backend can control Windows services", _inspector.IsSupported, true, TargetReadiness.UnsupportedPlatform);
+        if (_inspector.IsSupported && !string.IsNullOrWhiteSpace(windowsServiceName))
+        {
+            var probe = _inspector.Probe(windowsServiceName.Trim());
+            details = new WindowsServiceDetails
+            {
+                ServiceName = probe.ServiceName, DisplayName = probe.DisplayName, State = probe.State is { } st ? StateName(st) : null,
+                ImagePath = probe.ImagePath, StartAccount = probe.StartAccount, CanQuery = probe.CanQueryStatus, CanStart = probe.CanStart,
+                CanStop = probe.CanStop, Eligibility = probe.Eligibility.ToString(),
+                EligibilityDetail = ServiceEligibilityPolicy.Describe(probe.Eligibility), Win32Error = probe.Win32Error
+            };
+            Add("service", "Windows service exists", probe.Exists, true, TargetReadiness.ServiceMissing);
+            if (probe.Exists)
+            {
+                Add("eligible", "Service is an eligible application service", probe.Eligibility == ServiceEligibility.Eligible, true,
+                    TargetReadiness.Denylisted, probe.Eligibility == ServiceEligibility.Eligible ? null : ServiceEligibilityPolicy.Describe(probe.Eligibility));
+                if (entity is { Enabled: true })
+                    Add("identity", "Service is the one confirmed for this target",
+                        !string.IsNullOrEmpty(entity.ServiceIdentityHash) && entity.ServiceIdentityHash == probe.IdentityHash, false,
+                        string.IsNullOrEmpty(entity.ServiceIdentityHash) ? TargetReadiness.StaleTarget : TargetReadiness.ServiceIdentityChanged,
+                        string.IsNullOrEmpty(entity.ServiceIdentityHash) ? "Re-confirm (re-save or enable) this target." : "The service's executable or account changed; re-confirm this target.");
+                missing = MissingRights(probe, operations);
+                foreach (var right in required)
+                    Add("right-" + right.ToLowerInvariant(), $"KAIRON can {right.ToLowerInvariant()} this service", !missing.Contains(right), true,
+                        TargetReadiness.PermissionMissing,
+                        missing.Contains(right) ? $"Windows denies the {right} right to the KAIRON backend identity (SCM error 5)." : null);
+            }
+        }
+
+        if (entity is { Enabled: true })
+        {
+            var evaluation = await _resolver.EvaluateTargetAsync(entity, null, ct);
+            Add("agent-proof", "App telemetry is confirmed by the Agent on this machine",
+                evaluation.Readiness != TargetReadiness.AwaitingAgentConfirmation, false, TargetReadiness.AwaitingAgentConfirmation,
+                evaluation.Readiness == TargetReadiness.AwaitingAgentConfirmation
+                    ? "Start the connected application on this machine; its telemetry is confirmed by the Agent within seconds." : null);
+        }
+
+        var (account, sid) = ExecutorIdentity();
+        var failed = checks.FirstOrDefault(c => !c.Passed);
+        return new RemediationPreflightResponse
+        {
+            Readiness = entity is { Enabled: false } && failed is null ? "Disabled" : failed?.Readiness ?? TargetReadiness.Ready.ToString(),
+            CanEnable = checks.All(c => c.Passed || !c.Blocking),
+            Checks = checks,
+            Service = details,
+            RequiredRights = required,
+            MissingRights = missing,
+            ExecutorAccount = account,
+            ExecutorSid = sid,
+            FixCommand = missing.Count == 0 || sid is null || details is null ? null :
+                $"powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\remediation\\Set-KaironServicePermission.ps1 -ServiceName '{details.ServiceName}' -Sid '{sid}' -Rights {string.Join(",", required)}"
+        };
+    }
+
+    private static (string? Account, string? Sid) ExecutorIdentity()
+    {
+        if (!OperatingSystem.IsWindows()) return (null, null);
+        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+        return (identity.Name, identity.User?.Value);
+    }
+
+    private static string StateName(int state) => state switch
+    {
+        1 => "Stopped", 2 => "Starting", 3 => "Stopping", 4 => "Running", 5 => "Resuming", 6 => "Pausing", 7 => "Paused", _ => "Unknown"
+    };
 
     // --- Validation ---
 
@@ -409,6 +618,11 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             return "AgentConfirmed";
         }
 
+        var readiness = new Dictionary<Guid, RemediationPreflightResponse>();
+        foreach (var e in entities)
+            readiness[e.Id] = await BuildPreflightAsync(e.ProjectId, e.Environment, e.Service, e.MachineId, e.TelemetryCredentialId,
+                e.ExpectedHostName, e.WindowsServiceName, RemediationTargetOperations.Deserialize(e.AllowedOperationsJson), e, ct);
+
         return entities.Select(e => new RemediationTargetResponse
         {
             Id = e.Id,
@@ -427,7 +641,11 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             AllowedOperations = RemediationTargetOperations.Deserialize(e.AllowedOperationsJson),
             Enabled = e.Enabled,
             CreatedAt = e.CreatedAt,
-            UpdatedAt = e.UpdatedAt
+            UpdatedAt = e.UpdatedAt,
+            Readiness = e.Enabled ? readiness[e.Id].Readiness : "Disabled",
+            ReadinessDetail = readiness[e.Id].Checks.FirstOrDefault(c => !c.Passed) is { } first ? first.Detail ?? first.Label : null,
+            ServiceDisplayName = readiness[e.Id].Service?.DisplayName,
+            ServiceIdentityConfirmed = !string.IsNullOrEmpty(e.ServiceIdentityHash)
         }).ToList();
     }
 

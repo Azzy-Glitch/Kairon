@@ -73,7 +73,7 @@ public sealed class MachineScopedNormalizedTelemetryTests
         var correlated = await h.CreateCorrelationEngine().CorrelateAsync(signals);
         Assert.Contains(correlated, incident =>
             Kairon.Backend.Models.Sre.IncidentMachineScope.GetMachineId(incident) == machineId);
-        var restart = new RestartServiceTool(h.Db, h.Targets, new UnusedScm());
+        var restart = new RestartServiceTool(h.Db, h.Targets, new UnusedScm(), h.WindowsServices);
         Assert.Contains(await Task.WhenAll(correlated.Select(async incident =>
             await restart.TargetFingerprintAsync(incident) is not null)), eligible => eligible);
 
@@ -81,7 +81,7 @@ public sealed class MachineScopedNormalizedTelemetryTests
         // Windows-service/verification pipeline. The fake SCM is a test double, not a production
         // remediation path; the app still has no remediation API or client-supplied MachineId.
         var scm = new RecordingScm();
-        restart = new RestartServiceTool(h.Db, h.Targets, scm);
+        restart = new RestartServiceTool(h.Db, h.Targets, scm, h.WindowsServices);
         var registry = new RemediationToolRegistry([restart]);
         var policy = new RemediationPolicy(registry, Options.Create(h.Remediation),
             NullLogger<RemediationPolicy>.Instance);

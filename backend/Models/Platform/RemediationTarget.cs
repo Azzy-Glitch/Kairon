@@ -42,6 +42,13 @@ public sealed class RemediationTarget
     public string WindowsServiceName { get; set; } = string.Empty;
     public string AllowedOperationsJson { get; set; } = "[]";
 
+    /// <summary>SHA-256 of the authorized Windows service's executable identity (service type,
+    /// image path, run-as account - ServiceEligibilityPolicy.IdentityHash), captured from the local
+    /// SCM when the target is enabled. Execution refuses to act when the live service no longer
+    /// matches, so a same-named service recreated around a different executable cannot inherit this
+    /// authorization. Null means not yet confirmed: such a target never resolves for execution.</summary>
+    public string? ServiceIdentityHash { get; set; }
+
     /// <summary>Disabled targets are retained rather than deleted (audit/history, and so a
     /// duplicate ProjectId+Environment+Service pair can be resolved by disabling the stale one
     /// instead of losing it) but never match at runtime and do not count toward the

@@ -24,6 +24,36 @@ public readonly record struct DetectionTargetResolution(DetectionTargetOutcome O
 /// machine-scoped telemetry request must be authenticated with.</summary>
 public sealed record TelemetryTargetResolution(Guid TelemetryCredentialId, string CredentialKeyHash);
 
+/// <summary>Why a remediation target can or cannot execute right now. Every value except
+/// <see cref="Ready"/> fails closed; the classification exists so operators see the actual reason
+/// (pre-flight, target status, execution failure) instead of a generic refusal.</summary>
+public enum TargetReadiness
+{
+    Ready,
+    TargetMissing,
+    TargetDisabled,
+    AmbiguousTarget,
+    ProjectInactive,
+    CredentialInvalid,
+    OperationNotAllowed,
+    InvalidTarget,
+    RemoteNotSupported,
+    MachineMismatch,
+    MachineOffline,
+    AwaitingAgentConfirmation,
+    StaleTarget,
+    ServiceMissing,
+    Denylisted,
+    PermissionMissing,
+    ServiceIdentityChanged,
+    UnsupportedPlatform
+}
+
+public sealed record TargetEvaluation(WindowsServiceTarget? Target, TargetReadiness Readiness)
+{
+    public static TargetEvaluation Fail(TargetReadiness readiness) => new(null, readiness);
+}
+
 /// <summary>
 /// Validated boundary for the AllowedOperationsJson column (Models/Platform/RemediationTarget.cs)
 /// - the fixed, typed remediation registry (ServiceToolNames), never an arbitrary string. No
@@ -73,6 +103,11 @@ public interface IRemediationTargetResolver
 
     Task<WindowsServiceTarget?> ResolveExecutionTargetAsync(Guid projectId, string environment, string service, string operation, CancellationToken ct = default);
 
+    /// <summary>Execution-grade evaluation of one persisted target with the precise refusal reason.
+    /// A null operation checks the target without a specific operation (status views);
+    /// ResolveExecutionTargetAsync is exactly this plus the scope lookup.</summary>
+    Task<TargetEvaluation> EvaluateTargetAsync(RemediationTarget entity, string? operation, CancellationToken ct = default);
+
     /// <summary>One-time, idempotent import of WindowsRemediation:Targets (appsettings.json) into
     /// the database. Only inserts a target for a (ProjectId, Environment, Service) key that has no
     /// existing database row yet - never overwrites an existing, possibly operator-modified, row.
@@ -85,11 +120,13 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
 {
     private readonly AppDbContext _db;
     private readonly WindowsRemediationOptions _legacyOptions;
+    private readonly ILocalMachine _localMachine;
 
-    public RemediationTargetResolver(AppDbContext db, IOptions<WindowsRemediationOptions> legacyOptions)
+    public RemediationTargetResolver(AppDbContext db, IOptions<WindowsRemediationOptions> legacyOptions, ILocalMachine? localMachine = null)
     {
         _db = db;
         _legacyOptions = legacyOptions.Value;
+        _localMachine = localMachine ?? LocalMachine.Instance;
     }
 
     public async Task<DetectionTargetResolution> ResolveDetectionTargetAsync(Guid projectId, string environment, string service, CancellationToken ct = default)
@@ -128,32 +165,48 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
 
     public async Task<WindowsServiceTarget?> ResolveExecutionTargetAsync(Guid projectId, string environment, string service, string operation, CancellationToken ct = default)
     {
-        if (!ProductEnvironments.Contains(environment) || !await _db.Projects.AnyAsync(p => p.Id == projectId && p.IsActive, ct))
-            return null;
-
+        if (!ProductEnvironments.Contains(environment)) return null;
         var normalizedEnvironment = environment.ToLowerInvariant();
         var entities = await _db.RemediationTargets.AsNoTracking()
             .Where(t => t.Enabled && t.ProjectId == projectId && t.EnvironmentNormalized == normalizedEnvironment && t.Service == service)
             .ToListAsync(ct);
         if (entities.Count != 1) return null;
+        return (await EvaluateTargetAsync(entities[0], operation, ct)).Target;
+    }
 
-        var entity = entities[0];
-        if (!await _db.ProjectApiCredentials.AnyAsync(c => c.Id == entity.TelemetryCredentialId && c.ProjectId == projectId && c.RevokedAt == null, ct))
-            return null;
+    public async Task<TargetEvaluation> EvaluateTargetAsync(RemediationTarget entity, string? operation, CancellationToken ct = default)
+    {
+        if (!entity.Enabled) return TargetEvaluation.Fail(TargetReadiness.TargetDisabled);
+        if (!ProductEnvironments.Contains(entity.Environment) || !await _db.Projects.AnyAsync(p => p.Id == entity.ProjectId && p.IsActive, ct))
+            return TargetEvaluation.Fail(TargetReadiness.ProjectInactive);
+        if (!await _db.ProjectApiCredentials.AnyAsync(c => c.Id == entity.TelemetryCredentialId && c.ProjectId == entity.ProjectId && c.RevokedAt == null, ct))
+            return TargetEvaluation.Fail(TargetReadiness.CredentialInvalid);
 
         var target = ToRuntimeTarget(entity);
-        if (!target.AllowedOperations.Contains(operation, StringComparer.Ordinal) || target.MachineId == Guid.Empty ||
+        if (operation is not null && !target.AllowedOperations.Contains(operation, StringComparer.Ordinal))
+            return TargetEvaluation.Fail(TargetReadiness.OperationNotAllowed);
+        if (target.MachineId == Guid.Empty ||
             !Regex.IsMatch(target.ExpectedHostName, @"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$") ||
             !Regex.IsMatch(target.WindowsServiceName, @"^[A-Za-z0-9_.-]{1,256}$"))
-            return null;
+            return TargetEvaluation.Fail(TargetReadiness.InvalidTarget);
+        // Remediation is local-only: sc.exe against another host would authenticate to that SCM as
+        // the backend's network identity with nothing binding the endpoint to the enrolled Agent.
+        if (!_localMachine.IsLocal(target.ExpectedHostName))
+            return TargetEvaluation.Fail(TargetReadiness.RemoteNotSupported);
 
         var machine = await _db.Machines.AsNoTracking().SingleOrDefaultAsync(m => m.Id == target.MachineId, ct);
         if (machine is null || string.IsNullOrWhiteSpace(machine.AgentCredentialHash) ||
             !machine.HostName.Equals(target.ExpectedHostName, StringComparison.OrdinalIgnoreCase) ||
-            !machine.OperatingSystem.Contains("Windows", StringComparison.OrdinalIgnoreCase) ||
-            machine.LastSeenAt > DateTime.UtcNow.AddSeconds(5) ||
+            !machine.OperatingSystem.Contains("Windows", StringComparison.OrdinalIgnoreCase))
+            return TargetEvaluation.Fail(TargetReadiness.MachineMismatch);
+        if (machine.LastSeenAt > DateTime.UtcNow.AddSeconds(5) ||
             machine.LastSeenAt < DateTime.UtcNow.AddSeconds(-Math.Clamp(_legacyOptions.MachineHeartbeatMaxAgeSeconds, 10, 300)))
-            return null;
+            return TargetEvaluation.Fail(TargetReadiness.MachineOffline);
+
+        // A target whose Windows service identity was never confirmed against the live SCM (legacy
+        // appsettings import, or a row from before schema v11) must be re-confirmed by an operator.
+        if (string.IsNullOrWhiteSpace(entity.ServiceIdentityHash))
+            return TargetEvaluation.Fail(TargetReadiness.StaleTarget);
 
         // A selected target and a machine-shaped incident are not proof of SDK origin. Require
         // recent evidence that this exact credential was confirmed by this enrolled Agent.
@@ -161,16 +214,16 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
         // closed here, including during the repeated pre-SCM fingerprint checks.
         var binding = await _db.SdkMachineBindings.AsNoTracking().SingleOrDefaultAsync(
             b => b.CredentialId == target.TelemetryCredentialId, ct);
-        if (binding is null || binding.ProjectId != projectId || binding.MachineId != machine.Id ||
+        if (binding is null || binding.ProjectId != entity.ProjectId || binding.MachineId != machine.Id ||
             binding.AgentCredentialHash != machine.AgentCredentialHash ||
             binding.LastConfirmedAt < entity.UpdatedAt ||
             binding.LastConfirmedAt < DateTime.UtcNow.AddMinutes(-5))
-            return null;
+            return TargetEvaluation.Fail(TargetReadiness.AwaitingAgentConfirmation);
 
         // Bundled into the same result WindowsServiceTool.TargetFingerprint needs, rather than
         // making that caller re-query this exact Machine row a second time.
         target.AgentCredentialHash = machine.AgentCredentialHash;
-        return target;
+        return new TargetEvaluation(target, TargetReadiness.Ready);
     }
 
     public async Task ImportLegacyConfigurationAsync(CancellationToken ct = default)
@@ -211,6 +264,7 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
         TelemetryCredentialId = entity.TelemetryCredentialId,
         ExpectedHostName = entity.ExpectedHostName,
         WindowsServiceName = entity.WindowsServiceName,
-        AllowedOperations = RemediationTargetOperations.Deserialize(entity.AllowedOperationsJson)
+        AllowedOperations = RemediationTargetOperations.Deserialize(entity.AllowedOperationsJson),
+        ServiceIdentityHash = entity.ServiceIdentityHash ?? ""
     };
 }

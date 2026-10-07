@@ -352,6 +352,7 @@ public class AppDbContext : DbContext
                   .HasFilter("Enabled = 1")
                   .HasDatabaseName("IX_RemediationTargets_ProjectId_EnvironmentNormalized_Service");
             entity.Property(e => e.EnvironmentNormalized).HasMaxLength(50).IsRequired();
+            entity.Property(e => e.ServiceIdentityHash).HasMaxLength(64);
             // Machine and TelemetryCredentialId are loose Guid references (indexed, not a real
             // FK) - matching this codebase's dominant convention for cross-entity references
             // that are validated at the application layer (active/revoked/heartbeat checks)

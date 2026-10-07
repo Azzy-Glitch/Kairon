@@ -121,6 +121,42 @@ public sealed class RemediationTargetsController : ControllerBase
         return Ok(new RemediationTargetValidationResponse { Valid = errors.Count == 0, Errors = errors.ToList() });
     }
 
+    /// <summary>Read-only pre-flight for a prospective target (the guided setup's permission
+    /// check): every check reported individually. Persists nothing; never changes a service or its
+    /// permissions.</summary>
+    [HttpPost("preflight")]
+    public async Task<IActionResult> Preflight([FromBody] CreateRemediationTargetRequest request, CancellationToken cancellationToken) =>
+        Ok(await _targets.PreflightAsync(request, cancellationToken));
+
+    /// <summary>Read-only pre-flight for a saved target, including service identity and Agent
+    /// confirmation of the application's telemetry.</summary>
+    [HttpGet("{id:guid}/preflight")]
+    public async Task<IActionResult> TargetPreflight(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _targets.PreflightAsync(id, cancellationToken);
+        return result is null
+            ? NotFound(Error("Remediation target not found.", "target-not-found", StatusCodes.Status404NotFound))
+            : Ok(result);
+    }
+
+    /// <summary>Windows services on an enrolled machine with eligibility, for selecting a target
+    /// instead of typing a service name. Local machine only.</summary>
+    [HttpGet("machines/{machineId:guid}/services")]
+    public async Task<IActionResult> MachineServices(Guid machineId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var services = await _targets.ListWindowsServicesAsync(machineId, cancellationToken);
+            return services is null
+                ? NotFound(Error("Machine not found.", "machine-not-found", StatusCodes.Status404NotFound))
+                : Ok(services);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return UnprocessableEntity(Error(ex.Message, "remote-not-supported", 422));
+        }
+    }
+
     private string Actor() => Request.Headers["X-Kairon-Operator"].ToString() is { Length: > 0 } value
         ? value
         : "local-operator";

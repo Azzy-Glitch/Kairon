@@ -69,9 +69,24 @@ public sealed class WindowsServiceControl : IWindowsServiceControl
         await process.WaitForExitAsync(ct);
         var output = await stdout;
         await stderr;
-        if (process.ExitCode != 0) throw new InvalidOperationException($"SCM {operation} failed with exit code {process.ExitCode}; check target permissions and state.");
+        if (process.ExitCode != 0) throw new InvalidOperationException(DescribeScmFailure(operation, process.ExitCode));
         return output;
     }
+
+    /// <summary>Operator-readable reason for an sc.exe failure. The Win32 code is kept for the
+    /// advanced view; the prefix is the same classification the pre-flight reports.</summary>
+    public static string DescribeScmFailure(string operation, int exitCode) => exitCode switch
+    {
+        5 => $"PermissionMissing: Windows denied the backend's identity permission to {operation} this service (SCM error 5, ERROR_ACCESS_DENIED).",
+        1060 => $"ServiceMissing: the service does not exist (SCM error 1060, ERROR_SERVICE_DOES_NOT_EXIST).",
+        1051 => $"DependentServicesRunning: other running services depend on this one, so it was not stopped (SCM error 1051).",
+        1053 => $"ServiceTimeout: the service did not respond to the {operation} request in time (SCM error 1053).",
+        1056 => $"AlreadyRunning: the service is already running (SCM error 1056).",
+        1058 => $"ServiceDisabled: the service is disabled and cannot be started (SCM error 1058).",
+        1062 => $"NotStarted: the service is not running (SCM error 1062).",
+        1061 => $"ServiceBusy: the service cannot accept control messages right now (SCM error 1061).",
+        _ => $"ScmFailed: SCM {operation} failed with exit code {exitCode}."
+    };
     private static async Task<string> ReadBoundedAsync(StreamReader reader, CancellationToken ct)
     {
         var result = new StringBuilder();
@@ -93,8 +108,10 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
     private readonly AppDbContext _db;
     private readonly IRemediationTargetResolver _targets;
     private readonly IWindowsServiceControl _control;
-    protected WindowsServiceTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control)
-        => (_db, _targets, _control) = (db, targets, control);
+    private readonly IWindowsServiceInspector _inspector;
+    protected WindowsServiceTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control,
+        IWindowsServiceInspector? inspector = null)
+        => (_db, _targets, _control, _inspector) = (db, targets, control, inspector ?? WindowsServiceInspector.Instance);
     public abstract string Name { get; }
     public virtual string Description => $"{Name} on the incident's explicitly enrolled, allowlisted Windows service target. No arbitrary commands.";
     public virtual RiskLevel RiskLevel => RiskLevel.Medium;
@@ -127,7 +144,8 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
         if (target is null || IncidentMachineScope.GetMachineId(incident) != target.MachineId) return null;
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(SreJson.Serialize(new {
             target.ProjectId, target.Environment, target.Service, target.MachineId, target.TelemetryCredentialId,
-            target.ExpectedHostName, target.WindowsServiceName, Operation = Name, target.AgentCredentialHash
+            target.ExpectedHostName, target.WindowsServiceName, Operation = Name, target.AgentCredentialHash,
+            target.ServiceIdentityHash
         }))));
     }
     public async Task<RemediationToolResult> ExecuteAsync(RemediationToolContext context, CancellationToken cancellationToken = default)
@@ -148,6 +166,7 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
         try {
         if (await TargetFingerprintAsync(incident, ct) != fingerprint)
             return RemediationToolResult.Fail("Target authorization changed while waiting for execution.");
+        if (LiveServiceRefusal(target) is { } refusal) return RemediationToolResult.Fail(refusal);
         var state = await _control.QueryAsync(target.ExpectedHostName, target.WindowsServiceName, ct);
         if (Name == ServiceToolNames.RunHealthCheck) {
             return state == 4 ? Result("SCM reports Running; application recovery still requires fresh telemetry.", target) : RemediationToolResult.Fail($"SCM state is {state}, not Running.");
@@ -176,6 +195,24 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
         return Result("SCM operation completed. Application recovery has not yet been verified.", target);
         } finally { targetLock.Release(); }
     }
+    /// <summary>Re-reads the live local service immediately before any SCM call. Refuses (never
+    /// relaxes) when it is no longer the service the operator authorized, is not an eligible
+    /// application service, or the backend identity lacks the exact right this operation needs -
+    /// so a missing permission is reported as such rather than as an opaque sc.exe failure.</summary>
+    private string? LiveServiceRefusal(WindowsServiceTarget target)
+    {
+        if (!_inspector.IsSupported) return "UnsupportedPlatform: Windows service remediation requires a Windows backend.";
+        var probe = _inspector.Probe(target.WindowsServiceName);
+        if (!probe.Exists) return "ServiceMissing: the authorized Windows service no longer exists.";
+        if (probe.Eligibility != ServiceEligibility.Eligible)
+            return "Denylisted: " + ServiceEligibilityPolicy.Describe(probe.Eligibility);
+        if (string.IsNullOrEmpty(target.ServiceIdentityHash) || probe.IdentityHash != target.ServiceIdentityHash)
+            return "ServiceIdentityChanged: the service's executable or account changed since the target was confirmed; re-confirm the target.";
+        if (!probe.HasRightsFor(Name))
+            return $"PermissionMissing: the KAIRON backend identity lacks the Windows right(s) {string.Join(", ", WindowsServiceProbe.RequiredRights([Name]))} on this service.";
+        return null;
+    }
+
     private async Task WaitAsync(WindowsServiceTarget target, int expected, CancellationToken ct) {
         while (await _control.QueryAsync(target.ExpectedHostName, target.WindowsServiceName, ct) != expected)
             await Task.Delay(250, ct);
@@ -186,7 +223,7 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
     });
 }
 
-public sealed class RestartServiceTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control) : WindowsServiceTool(db, targets, control) { public override string Name => ServiceToolNames.RestartService; }
-public sealed class StartServiceTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control) : WindowsServiceTool(db, targets, control) { public override string Name => ServiceToolNames.StartService; }
-public sealed class StopServiceTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control) : WindowsServiceTool(db, targets, control) { public override string Name => ServiceToolNames.StopService; public override RiskLevel RiskLevel => RiskLevel.High; }
-public sealed class ServiceHealthCheckTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control) : WindowsServiceTool(db, targets, control) { public override string Name => ServiceToolNames.RunHealthCheck; public override RiskLevel RiskLevel => RiskLevel.Low; }
+public sealed class RestartServiceTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control, IWindowsServiceInspector? inspector = null) : WindowsServiceTool(db, targets, control, inspector) { public override string Name => ServiceToolNames.RestartService; }
+public sealed class StartServiceTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control, IWindowsServiceInspector? inspector = null) : WindowsServiceTool(db, targets, control, inspector) { public override string Name => ServiceToolNames.StartService; }
+public sealed class StopServiceTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control, IWindowsServiceInspector? inspector = null) : WindowsServiceTool(db, targets, control, inspector) { public override string Name => ServiceToolNames.StopService; public override RiskLevel RiskLevel => RiskLevel.High; }
+public sealed class ServiceHealthCheckTool(AppDbContext db, IRemediationTargetResolver targets, IWindowsServiceControl control, IWindowsServiceInspector? inspector = null) : WindowsServiceTool(db, targets, control, inspector) { public override string Name => ServiceToolNames.RunHealthCheck; public override RiskLevel RiskLevel => RiskLevel.Low; }

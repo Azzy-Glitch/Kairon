@@ -48,7 +48,10 @@ public sealed class TestHarness : IDisposable
 
     /// <summary>A fresh resolver over this harness's own Db/WindowsRemediation each access - cheap
     /// to construct, and always reflects any mutation tests make to WindowsRemediation.</summary>
-    public IRemediationTargetResolver Targets => new RemediationTargetResolver(Db, Opt(WindowsRemediation));
+    public IRemediationTargetResolver Targets => new RemediationTargetResolver(Db, Opt(WindowsRemediation), WindowsServices);
+
+    /// <summary>The fake local SCM/host boundary every harness-built resolver and tool uses.</summary>
+    public FakeWindowsServices WindowsServices { get; } = new();
 
     /// <summary>A second AppDbContext over the SAME underlying in-memory SQLite connection as Db -
     /// simulates a genuinely independent request's own scoped DbContext, distinct from Db's own
@@ -345,6 +348,7 @@ public sealed class TestHarness : IDisposable
             ExpectedHostName = expectedHostName,
             WindowsServiceName = windowsServiceName,
             AllowedOperationsJson = RemediationTargetOperations.Serialize(allowedOperations ?? RemediationTargetOperations.Known),
+            ServiceIdentityHash = FakeWindowsServices.DefaultIdentity,
             Enabled = enabled
         };
         Db.RemediationTargets.Add(target);

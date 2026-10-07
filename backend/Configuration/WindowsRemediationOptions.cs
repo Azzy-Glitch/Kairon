@@ -32,4 +32,8 @@ public sealed class WindowsServiceTarget
     /// Machine to read this from. Lets WindowsServiceTool.TargetFingerprint use the value this
     /// resolve call already read instead of re-querying the same Machine a second time.</summary>
     public string AgentCredentialHash { get; set; } = "";
+
+    /// <summary>The operator-confirmed Windows service identity (RemediationTarget.ServiceIdentityHash);
+    /// never set from configuration, so a legacy appsettings target always requires confirmation.</summary>
+    public string ServiceIdentityHash { get; set; } = "";
 }

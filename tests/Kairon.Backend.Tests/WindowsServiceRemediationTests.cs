@@ -32,10 +32,10 @@ public sealed class WindowsServiceRemediationTests
             environment: incident.Environment, service: incident.Service, allowedOperations: [operation]);
         var scm = new Scm { State = initial };
         WindowsServiceTool tool = operation switch {
-            "StartService" => new StartServiceTool(h.Db, h.Targets, scm),
-            "StopService" => new StopServiceTool(h.Db, h.Targets, scm),
-            "RunHealthCheck" => new ServiceHealthCheckTool(h.Db, h.Targets, scm),
-            _ => new RestartServiceTool(h.Db, h.Targets, scm)
+            "StartService" => new StartServiceTool(h.Db, h.Targets, scm, h.WindowsServices),
+            "StopService" => new StopServiceTool(h.Db, h.Targets, scm, h.WindowsServices),
+            "RunHealthCheck" => new ServiceHealthCheckTool(h.Db, h.Targets, scm, h.WindowsServices),
+            _ => new RestartServiceTool(h.Db, h.Targets, scm, h.WindowsServices)
         };
         var result = await tool.ExecuteAsync(new RemediationToolContext {
             ProjectId = incident.ProjectId, IncidentId = incident.Id, IncidentKey = incident.IncidentKey,
@@ -113,7 +113,7 @@ public sealed class WindowsServiceRemediationTests
         var target = h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName,
             environment: environment, service: incident.Service, allowedOperations: [ServiceToolNames.RestartService]);
         var scm = new Scm();
-        var tool = new RestartServiceTool(h.Db, h.Targets, scm);
+        var tool = new RestartServiceTool(h.Db, h.Targets, scm, h.WindowsServices);
         var registry = new RemediationToolRegistry([tool]);
         var policy = new RemediationPolicy(registry, Options.Create(new RemediationOptions()), NullLogger<RemediationPolicy>.Instance);
         var parameters = new Dictionary<string, string> { ["targetFingerprint"] = (await tool.TargetFingerprintAsync(incident))! };
@@ -164,7 +164,7 @@ public sealed class WindowsServiceRemediationTests
         h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName,
             environment: incident.Environment, service: incident.Service, allowedOperations: [ServiceToolNames.RestartService]);
         var scm = new Scm { State = scenario == "stopped" ? 1 : 4 };
-        var tool = new RestartServiceTool(h.Db, h.Targets, scm);
+        var tool = new RestartServiceTool(h.Db, h.Targets, scm, h.WindowsServices);
         var action = new RemediationAction { IncidentId = incident.Id, ActionKey = "ACT-scope", ActionType = tool.Name, Status = RemediationStatus.Executed, CompletedAt = DateTime.UtcNow.AddSeconds(-20), ParametersJson = SreJson.Serialize(new Dictionary<string, string> { ["targetFingerprint"] = (await tool.TargetFingerprintAsync(incident))! }) };
         incident.Actions.Add(action); h.Db.RemediationActions.Add(action);
         var before = h.SeedMetric(DateTime.UtcNow.AddSeconds(-30), cpu: 95, retries: 50);
@@ -205,7 +205,7 @@ public sealed class WindowsServiceRemediationTests
         var target = h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName,
             environment: incident.Environment, service: incident.Service, allowedOperations: [ServiceToolNames.StopService]);
         var scm = new Scm { State = scenario == "running" ? 4 : 1 };
-        var tool = new StopServiceTool(h.Db, h.Targets, scm);
+        var tool = new StopServiceTool(h.Db, h.Targets, scm, h.WindowsServices);
         var action = new RemediationAction { IncidentId = incident.Id, ActionKey = "ACT-scope", ActionType = tool.Name, Status = RemediationStatus.Executed, CompletedAt = DateTime.UtcNow.AddSeconds(-20), ParametersJson = SreJson.Serialize(new Dictionary<string, string> { ["targetFingerprint"] = (await tool.TargetFingerprintAsync(incident))! }) };
         incident.Actions.Add(action); h.Db.RemediationActions.Add(action);
 
@@ -264,7 +264,7 @@ public sealed class WindowsServiceRemediationTests
             environment: incident.Environment, service: incident.Service, allowedOperations: [ServiceToolNames.StartService]);
 
         var scm = new MutatingScm { State = 1 };
-        var tool = new StartServiceTool(h.Db, h.Targets, scm);
+        var tool = new StartServiceTool(h.Db, h.Targets, scm, h.WindowsServices);
         var fingerprint = (await tool.TargetFingerprintAsync(incident))!;
         scm.OnQuery = () => { target.Enabled = false; h.Db.SaveChanges(); };
 
@@ -295,7 +295,7 @@ public sealed class WindowsServiceRemediationTests
         h.Db.SaveChanges();
         h.SeedRemediationTarget(machine.Id, credential.Id, machine.HostName, allowedOperations: [ServiceToolNames.RestartService]);
 
-        var tool = new RestartServiceTool(h.Db, h.Targets, new Scm());
+        var tool = new RestartServiceTool(h.Db, h.Targets, new Scm(), h.WindowsServices);
         Assert.NotNull(await tool.TargetFingerprintAsync(incident)); // sanity: resolves fine while the machine exists
 
         h.Db.Machines.Remove(machine);

@@ -32,7 +32,8 @@ public sealed class RemediationTargetManagementTests : IDisposable
     private readonly TestHarness _h = new();
 
     private RemediationTargetManagementService Service() =>
-        new(_h.Db, new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+        new(_h.Db, new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System,
+            null, _h.WindowsServices, _h.WindowsServices);
 
     private void SeedConfirmedBinding(Machine machine, ProjectApiCredential credential)
     {
@@ -528,10 +529,10 @@ public sealed class RemediationTargetManagementTests : IDisposable
         await dbA.RemediationTargets.SingleAsync(t => t.Id == target.Id);
         await dbB.RemediationTargets.SingleAsync(t => t.Id == target.Id);
         var controllerA = new RemediationTargetsController(new RemediationTargetManagementService(dbA,
-            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System))
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System, null, _h.WindowsServices, _h.WindowsServices))
         { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() } };
         var controllerB = new RemediationTargetsController(new RemediationTargetManagementService(dbB,
-            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System))
+            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System, null, _h.WindowsServices, _h.WindowsServices))
         { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() } };
 
         Assert.IsType<NoContentResult>(await controllerA.Delete(target.Id, default));
@@ -595,7 +596,7 @@ public sealed class RemediationTargetManagementTests : IDisposable
         incident.CorrelatedMetricsJson = SreJson.Serialize(snapshots);
         _h.Db.SaveChanges();
 
-        var tool = new RestartServiceTool(_h.Db, _h.Targets, new Scm());
+        var tool = new RestartServiceTool(_h.Db, _h.Targets, new Scm(), _h.WindowsServices);
         var originalFingerprint = await tool.TargetFingerprintAsync(incident);
         Assert.NotNull(originalFingerprint);
 
@@ -667,7 +668,7 @@ public sealed class RemediationTargetManagementTests : IDisposable
         _h.Db.SaveChanges();
 
         var scm = new Scm { State = 4 };
-        var tool = new RestartServiceTool(_h.Db, _h.Targets, scm);
+        var tool = new RestartServiceTool(_h.Db, _h.Targets, scm, _h.WindowsServices);
         var fingerprint = (await tool.TargetFingerprintAsync(incident))!;
 
         var result = await tool.ExecuteAsync(new RemediationToolContext
@@ -833,9 +834,9 @@ public sealed class RemediationTargetManagementTests : IDisposable
         await dbB.RemediationTargets.SingleAsync(t => t.Id == target.Id);
 
         var serviceA = new RemediationTargetManagementService(dbA,
-            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System, null, _h.WindowsServices, _h.WindowsServices);
         var serviceB = new RemediationTargetManagementService(dbB,
-            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System, null, _h.WindowsServices, _h.WindowsServices);
 
         UpdateRemediationTargetRequest Request(string windowsServiceName) => new()
         {
@@ -868,9 +869,9 @@ public sealed class RemediationTargetManagementTests : IDisposable
         await dbB.RemediationTargets.SingleAsync(t => t.Id == target.Id);
 
         var serviceA = new RemediationTargetManagementService(dbA,
-            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System, null, _h.WindowsServices, _h.WindowsServices);
         var serviceB = new RemediationTargetManagementService(dbB,
-            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System, null, _h.WindowsServices, _h.WindowsServices);
 
         var resultA = await serviceA.SetEnabledAsync(target.Id, false, "operator-a", default);
         var resultB = await serviceB.SetEnabledAsync(target.Id, false, "operator-b", default);
@@ -891,9 +892,9 @@ public sealed class RemediationTargetManagementTests : IDisposable
         using var dbA = _h.CreateAdditionalDbContext();
         using var dbB = _h.CreateAdditionalDbContext();
         var serviceA = new RemediationTargetManagementService(dbA,
-            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System, null, _h.WindowsServices, _h.WindowsServices);
         var serviceB = new RemediationTargetManagementService(dbB,
-            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System, null, _h.WindowsServices, _h.WindowsServices);
 
         // Real concurrency (not called one after the other): the database's own filtered unique
         // index - not the in-memory pre-check, which a genuine race can outrun - is what must
@@ -948,9 +949,9 @@ public sealed class RemediationTargetManagementTests : IDisposable
         using var dbA = _h.CreateAdditionalDbContext();
         using var dbB = _h.CreateAdditionalDbContext();
         var serviceA = new RemediationTargetManagementService(dbA,
-            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+            new PlatformAuditService(dbA, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System, null, _h.WindowsServices, _h.WindowsServices);
         var serviceB = new RemediationTargetManagementService(dbB,
-            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System);
+            new PlatformAuditService(dbB, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System, null, _h.WindowsServices, _h.WindowsServices);
 
         var requestA = ValidRequest(machine, credential);
         requestA.Environment = "Production";
