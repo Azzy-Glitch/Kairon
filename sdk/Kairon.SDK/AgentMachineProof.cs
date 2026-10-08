@@ -13,15 +13,27 @@ namespace Kairon.SDK;
 /// </summary>
 internal static class AgentMachineProof
 {
-    private const int Port = 47891;
+    internal const int ProductionPort = 47891;
+
+    /// <summary>The installed Agent's fixed loopback port. Settable only inside this assembly and
+    /// its test friends: the SDK test assembly points it away from a real Agent running on the
+    /// developer's machine (see its module initializer); production never changes it.</summary>
+    internal static int DefaultPort { get; set; } = ProductionPort;
+
+    /// <summary>The backend identity the Agent compares with its own configured endpoint - the
+    /// exact base the telemetry is posted to, path base included (scheme://host[:port]/base, no
+    /// trailing slash), matching what sdk-python sends.</summary>
+    internal static string ProofEndpoint(Uri baseAddress) =>
+        baseAddress.GetLeftPart(UriPartial.Path).TrimEnd('/');
 
     internal static async Task<Guid?> TryAcquireAsync(HttpClient http, KaironOptions options,
         string service, string environment, byte[] body, CancellationToken ct, int? listenPort = null)
     {
         if (options.ProjectId == Guid.Empty || string.IsNullOrWhiteSpace(options.ApiKey) ||
             !KaironEndpointSecurity.IsAllowed(http.BaseAddress)) return null;
-        var endpoint = http.BaseAddress!.GetLeftPart(UriPartial.Authority).TrimEnd('/');
-        if (!await ExchangeAsync(endpoint, null, ct, listenPort ?? Port)) return null;
+        var endpoint = ProofEndpoint(http.BaseAddress!);
+        var port = listenPort ?? DefaultPort;
+        if (!await ExchangeAsync(endpoint, null, ct, port)) return null;
 
         try
         {
@@ -41,7 +53,7 @@ internal static class AgentMachineProof
             using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(ct));
             if (!document.RootElement.TryGetProperty("proofId", out var value) ||
                 !Guid.TryParse(value.GetString(), out var id) || id == Guid.Empty) return null;
-            return await ExchangeAsync(endpoint, id, ct, listenPort ?? Port) ? id : null;
+            return await ExchangeAsync(endpoint, id, ct, port) ? id : null;
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {

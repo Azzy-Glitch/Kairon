@@ -14,9 +14,18 @@ public class KaironOptions
     /// <summary>
     /// Optional path to the SDK's existing protected pairing-credential record. When omitted,
     /// both standalone and ASP.NET Core integrations use
-    /// %LOCALAPPDATA%\Kairon\sdk\credential.json on Windows.
+    /// %LOCALAPPDATA%\Kairon\sdk\credential-dotnet.json on Windows (a credential.json written by an
+    /// earlier .NET SDK version there is adopted automatically).
     /// </summary>
     public string? CredentialPath { get; set; }
+
+    /// <summary>Environment the operator chose when generating the pairing code, carried with the
+    /// stored credential. A fallback only: <see cref="Environment"/> and ASPNETCORE_ENVIRONMENT win.</summary>
+    internal string? PairedEnvironment { get; set; }
+
+    /// <summary>Service the operator chose when generating the pairing code. A fallback only:
+    /// <see cref="ApplicationName"/>, <see cref="ServiceName"/> and Kairon_APPLICATION_NAME win.</summary>
+    internal string? PairedService { get; set; }
     /// <summary>
     /// Legacy payload hint retained for API compatibility. It is not machine proof: the backend
     /// ignores caller-supplied MachineId and assigns scope only after enrolled Agent confirmation.

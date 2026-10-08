@@ -44,6 +44,9 @@ public class KaironTelemetryClient
         _agentProofPort = agentProofPort;
     }
 
+    /// <summary>The same options instance the sender uses to normalize queued items.</summary>
+    internal KaironOptions Options => _options;
+
     /// <summary>
     /// Normal host delivery uses the backend's idempotent normalized contract. The existing
     /// public SendAsync/SendMetricAsync methods remain legacy-compatible for direct callers;
@@ -51,38 +54,72 @@ public class KaironTelemetryClient
     /// </summary>
     internal Task<TelemetryResponse?> SendNormalizedAsync(TelemetryPayload payload,
         CancellationToken cancellationToken = default) =>
-        PostNormalizedAsync(NormalizedTelemetryEvent.From(payload, _options), cancellationToken);
+        SendOneNormalizedAsync(NormalizedTelemetryEvent.From(payload, _options), cancellationToken);
 
     internal Task<TelemetryResponse?> SendNormalizedAsync(MetricPayload payload,
         CancellationToken cancellationToken = default) =>
-        PostNormalizedAsync(NormalizedTelemetryEvent.From(payload, _options), cancellationToken);
+        SendOneNormalizedAsync(NormalizedTelemetryEvent.From(payload, _options), cancellationToken);
 
-    private async Task<TelemetryResponse?> PostNormalizedAsync(NormalizedTelemetryEvent item,
+    private async Task<TelemetryResponse?> SendOneNormalizedAsync(NormalizedTelemetryEvent item,
         CancellationToken cancellationToken)
     {
         if (!_options.EnableTelemetry) return null;
+        var result = await SendNormalizedBatchAsync(new[] { item }, cancellationToken).ConfigureAwait(false);
+        return new TelemetryResponse { Success = result.Delivered == 1, Message = result.Message };
+    }
+
+    /// <summary>The backend's own per-batch bound (RequestSizeLimit on api/v1/telemetry/events).</summary>
+    internal const int MaxBatchBytes = 1_048_576;
+
+    /// <summary>
+    /// One POST per batch instead of one per event: the backend's telemetry rate limit is per
+    /// request (600/minute/IP), so per-event sends throttled a busy host long before the collector
+    /// was actually loaded. Never throws. A batch over the size bound is split in half until each
+    /// part fits; a single event that alone exceeds it is reported as failed. A 429 is returned
+    /// to the caller with the server's Retry-After instead of being retried in the same window.
+    /// </summary>
+    internal async Task<NormalizedBatchResult> SendNormalizedBatchAsync(
+        IReadOnlyList<NormalizedTelemetryEvent> events, CancellationToken cancellationToken)
+    {
+        if (events.Count == 0) return new NormalizedBatchResult(0, 0, "Delivered.");
+        if (!_options.EnableTelemetry) return new NormalizedBatchResult(0, events.Count, null);
         if (!KaironEndpointSecurity.IsAllowed(_http.BaseAddress))
-            return new TelemetryResponse { Success = false, Message = "Kairon endpoint rejected: insecure transport." };
+            return new NormalizedBatchResult(0, events.Count, "Kairon endpoint rejected: insecure transport.");
 
         byte[] body;
         try
         {
-            body = JsonSerializer.SerializeToUtf8Bytes(new { Events = new[] { item } },
+            body = JsonSerializer.SerializeToUtf8Bytes(new { Events = events },
                 new JsonSerializerOptions(JsonSerializerDefaults.Web));
         }
         catch
         {
-            return new TelemetryResponse { Success = false, Message = "Telemetry serialization failed." };
+            return new NormalizedBatchResult(0, events.Count, "Telemetry serialization failed.");
         }
-        if (body.Length > 1_048_576)
-            return new TelemetryResponse { Success = false, Message = "Telemetry batch exceeds backend size limit." };
+        if (body.Length > MaxBatchBytes)
+        {
+            if (events.Count == 1)
+                return new NormalizedBatchResult(0, 1, "Telemetry batch exceeds backend size limit.");
+            var half = events.Count / 2;
+            var first = await SendNormalizedBatchAsync(events.Take(half).ToList(), cancellationToken).ConfigureAwait(false);
+            if (first.RateLimited) return first with { Failed = first.Failed + events.Count - half };
+            var second = await SendNormalizedBatchAsync(events.Skip(half).ToList(), cancellationToken).ConfigureAwait(false);
+            return new NormalizedBatchResult(first.Delivered + second.Delivered, first.Failed + second.Failed,
+                second.Failed > 0 ? second.Message : first.Message, second.RetryAfter);
+        }
 
-        // The same EventId and exact bytes are reused across transient retries. The backend
+        // The backend binds a proof to one project/service/environment and answers a proof-bearing
+        // mixed batch with 400, so only a homogeneous batch ever asks the Agent for one.
+        var useProof = NormalizedBatchScope.IsHomogeneous(events);
+
+        // The same EventIds and exact bytes are reused across transient retries. The backend
         // treats a response lost after commit as a duplicate, never a second incident.
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.TimeoutSeconds)));
-        for (var attempt = 0; attempt < 2; attempt++)
+        var transientRetryUsed = false;
+        while (true)
         {
+            var proofAttached = false;
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Post, "api/v1/telemetry/events")
@@ -92,19 +129,43 @@ public class KaironTelemetryClient
                 request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
                 if (!string.IsNullOrWhiteSpace(_options.ApiKey))
                     request.Headers.TryAddWithoutValidation("X-Kairon-API-Key", _options.ApiKey);
-                var proof = await AgentMachineProof.TryAcquireAsync(_http, _options,
-                    item.Service, item.Environment, body, timeout.Token, _agentProofPort);
-                if (proof.HasValue)
-                    request.Headers.TryAddWithoutValidation("X-Kairon-Machine-Proof", proof.Value.ToString());
+                if (useProof)
+                {
+                    var head = events[0];
+                    var proof = await AgentMachineProof.TryAcquireAsync(_http, _options,
+                        string.IsNullOrWhiteSpace(head.Service) ? head.Application : head.Service,
+                        head.Environment, body, timeout.Token, _agentProofPort);
+                    if (proof.HasValue)
+                    {
+                        request.Headers.TryAddWithoutValidation("X-Kairon-Machine-Proof", proof.Value.ToString());
+                        proofAttached = true;
+                    }
+                }
 
                 using var response = await _http.SendAsync(request, timeout.Token);
                 var status = (int)response.StatusCode;
                 if (!response.IsSuccessStatusCode)
                 {
-                    if (attempt == 0 && status is 429 or 500 or 502 or 503 or 504)
+                    // A rejected proof (expired, consumed by a lost earlier attempt, Agent not
+                    // enrolled for this backend) is not an authentication failure: the API key may
+                    // be perfectly valid, and unscoped telemetry is still telemetry. Resend the
+                    // same bytes once without the proof; only a 401 WITHOUT a proof means the
+                    // project credential itself was rejected.
+                    if (proofAttached && status is 400 or 401)
+                    {
+                        useProof = false;
                         continue;
+                    }
+                    if (status == 429)
+                        return new NormalizedBatchResult(0, events.Count,
+                            "Kairon server returned 429. (rate limited; backing off)", RetryAfterOf(response));
+                    if (!transientRetryUsed && status is 500 or 502 or 503 or 504)
+                    {
+                        transientRetryUsed = true;
+                        continue;
+                    }
                     var suffix = status is 401 or 403 ? " (project authentication rejected)" : "";
-                    return new TelemetryResponse { Success = false, Message = $"Kairon server returned {status}.{suffix}" };
+                    return new NormalizedBatchResult(0, events.Count, $"Kairon server returned {status}.{suffix}");
                 }
 
                 using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(timeout.Token));
@@ -114,31 +175,51 @@ public class KaironTelemetryClient
                     result.TryGetProperty("duplicates", out var duplicates) && duplicates.TryGetInt32(out var duplicateCount) &&
                     result.TryGetProperty("rejected", out var rejected) && rejected.TryGetInt32(out var rejectedCount))
                 {
-                    var success = acceptedCount + duplicateCount == 1 && rejectedCount == 0;
-                    return new TelemetryResponse { Success = success,
-                        Message = success ? "Delivered." : "Collector rejected telemetry." };
+                    // The backend reports counts, not which events; never claim more than were sent.
+                    var delivered = Math.Clamp(acceptedCount + duplicateCount, 0, events.Count);
+                    var success = delivered == events.Count && rejectedCount == 0;
+                    if (success) return new NormalizedBatchResult(delivered, 0, "Delivered.");
+                    delivered = Math.Min(delivered, Math.Max(0, events.Count - rejectedCount));
+                    return new NormalizedBatchResult(delivered, events.Count - delivered, "Collector rejected telemetry.");
                 }
-                if (attempt == 1)
-                    return new TelemetryResponse { Success = false, Message = "Collector returned an invalid response." };
+                if (transientRetryUsed)
+                    return new NormalizedBatchResult(0, events.Count, "Collector returned an invalid response.");
+                transientRetryUsed = true;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                return new TelemetryResponse { Success = false, Message = "Telemetry send cancelled." };
+                return new NormalizedBatchResult(0, events.Count, "Telemetry send cancelled.");
             }
             catch (OperationCanceledException)
             {
-                return new TelemetryResponse { Success = false, Message = "Telemetry send timed out." };
+                return new NormalizedBatchResult(0, events.Count, "Telemetry send timed out.");
             }
-            catch (Exception) when (attempt == 0)
+            catch (Exception) when (!transientRetryUsed)
             {
-                // A lost response may follow a successful commit. Retry only the same EventId.
+                // A lost response may follow a successful commit. Retry only the same EventIds.
+                transientRetryUsed = true;
             }
             catch
             {
-                return new TelemetryResponse { Success = false, Message = "Unable to send telemetry to Kairon." };
+                return new NormalizedBatchResult(0, events.Count, "Unable to send telemetry to Kairon.");
             }
         }
-        return new TelemetryResponse { Success = false, Message = "Unable to send telemetry to Kairon." };
+    }
+
+    /// <summary>Upper bound on any server-requested pause, so a hostile or misconfigured
+    /// Retry-After can never park the sender indefinitely.</summary>
+    internal static readonly TimeSpan MaxRetryAfter = TimeSpan.FromSeconds(30);
+
+    private static readonly TimeSpan DefaultRetryAfter = TimeSpan.FromSeconds(5);
+
+    private static TimeSpan RetryAfterOf(HttpResponseMessage response)
+    {
+        var header = response.Headers.RetryAfter;
+        TimeSpan? requested = header?.Delta
+            ?? (header?.Date is { } date ? date - DateTimeOffset.UtcNow : null);
+        var delay = requested ?? DefaultRetryAfter;
+        if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
+        return delay > MaxRetryAfter ? MaxRetryAfter : delay;
     }
 
     public Task<TelemetryResponse?> SendAsync(
@@ -188,14 +269,6 @@ public class KaironTelemetryClient
         {
             var requestBody = JsonSerializer.SerializeToUtf8Bytes(payload, payload.GetType(),
                 new JsonSerializerOptions(JsonSerializerDefaults.Web));
-            using var request = new HttpRequestMessage(HttpMethod.Post, path)
-            {
-                Content = new ByteArrayContent(requestBody)
-            };
-            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
-
-            if (!string.IsNullOrWhiteSpace(_options.ApiKey))
-                request.Headers.Add("X-Kairon-API-Key", _options.ApiKey);
 
             // Bound every send independently of the ambient token, so a caller that passes
             // CancellationToken.None still cannot be held indefinitely by a hung collector.
@@ -214,15 +287,43 @@ public class KaironTelemetryClient
                 MetricPayload metric => metric.Environment,
                 _ => ""
             };
-            if (!string.IsNullOrWhiteSpace(service) && !string.IsNullOrWhiteSpace(environment))
+            var useProof = !string.IsNullOrWhiteSpace(service) && !string.IsNullOrWhiteSpace(environment);
+            HttpResponseMessage response;
+            while (true)
             {
-                var proof = await AgentMachineProof.TryAcquireAsync(_http, _options,
-                    service, environment, requestBody, timeout.Token, _agentProofPort);
-                if (proof.HasValue)
-                    request.Headers.TryAddWithoutValidation("X-Kairon-Machine-Proof", proof.Value.ToString());
-            }
+                using var request = new HttpRequestMessage(HttpMethod.Post, path)
+                {
+                    Content = new ByteArrayContent(requestBody)
+                };
+                request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
 
-            using var response = await _http.SendAsync(request, timeout.Token);
+                if (!string.IsNullOrWhiteSpace(_options.ApiKey))
+                    request.Headers.Add("X-Kairon-API-Key", _options.ApiKey);
+
+                var proofAttached = false;
+                if (useProof)
+                {
+                    var proof = await AgentMachineProof.TryAcquireAsync(_http, _options,
+                        service, environment, requestBody, timeout.Token, _agentProofPort);
+                    if (proof.HasValue)
+                    {
+                        request.Headers.TryAddWithoutValidation("X-Kairon-Machine-Proof", proof.Value.ToString());
+                        proofAttached = true;
+                    }
+                }
+
+                response = await _http.SendAsync(request, timeout.Token);
+                // Same rule as the normalized path: a rejected proof is retried once unscoped, and
+                // only a 401 without a proof is reported as an authentication failure.
+                if (proofAttached && (int)response.StatusCode is 400 or 401)
+                {
+                    response.Dispose();
+                    useProof = false;
+                    continue;
+                }
+                break;
+            }
+            using var responseScope = response;
 
             if (!response.IsSuccessStatusCode)
             {

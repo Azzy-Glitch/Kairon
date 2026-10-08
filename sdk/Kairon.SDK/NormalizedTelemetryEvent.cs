@@ -83,6 +83,36 @@ internal sealed class NormalizedTelemetryEvent
     }
 }
 
+/// <summary>Outcome of one batch send. <see cref="RetryAfter"/> is set only for a 429, already
+/// bounded by <see cref="KaironTelemetryClient.MaxRetryAfter"/>.</summary>
+internal sealed record NormalizedBatchResult(int Delivered, int Failed, string? Message, TimeSpan? RetryAfter = null)
+{
+    public bool RateLimited => RetryAfter.HasValue;
+}
+
+/// <summary>
+/// The backend's machine-proof scope for a batch: one project, one service (falling back to the
+/// application when blank, compared ordinally) and one environment (blank meaning Development,
+/// compared case-insensitively) - mirrored exactly from PlatformTelemetryController so the SDK
+/// never attaches a proof the backend would reject as a mixed batch.
+/// </summary>
+internal readonly record struct NormalizedBatchScope(Guid ProjectId, string Service, string Environment)
+{
+    internal static NormalizedBatchScope Of(NormalizedTelemetryEvent item) => new(
+        item.ProjectId,
+        string.IsNullOrWhiteSpace(item.Service) ? item.Application : item.Service,
+        (string.IsNullOrWhiteSpace(item.Environment) ? "Development" : item.Environment).ToUpperInvariant());
+
+    internal static bool IsHomogeneous(IReadOnlyList<NormalizedTelemetryEvent> events)
+    {
+        if (events.Count == 0) return false;
+        var first = Of(events[0]);
+        for (var i = 1; i < events.Count; i++)
+            if (Of(events[i]) != first) return false;
+        return true;
+    }
+}
+
 internal sealed class NormalizedHttpContext
 {
     public string Endpoint { get; init; } = "";

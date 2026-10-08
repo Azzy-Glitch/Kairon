@@ -8,8 +8,18 @@ namespace Kairon.SDK.Tests;
 
 public class DeliveryTests
 {
+    /// <summary>Like the real backend, a 200 reports how many of the POSTed events it accepted -
+    /// the sender batches, so a fixed "accepted":1 would misreport a multi-event POST.</summary>
     private sealed class Handler(Func<CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => send(ct);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
+            var response = await send(ct);
+            if (response.StatusCode == HttpStatusCode.OK && request.Content is not null) {
+                using var body = System.Text.Json.JsonDocument.Parse(await request.Content.ReadAsByteArrayAsync(ct));
+                var count = body.RootElement.GetProperty("events").GetArrayLength();
+                response.Content = new StringContent($"{{\"accepted\":{count},\"duplicates\":0,\"rejected\":0}}");
+            }
+            return response;
+        }
     }
     private static (KaironTelemetryQueue Queue, KaironTelemetrySender Sender) Create(HttpMessageHandler handler, int capacity = 10) {
         var options = Options.Create(new KaironOptions { QueueCapacity = capacity });

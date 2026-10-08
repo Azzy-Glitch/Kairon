@@ -136,6 +136,8 @@ public static class KaironExtensions
         target.ApiKey = source.ApiKey;
         target.ProjectId = source.ProjectId;
         target.CredentialPath = source.CredentialPath;
+        target.PairedEnvironment = source.PairedEnvironment;
+        target.PairedService = source.PairedService;
         target.MachineId = source.MachineId;
         target.EnableTelemetry = source.EnableTelemetry;
         target.CaptureRequestBody = source.CaptureRequestBody;

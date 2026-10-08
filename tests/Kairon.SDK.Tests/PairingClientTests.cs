@@ -39,6 +39,60 @@ public class PairingClientTests
     }
 
     [Fact]
+    public async Task RejectedPairingCodeExplainsEveryReasonIncludingTheWrongSdkType()
+    {
+        var handler = new StubHandler(HttpStatusCode.BadRequest, """{"error":"Pairing code is invalid, expired, revoked, or already used."}""");
+
+        var result = await KaironPairingClient.PairAsync("http://localhost:8000", "pair_python_code", handler: handler);
+
+        Assert.False(result.Success);
+        Assert.False(result.RateLimited);
+        Assert.Equal(400, result.StatusCode);
+        Assert.Contains("already used", result.Error);
+        Assert.Contains("different SDK type", result.Error);
+    }
+
+    [Fact]
+    public async Task RateLimitedPairingSaysRetryShortlyAndThatTheCodeWasNotConsumed()
+    {
+        var handler = new StubHandler((HttpStatusCode)429, "");
+
+        var result = await KaironPairingClient.PairAsync("http://localhost:8000", "pair_x", handler: handler);
+
+        Assert.False(result.Success);
+        Assert.True(result.RateLimited);
+        Assert.Contains("rate limited", result.Error);
+        Assert.Contains("not consumed", result.Error);
+        Assert.DoesNotContain("invalid", result.Error);
+    }
+
+    [Fact]
+    public async Task OperatorChosenEnvironmentAndServiceAreReturnedWhenPresent()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK,
+            """{"apiKey":"krn_abc123","projectId":"11111111-1111-1111-1111-111111111111","pairingId":"22222222-2222-2222-2222-222222222222","endpoint":"http://127.0.0.1:8000","environment":"Staging","service":" checkout-api "}""");
+
+        var result = await KaironPairingClient.PairAsync("http://localhost:8000", "pair_validcode", handler: handler);
+
+        Assert.True(result.Success);
+        Assert.Equal("Staging", result.Environment);
+        Assert.Equal("checkout-api", result.Service);
+    }
+
+    [Fact]
+    public async Task OlderBackendsWithoutPairingDefaultsStillPair()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK,
+            """{"apiKey":"krn_abc123","projectId":"11111111-1111-1111-1111-111111111111","pairingId":"22222222-2222-2222-2222-222222222222","endpoint":"http://127.0.0.1:8000"}""");
+
+        var result = await KaironPairingClient.PairAsync("http://localhost:8000", "pair_validcode", handler: handler);
+
+        Assert.True(result.Success);
+        Assert.Null(result.Environment);
+        Assert.Null(result.Service);
+    }
+
+    [Fact]
     public async Task MalformedResponseBodyReturnsFailureNotAnException()
     {
         var handler = new StubHandler(HttpStatusCode.OK, "not json");

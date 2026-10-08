@@ -213,6 +213,7 @@ internal static class KaironIdentity
         !string.IsNullOrWhiteSpace(options.ApplicationName)
             ? options.ApplicationName!
             : Environment.GetEnvironmentVariable("Kairon_APPLICATION_NAME")
+              ?? options.PairedService
               ?? System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name
               ?? "UnknownApplication";
 
@@ -225,5 +226,6 @@ internal static class KaironIdentity
         !string.IsNullOrWhiteSpace(options.Environment)
             ? options.Environment!
             : Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
+              ?? options.PairedEnvironment
               ?? "Production";
 }

@@ -264,7 +264,7 @@ public sealed class RePairingTests : IDisposable
     }
 
     [Fact]
-    public void APairingCodeCannotBeRedeemedTwice()
+    public void APairingCodeLeftInConfigurationIsReusedOnRestartNotRedeemedAgain()
     {
         using var server = new FakeRepairServer();
         server.NextPairingBody = JsonSerializer.Serialize(new
@@ -275,14 +275,112 @@ public sealed class RePairingTests : IDisposable
         using (new KaironClient(pairingCode: "pair_onceonly", endpoint: server.Url, configPath: ConfigPath)) { }
         Assert.Equal(1, server.PairingCalls);
 
+        // The backend would now reject the spent code - a restart with the same code still in
+        // configuration must recognise its own stored credential instead of failing startup.
+        server.NextPairingStatus = HttpStatusCode.BadRequest;
+        server.NextPairingBody = """{"error":"Pairing code is invalid, expired, revoked, or already used."}""";
+
+        using var restarted = new KaironClient(pairingCode: "pair_onceonly", endpoint: server.Url, configPath: ConfigPath);
+
+        Assert.Equal(Guid.Parse("77777777-7777-7777-7777-777777777777"), restarted.ProjectId);
+        Assert.Equal(1, server.PairingCalls); // never redeemed a second time
+    }
+
+    [Fact]
+    public void ADifferentSpentPairingCodeStillFailsClearlyAndIsNotMistakenForTheStoredOne()
+    {
+        using var server = new FakeRepairServer();
+        server.NextPairingBody = JsonSerializer.Serialize(new
+        {
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
+        });
+        using (new KaironClient(pairingCode: "pair_first", endpoint: server.Url, configPath: ConfigPath)) { }
+
         server.NextPairingStatus = HttpStatusCode.BadRequest;
         server.NextPairingBody = """{"error":"Pairing code is invalid, expired, revoked, or already used."}""";
 
         var ex = Assert.Throws<InvalidOperationException>(
-            () => new KaironClient(pairingCode: "pair_onceonly", endpoint: server.Url, configPath: ConfigPath));
+            () => new KaironClient(pairingCode: "pair_other_spent", endpoint: server.Url, configPath: ConfigPath));
 
         Assert.Contains("pairing failed", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("already used", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(2, server.PairingCalls); // attempted once more, not retried in a loop
+    }
+
+    [Fact]
+    public async Task ConcurrentStartupsWithTheSameCodeRedeemItOnceAndAllReuseTheWinner()
+    {
+        using var server = new FakeRepairServer { SingleUseCodes = true };
+        server.NextPairingBody = JsonSerializer.Serialize(new
+        {
+            apiKey = "krn_new_key", projectId = "77777777-7777-7777-7777-777777777777", pairingId = "99999999-9999-9999-9999-999999999999", endpoint = server.Url
+        });
+
+        var starts = Enumerable.Range(0, 4).Select(_ => Task.Run(() => KaironConfigurationResolver.ResolveAsync(
+            "pair_shared", server.Url, null, null, ConfigPath, CancellationToken.None))).ToArray();
+        var resolved = await Task.WhenAll(starts).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.All(resolved, options => Assert.Equal(Guid.Parse("77777777-7777-7777-7777-777777777777"), options.ProjectId));
+        Assert.All(resolved, options => Assert.Equal("krn_new_key", options.ApiKey));
+        Assert.Equal(1, server.PairingCalls);
+    }
+
+    [Fact]
+    public async Task ALosingProcessThatCouldNotSerializeReusesTheCredentialTheWinnerStoresMomentsLater()
+    {
+        // Another process holds the redemption lock (simulated by holding the lock file) and has
+        // already consumed the code, so this redemption gets a 400. Within the bounded race window
+        // the winner's credential for the same code appears in the store and must be reused.
+        using var server = new FakeRepairServer();
+        server.NextPairingStatus = HttpStatusCode.BadRequest;
+        server.NextPairingBody = """{"error":"Pairing code is invalid, expired, revoked, or already used."}""";
+        Directory.CreateDirectory(_tempDir);
+        var projectId = Guid.NewGuid();
+
+        Task<KaironOptions> resolving;
+        using (var held = await KaironCredentialStore.AcquirePairingLockAsync(ConfigPath, TimeSpan.Zero, default))
+        {
+            Assert.NotNull(held);
+            resolving = KaironConfigurationResolver.ResolveAsync("pair_raced", server.Url, null, null, ConfigPath,
+                CancellationToken.None, pairingLockWait: TimeSpan.FromMilliseconds(200),
+                pairingRaceWindow: TimeSpan.FromSeconds(10));
+            await WaitUntilAsync(() => server.PairingCalls == 1, TimeSpan.FromSeconds(10));
+            KaironCredentialStore.Save(ConfigPath, new StoredKaironCredential(server.Url, projectId, "krn_winner",
+                null, PairingCodeSha256: KaironCredentialStore.HashPairingCode("pair_raced")));
+        }
+
+        var options = await resolving.WaitAsync(TimeSpan.FromSeconds(15));
+        Assert.Equal(projectId, options.ProjectId);
+        Assert.Equal("krn_winner", options.ApiKey);
+        Assert.Equal(1, server.PairingCalls);
+    }
+
+    [Fact]
+    public void ARateLimitedRedemptionSaysTheCodeWasNotConsumedAndDoesNotWaitForARace()
+    {
+        using var server = new FakeRepairServer();
+        server.NextPairingStatus = (HttpStatusCode)429;
+        server.NextPairingBody = "";
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => new KaironClient(pairingCode: "pair_throttled", endpoint: server.Url, configPath: ConfigPath));
+
+        Assert.Contains("rate limited", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not consumed", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Generate a new pairing code", ex.Message, StringComparison.Ordinal);
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(4));
+        Assert.False(File.Exists(ConfigPath));
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (!condition())
+        {
+            if (DateTime.UtcNow >= deadline) throw new TimeoutException($"Condition was not met within {timeout}.");
+            await Task.Delay(10);
+        }
     }
 
     [Fact]
@@ -489,6 +587,8 @@ public sealed class RePairingTests : IDisposable
         public int PairingCalls;
         public int ConfirmCalls;
         public bool ConfirmShouldFail;
+        public bool SingleUseCodes;
+        private readonly HashSet<string> _redeemed = new();
         public string? LastConfirmApiKey;
         public HttpStatusCode NextPairingStatus = HttpStatusCode.OK;
         public string NextPairingBody = """{"apiKey":"krn_old_key","projectId":"11111111-1111-1111-1111-111111111111","pairingId":"99999999-9999-9999-9999-999999999999","endpoint":"http://127.0.0.1:8000"}""";
@@ -525,6 +625,18 @@ public sealed class RePairingTests : IDisposable
             if (context.Request.Url!.AbsolutePath == "/api/v1/sdk/pair")
             {
                 Interlocked.Increment(ref PairingCalls);
+                if (SingleUseCodes)
+                {
+                    // Mirrors the backend: a code is consumed by its first redemption.
+                    using var request = JsonDocument.Parse(raw);
+                    var code = request.RootElement.GetProperty("code").GetString()!;
+                    if (!_redeemed.Add(code))
+                    {
+                        await RespondAsync(context, HttpStatusCode.BadRequest,
+                            """{"error":"Pairing code is invalid, expired, revoked, or already used."}""", token);
+                        return;
+                    }
+                }
                 if (NextPairingStatus == HttpStatusCode.OK)
                 {
                     using var doc = JsonDocument.Parse(NextPairingBody);

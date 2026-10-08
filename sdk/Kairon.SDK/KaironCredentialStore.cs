@@ -1,7 +1,22 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 
 namespace Kairon.SDK;
+
+/// <summary>One stored pairing, always read as a unit. <see cref="Environment"/> and
+/// <see cref="Service"/> are the operator's non-secret pairing defaults (absent in files written
+/// before they existed); <see cref="PairingCodeSha256"/> identifies which pairing code produced
+/// this credential so a code left in configuration is recognised instead of redeemed again.</summary>
+internal readonly record struct StoredKaironCredential(
+    string Endpoint,
+    Guid ProjectId,
+    string ApiKey,
+    Guid? PendingConfirmationPairingId,
+    string? Environment = null,
+    string? Service = null,
+    string? PairingCodeSha256 = null);
 
 /// <summary>
 /// Persists the project credential obtained from a one-time pairing code, so a paired application
@@ -40,13 +55,61 @@ internal static class KaironCredentialStore
         /// Non-secret (a session id, not a credential) - kept purely so a later run can retry
         /// confirming it without needing a new pairing code.</summary>
         public string? PendingConfirmationPairingId { get; set; }
+
+        /// <summary>Operator-chosen pairing defaults (non-secret). Optional: older files lack them.</summary>
+        public string? Environment { get; set; }
+        public string? Service { get; set; }
+
+        /// <summary>SHA-256 (hex) of the pairing code redeemed for this credential - never the
+        /// code itself. Optional: older files lack it.</summary>
+        public string? PairingCodeSha256 { get; set; }
     }
 
+    /// <summary>The .NET SDK's own file. sdk-python writes a different encryption format, so the
+    /// two SDKs no longer share one file name in the same directory.</summary>
     public static string DefaultPath() =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+            "Kairon", "sdk", "credential-dotnet.json");
+
+    /// <summary>The previous shared default. Adopted only when it decrypts in this SDK's format.</summary>
+    public static string LegacyDefaultPath() =>
+        Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
             "Kairon", "sdk", "credential.json");
 
-    public static (string Endpoint, Guid ProjectId, string ApiKey, Guid? PendingConfirmationPairingId)? Load(string path)
+    public static string HashPairingCode(string pairingCode) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(pairingCode.Trim())));
+
+    public static bool IssuedFor(StoredKaironCredential credential, string pairingCodeSha256) =>
+        credential.PairingCodeSha256 is { Length: > 0 } stored &&
+        CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(stored),
+            Encoding.ASCII.GetBytes(pairingCodeSha256));
+
+    /// <summary>
+    /// Loads <paramref name="path"/>; when nothing usable is there and a legacy path is given,
+    /// adopts the legacy file only if it decrypts in this SDK's own format, copying it to
+    /// <paramref name="path"/>. The legacy file is left in place - another application on an older
+    /// SDK version may still read it - and a foreign-format file (e.g. sdk-python's) is ignored.
+    /// </summary>
+    public static StoredKaironCredential? LoadOrMigrate(string path, string? legacyPath)
+    {
+        var current = Load(path);
+        if (current is not null || legacyPath is null ||
+            string.Equals(Path.GetFullPath(path), Path.GetFullPath(legacyPath), StringComparison.OrdinalIgnoreCase))
+            return current;
+
+        if (Load(legacyPath) is not { } legacy) return null;
+        try
+        {
+            Save(path, legacy);
+        }
+        catch
+        {
+            // Migration is an optimisation; the legacy credential is still valid for this run.
+        }
+        return legacy;
+    }
+
+    public static StoredKaironCredential? Load(string path)
     {
         try
         {
@@ -57,7 +120,9 @@ internal static class KaironCredentialStore
                 string.IsNullOrWhiteSpace(stored.ApiKey) || string.IsNullOrWhiteSpace(stored.Endpoint))
                 return null;
             Guid? pending = Guid.TryParse(stored.PendingConfirmationPairingId, out var pendingId) ? pendingId : null;
-            return (stored.Endpoint, projectId, stored.ApiKey, pending);
+            return new StoredKaironCredential(stored.Endpoint, projectId, stored.ApiKey, pending,
+                KaironPairingDefaults.Environment(stored.Environment), KaironPairingDefaults.Service(stored.Service),
+                string.IsNullOrWhiteSpace(stored.PairingCodeSha256) ? null : stored.PairingCodeSha256);
         }
         catch
         {
@@ -70,15 +135,21 @@ internal static class KaironCredentialStore
 
     /// <summary>Throws on failure rather than returning a status - a caller must never report a
     /// successful pairing when the credential could not actually be persisted.</summary>
-    public static void Save(string path, string endpoint, Guid projectId, string apiKey, Guid? pendingConfirmationPairingId = null)
+    public static void Save(string path, string endpoint, Guid projectId, string apiKey, Guid? pendingConfirmationPairingId = null) =>
+        Save(path, new StoredKaironCredential(endpoint, projectId, apiKey, pendingConfirmationPairingId));
+
+    public static void Save(string path, StoredKaironCredential credential)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var json = JsonSerializer.Serialize(new StoredCredential
         {
-            Endpoint = endpoint,
-            ProjectId = projectId.ToString(),
-            ApiKey = apiKey,
-            PendingConfirmationPairingId = pendingConfirmationPairingId?.ToString()
+            Endpoint = credential.Endpoint,
+            ProjectId = credential.ProjectId.ToString(),
+            ApiKey = credential.ApiKey,
+            PendingConfirmationPairingId = credential.PendingConfirmationPairingId?.ToString(),
+            Environment = credential.Environment,
+            Service = credential.Service,
+            PairingCodeSha256 = credential.PairingCodeSha256
         });
         var protectedText = CreateProtector(path).Protect(json);
 
@@ -118,6 +189,45 @@ internal static class KaironCredentialStore
         finally
         {
             try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* best-effort cleanup */ }
+        }
+    }
+
+    /// <summary>
+    /// Serializes pairing-code redemption for one credential path across threads AND processes, so
+    /// several processes started with the same code left in configuration redeem it once and the
+    /// rest reuse what the winner stored. An exclusive, delete-on-close lock file next to the
+    /// credential; returns null (the caller proceeds unserialized) if it cannot be taken in time or
+    /// the directory is unusable - the lock is a coordination aid, never a reason to fail startup.
+    /// </summary>
+    public static async Task<IDisposable?> AcquirePairingLockAsync(string path, TimeSpan wait,
+        CancellationToken cancellationToken)
+    {
+        string lockPath;
+        try
+        {
+            var fullPath = Path.GetFullPath(path);
+            Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+            lockPath = fullPath + ".pairing.lock";
+        }
+        catch
+        {
+            return null;
+        }
+
+        var deadline = DateTime.UtcNow + wait;
+        while (true)
+        {
+            try
+            {
+                return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None,
+                    1, FileOptions.DeleteOnClose);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Held by another writer (or briefly delete-pending while its holder releases it).
+                if (DateTime.UtcNow >= deadline) return null;
+            }
+            await Task.Delay(100, cancellationToken).ConfigureAwait(false);
         }
     }
 

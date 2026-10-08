@@ -180,17 +180,21 @@ public sealed class KaironClientDirectTelemetryTests : IDisposable
                 LastApiKeyHeader = ctx.Request.Headers["X-Kairon-API-Key"];
 
                 var path = ctx.Request.Url!.AbsolutePath;
+                var count = 0;
                 if (path.Equals("/api/v1/telemetry/events", StringComparison.Ordinal))
                 {
+                    // The sender batches whatever is queued, so one POST may carry several events.
                     using var document = JsonDocument.Parse(raw);
-                    var events = document.RootElement.GetProperty("events");
-                    Assert.Single(events.EnumerateArray());
-                    var item = events[0].Clone();
-                    if (item.GetProperty("eventType").GetString() == "metric") _metric.TrySetResult(item);
-                    else _incident.TrySetResult(item);
+                    foreach (var element in document.RootElement.GetProperty("events").EnumerateArray())
+                    {
+                        count++;
+                        var item = element.Clone();
+                        if (item.GetProperty("eventType").GetString() == "metric") _metric.TrySetResult(item);
+                        else _incident.TrySetResult(item);
+                    }
                 }
 
-                var body = "{\"accepted\":1,\"duplicates\":0,\"rejected\":0}"u8.ToArray();
+                var body = Encoding.UTF8.GetBytes($"{{\"accepted\":{count},\"duplicates\":0,\"rejected\":0}}");
                 ctx.Response.StatusCode = 200;
                 ctx.Response.ContentType = "application/json";
                 ctx.Response.ContentLength64 = body.Length;

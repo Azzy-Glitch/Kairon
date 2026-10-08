@@ -6,9 +6,35 @@ namespace Kairon.SDK;
 /// <summary>Result of redeeming a pairing code for an API key (docs/DESKTOP_SHELL.md). On
 /// success, <see cref="ApiKey"/> and <see cref="ProjectId"/> are ready to drop straight into
 /// <see cref="KaironOptions.ApiKey"/>/<see cref="KaironOptions.ProjectId"/>. <see cref="PairingId"/>
-/// lets the caller confirm receipt/persistence afterward via <see cref="KaironPairingClient.ConfirmAsync"/>.</summary>
+/// lets the caller confirm receipt/persistence afterward via <see cref="KaironPairingClient.ConfirmAsync"/>.
+/// <see cref="Environment"/>/<see cref="Service"/> are the operator's optional defaults chosen
+/// when the code was generated. <see cref="StatusCode"/> is the backend's HTTP status for a
+/// rejected redemption (null when the backend was never reached).</summary>
 public sealed record KaironPairingResult(bool Success, string? Error, Guid ProjectId = default,
-    string? ApiKey = null, string? Endpoint = null, Guid PairingId = default);
+    string? ApiKey = null, string? Endpoint = null, Guid PairingId = default,
+    string? Environment = null, string? Service = null, int? StatusCode = null)
+{
+    /// <summary>HTTP 429: the backend refused before looking at the code, so it was not consumed.</summary>
+    public bool RateLimited => StatusCode == 429;
+}
+
+/// <summary>Validates operator pairing defaults from the wire or the stored file. They are
+/// non-secret labels, but still untrusted input: bounded, trimmed, and free of control characters,
+/// or dropped entirely rather than truncated into something the operator never chose.</summary>
+internal static class KaironPairingDefaults
+{
+    internal static string? Environment(string? value) => Clean(value, 100);
+
+    internal static string? Service(string? value) => Clean(value, 200);
+
+    private static string? Clean(string? value, int limit)
+    {
+        var trimmed = value?.Trim();
+        return string.IsNullOrEmpty(trimmed) || trimmed.Length > limit || trimmed.Any(char.IsControl)
+            ? null
+            : trimmed;
+    }
+}
 
 /// <summary>
 /// Exchanges a temporary, single-use pairing code (minted by an operator in the Kairon UI) for a
@@ -51,7 +77,18 @@ public static class KaironPairingClient
                 new { code = pairingCode, sdkType = "dotnet", version }, cancellationToken).ConfigureAwait(false);
 
             if (!response.IsSuccessStatusCode)
-                return new KaironPairingResult(false, "Pairing code was rejected.");
+            {
+                var status = (int)response.StatusCode;
+                // 429 comes from the rate limiter before the code is ever looked up, so retrying the
+                // same code shortly is correct; a 400 is final for this code.
+                var error = status switch
+                {
+                    429 => "Pairing is rate limited; retry shortly - the code was not consumed.",
+                    400 => "The pairing code is invalid, expired, already used, revoked, or was generated for a different SDK type.",
+                    _ => $"Pairing code was rejected (HTTP {status})."
+                };
+                return new KaironPairingResult(false, error, StatusCode: status);
+            }
 
             var paired = await response.Content.ReadFromJsonAsync<PairingWireResponse>(cancellationToken).ConfigureAwait(false);
             // The returned endpoint is exactly as untrusted as any other network input - a
@@ -60,7 +97,8 @@ public static class KaironPairingClient
             return paired is null || paired.ProjectId == Guid.Empty || string.IsNullOrWhiteSpace(paired.ApiKey) ||
                 paired.PairingId == Guid.Empty || !KaironEndpointSecurity.IsAllowed(paired.Endpoint)
                 ? new KaironPairingResult(false, "Pairing response was invalid.")
-                : new KaironPairingResult(true, null, paired.ProjectId, paired.ApiKey, paired.Endpoint, paired.PairingId);
+                : new KaironPairingResult(true, null, paired.ProjectId, paired.ApiKey, paired.Endpoint, paired.PairingId,
+                    KaironPairingDefaults.Environment(paired.Environment), KaironPairingDefaults.Service(paired.Service));
         }
         catch
         {
@@ -127,5 +165,9 @@ public static class KaironPairingClient
         public Guid ProjectId { get; set; }
         public string Endpoint { get; set; } = string.Empty;
         public Guid PairingId { get; set; }
+
+        /// <summary>Optional operator defaults; absent from older backends.</summary>
+        public string? Environment { get; set; }
+        public string? Service { get; set; }
     }
 }
