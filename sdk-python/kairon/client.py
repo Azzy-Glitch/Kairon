@@ -158,6 +158,19 @@ def _scrub_text(value: Optional[str]) -> Optional[str]:
     return value
 
 
+# Fixed category of the most recent pair() failure ("rate-limited", "rejected", "endpoint",
+# "unreachable", "invalid-response") - never response text, code or URL.
+last_pair_failure: Optional[str] = None
+
+_PAIR_FAILURE_MESSAGES = {
+    "rate-limited": "Kairon is rate limiting pairing right now; the code was not used. Retry in a minute.",
+    "rejected": "the pairing code is invalid, expired, already used, revoked, or was generated for a different SDK (generate a Python code).",
+    "endpoint": "the Kairon endpoint is not allowed (plain HTTP is only allowed to localhost; use HTTPS).",
+    "unreachable": "Kairon could not be reached at the configured endpoint.",
+    "invalid-response": "Kairon returned an unexpected pairing response.",
+}
+
+
 def pair(endpoint: str, code: str, version: str = "1.1.0", timeout_seconds: float = 10.0) -> Optional[dict]:
     """Redeems a one-time pairing code (minted by an operator in the Kairon UI) for a
     persistent project API key - the Python counterpart to Kairon.SDK's KaironPairingClient
@@ -165,17 +178,22 @@ def pair(endpoint: str, code: str, version: str = "1.1.0", timeout_seconds: floa
     success, or None on any failure (rejected code, malformed response, unreachable backend) -
     contained here rather than raised, matching every other network path in this client.
     """
+    global last_pair_failure
+    last_pair_failure = None
     try:
         # Checked before this SDK ever sends a pairing code anywhere - a caller-supplied endpoint
         # is exactly as untrusted as one returned in a response (checked again below), and the
         # pairing code itself is a secret worth protecting in transit.
         if not is_endpoint_allowed(endpoint):
+            last_pair_failure = "endpoint"
             return None
         url = endpoint.rstrip("/") + "/api/v1/sdk/pair"
         body = json.dumps({"code": code, "sdkType": "python", "version": version}).encode("utf-8")
         request = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+        last_pair_failure = "invalid-response"
         with _open(request, timeout=max(1.0, timeout_seconds)) as response:
             if not 200 <= response.status < 300:
+                last_pair_failure = "rejected"
                 return None
             raw = response.read(65537)
             if len(raw) > 65536:
@@ -191,8 +209,20 @@ def pair(endpoint: str, code: str, version: str = "1.1.0", timeout_seconds: floa
             # compromised or misconfigured backend must never be able to redirect this SDK onto a
             # remote plaintext address merely by including one in a pairing response.
             if not is_endpoint_allowed(result.get("endpoint")):
+                last_pair_failure = "endpoint"
                 return None
+            for optional in ("environment", "service"):
+                if not isinstance(result.get(optional), str) or not result[optional].strip():
+                    result.pop(optional, None)
+            last_pair_failure = None
             return result
+    except urllib.error.HTTPError as exc:
+        last_pair_failure = "rate-limited" if exc.code == 429 else "rejected"
+        exc.close()
+        return None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        last_pair_failure = "unreachable"
+        return None
     except Exception:
         return None
 
@@ -203,102 +233,121 @@ def _resolve_configuration(
     api_key: Optional[str],
     pairing_code: Optional[str],
     config_path: Optional[str],
+    app_key: Optional[str] = None,
 ) -> tuple:
     """Implements the required configuration precedence:
 
-        1. explicit pairing_code - always wins, redeeming (or re-pairing) immediately, before
-           anything else below is even consulted.
+        1. explicit pairing_code - redeems (or re-pairs) immediately. If the stored credential was
+           produced by this very code (the code was left in configuration, the application
+           restarted, or several workers started together), that credential is reused instead of
+           re-redeeming a single-use code.
         2. a previously stored credential, if one exists - preferred as a whole over ordinary
-           configuration. A stored credential represents a real, completed pairing event; treating
-           it as the strongest available signal of intended identity (once no pairing_code is
-           given) means a stray or inherited KAIRON_PROJECT_ID/KAIRON_API_KEY - or even an explicit
-           project_id/api_key left over in code - can never silently override, or be silently
-           mixed field-by-field with, an application's own already-paired identity. endpoint/
-           project_id/api_key are always taken from the SAME source together: there is no
-           per-field merge between "stored" and "explicit/env" anywhere in this function, which is
-           what makes a mixed configuration (one project's id with another's key) structurally
-           impossible rather than merely unlikely.
-        3. ordinary explicit arguments, then KAIRON_ENDPOINT/KAIRON_PROJECT_ID/KAIRON_API_KEY
-           environment variables - consulted only when neither of the above applies (first-time
-           onboarding, or a fresh config_path with nothing stored yet).
+           configuration. endpoint/project_id/api_key are always taken from the SAME source
+           together: there is no per-field merge between "stored" and "explicit/env", which makes
+           a mixed configuration (one project's id with another's key) structurally impossible.
+        3. ordinary explicit arguments, then KAIRON_ENDPOINT/KAIRON_PROJECT_ID/KAIRON_API_KEY.
 
-    Raises ValueError/RuntimeError (no new exception hierarchy) rather than ever continuing with
-    an incomplete credential.
+    Returns (endpoint, project_id, api_key, defaults) where defaults holds the non-secret
+    environment/service the operator chose when generating the pairing code (may be empty).
+
+    The credential file is per application (see _credential_store.default_config_path). A
+    credential in the legacy shared file is adopted once, only when this application has none.
 
     Pairing is always explicit, never automatic: nothing in this SDK ever supplies pairing_code
-    on the caller's behalf (not on HTTP 401, not on startup with a still-valid credential) - it is
-    consulted here only because the caller passed it in this exact call.
+    on the caller's behalf - it is consulted here only because the caller passed it in this call.
     """
-    path = Path(config_path) if config_path else None
+    path = Path(config_path) if config_path else _credential_store.default_config_path(app_key)
 
-    if pairing_code:
-        resolved_endpoint = endpoint or os.environ.get("KAIRON_ENDPOINT") or DEFAULT_ENDPOINT
-        paired = pair(resolved_endpoint, pairing_code)
-        if paired is None:
-            raise RuntimeError(
-                "Kairon pairing failed: the pairing code is invalid, expired, already used, or "
-                "Kairon is unavailable. Generate a new pairing code from Kairon and try again."
-            )
-        # Persisted (with the pairing id recorded as still-pending-confirmation) before being used
-        # - if this raises, __init__ never completes, so pairing is never reported as successful
-        # without a durable credential. The freshly redeemed values win outright, replacing
-        # whatever explicit args/env vars/stored file resolved above - an explicit pairing_code is
-        # a direct instruction to (re)pair now, not a fallback.
-        _credential_store.save_stored_config(
-            paired["endpoint"], paired["projectId"], paired["apiKey"], path,
-            pending_confirmation_pairing_id=paired["pairingId"],
-        )
-        if _confirm_pairing(paired["endpoint"], paired["pairingId"], paired["apiKey"]):
-            # Clears the pending marker now that confirmation actually succeeded - leaving it set
-            # after a successful confirm would cause every future run to keep retrying pointlessly.
-            _credential_store.save_stored_config(paired["endpoint"], paired["projectId"], paired["apiKey"], path)
-        # If confirmation did not succeed, the pending marker stays recorded on disk (set just
-        # above) so a LATER run - even with no pairing_code at all - can retry it. Never treated as
-        # a fatal error here: the credential itself is already valid and saved either way.
-        return paired["endpoint"], paired["projectId"], paired["apiKey"]
-
-    stored = _credential_store.load_stored_config(path)
-    if stored and stored.get("projectId"):
-        # Atomic with projectId/apiKey below, not merely "closest available value": a stored
-        # connection is (endpoint, projectId, apiKey) together, from the one pairing that produced
-        # it. Letting an explicit endpoint argument or an ambient KAIRON_ENDPOINT redirect traffic
-        # for this project/key pair to a DIFFERENT backend than the one it was actually paired
-        # against - while still authenticating as this project - is exactly the "hybrid" precedence
-        # this SDK must not have. To point an already-paired application at a different KAIRON
-        # backend, pass a fresh pairing_code (re-pairing) - the one explicit, documented way to
-        # relocate a stored connection - rather than an environment variable or constructor
-        # argument silently overriding half of it.
-        resolved_endpoint = stored.get("endpoint") or DEFAULT_ENDPOINT
+    def stored_result(stored: dict) -> tuple:
+        resolved = stored.get("endpoint") or DEFAULT_ENDPOINT
         # Defense in depth: a credential file predating this security policy, or one edited/
-        # corrupted on disk, must fail closed here rather than silently resume sending telemetry
-        # (and API-key-bearing requests) to a remote plaintext address.
-        if not is_endpoint_allowed(resolved_endpoint):
+        # corrupted on disk, must fail closed rather than resume sending API-key-bearing requests
+        # to a remote plaintext address.
+        if not is_endpoint_allowed(resolved):
             raise RuntimeError(
                 "Kairon endpoint rejected: plain HTTP is only allowed to localhost/127.0.0.0/8/::1. "
                 "Use HTTPS for any non-local KAIRON backend."
             )
         pending_pairing_id = stored.get("pendingConfirmationPairingId")
         if pending_pairing_id and stored.get("apiKey"):
-            # Recovers a confirmation whose earlier attempt was lost (network failure, or the
-            # process exited before it could run) - never re-redeems a code, never generates one:
-            # the stored credential's own presence is what makes retrying confirmation safe here.
+            # Recovers a confirmation whose earlier attempt was lost - never re-redeems a code.
             if _confirm_pairing(stored["endpoint"], pending_pairing_id, stored["apiKey"]):
-                _credential_store.save_stored_config(stored["endpoint"], stored["projectId"], stored["apiKey"], path)
-        return resolved_endpoint, stored["projectId"], stored.get("apiKey")
+                _credential_store.save_stored_config(
+                    stored["endpoint"], stored["projectId"], stored["apiKey"], path,
+                    environment=stored.get("environment"), service=stored.get("service"),
+                    pairing_code_hash=stored.get("pairingCodeHash"),
+                )
+        defaults = {k: stored[k] for k in ("environment", "service") if isinstance(stored.get(k), str) and stored[k]}
+        return resolved, stored["projectId"], stored.get("apiKey"), defaults
 
-    # First-time onboarding: no pairing code, nothing stored yet - project_id has always been
-    # required; api_key has always been optional (some deployments run with no authentication at
-    # all), which is the existing, still-supported "unauthenticated" configuration.
+    stored = _credential_store.load_stored_config(path)
+    if stored is None and not config_path:
+        legacy = _credential_store.load_stored_config(_credential_store.legacy_config_path())
+        if legacy and legacy.get("projectId"):
+            _credential_store.save_stored_config(
+                legacy["endpoint"], legacy["projectId"], legacy["apiKey"], path,
+                pending_confirmation_pairing_id=legacy.get("pendingConfirmationPairingId"),
+            )
+            stored = _credential_store.load_stored_config(path)
+
+    if pairing_code:
+        code_hash = _credential_store.pairing_code_hash(pairing_code)
+        if stored and stored.get("pairingCodeHash") == code_hash:
+            return stored_result(stored)
+        resolved_endpoint = endpoint or os.environ.get("KAIRON_ENDPOINT") or DEFAULT_ENDPOINT
+        paired = pair(resolved_endpoint, pairing_code)
+        if paired is None:
+            reason = last_pair_failure
+            # Another worker/process of this same application may have redeemed this code a
+            # moment ago; adopt the credential it stored rather than failing this worker.
+            if reason == "rejected":
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline:
+                    stored = _credential_store.load_stored_config(path)
+                    if stored and stored.get("pairingCodeHash") == code_hash:
+                        return stored_result(stored)
+                    time.sleep(0.25)
+            raise RuntimeError(
+                "Kairon pairing failed: " + _PAIR_FAILURE_MESSAGES.get(reason or "", "Kairon is unavailable.")
+                + " Generate a new pairing code from Kairon and try again."
+            )
+        environment = paired.get("environment")
+        service = paired.get("service")
+        # Persisted (with the pairing id recorded as still-pending-confirmation) before being used
+        # - if this raises, __init__ never completes, so pairing is never reported as successful
+        # without a durable credential.
+        _credential_store.save_stored_config(
+            paired["endpoint"], paired["projectId"], paired["apiKey"], path,
+            pending_confirmation_pairing_id=paired["pairingId"],
+            environment=environment, service=service, pairing_code_hash=code_hash,
+        )
+        if _confirm_pairing(paired["endpoint"], paired["pairingId"], paired["apiKey"]):
+            _credential_store.save_stored_config(
+                paired["endpoint"], paired["projectId"], paired["apiKey"], path,
+                environment=environment, service=service, pairing_code_hash=code_hash,
+            )
+        defaults = {k: v for k, v in (("environment", environment), ("service", service)) if v}
+        return paired["endpoint"], paired["projectId"], paired["apiKey"], defaults
+
+    if stored and stored.get("projectId"):
+        return stored_result(stored)
+
+    # First-time onboarding without a pairing code: explicit configuration.
     endpoint = endpoint or os.environ.get("KAIRON_ENDPOINT")
     project_id = project_id or os.environ.get("KAIRON_PROJECT_ID")
     api_key = api_key or os.environ.get("KAIRON_API_KEY")
 
     if not project_id:
         raise ValueError(
-            "Kairon needs a project_id. Provide it directly, set KAIRON_PROJECT_ID, pass "
-            "pairing_code from a Kairon-generated pairing code, or pair once so the stored "
-            "configuration can be reused."
+            "Kairon needs a project_id or a pairing code. Generate a pairing code in Kairon "
+            "(Connect an App) and pass pairing_code=..., or provide project_id/api_key "
+            "(KAIRON_PROJECT_ID/KAIRON_API_KEY)."
         )
+    try:
+        UUID(str(project_id))
+    except ValueError:
+        # The backend binds ProjectId as a UUID, so this configuration cannot deliver telemetry.
+        _logger.warning("kairon: project_id is not a UUID; Kairon will reject this application's telemetry")
 
     resolved_endpoint = endpoint or DEFAULT_ENDPOINT
     if not is_endpoint_allowed(resolved_endpoint):
@@ -306,7 +355,21 @@ def _resolve_configuration(
             "Kairon endpoint rejected: plain HTTP is only allowed to localhost/127.0.0.0/8/::1. "
             "Use HTTPS for any non-local KAIRON backend."
         )
-    return resolved_endpoint, project_id, api_key
+    return resolved_endpoint, str(project_id), api_key, {}
+
+
+def _clamp_percent(value):
+    try:
+        return None if value is None else min(100.0, max(0.0, float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _non_negative_int(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _confirm_pairing(
@@ -369,16 +432,26 @@ class Kairon:
         normalized_telemetry: bool = False,
         batch_size: int = 25,
         delivery_attempts: int = 3,
+        default_application: Optional[str] = None,
     ) -> None:
-        endpoint, project_id, api_key = _resolve_configuration(
-            endpoint, project_id, api_key, pairing_code, config_path
+        app_key = os.getcwd() + "|" + (service or application or default_application or "")
+        endpoint, project_id, api_key, defaults = _resolve_configuration(
+            endpoint, project_id, api_key, pairing_code, config_path, app_key
         )
         self.endpoint = endpoint.rstrip("/")
         self.project_id = project_id
-        self.machine_id = machine_id
-        self.application = application or service or "python-app"
-        self.service = service or self.application
-        self.environment = environment or os.environ.get("KAIRON_ENVIRONMENT") or "Production"
+        if machine_id is not None:
+            # Machine identity is established only by the enrolled Agent's proof; the backend
+            # ignores client-claimed machine ids. Kept as an accepted no-op for compatibility.
+            _logger.warning("kairon: machine_id is ignored; machine identity comes from the local Kairon Agent")
+        self.machine_id = None
+        # Precedence: explicit argument > environment variable > operator default carried by the
+        # pairing code > inferred framework name > built-in default.
+        paired_service = defaults.get("service")
+        self.application = application or service or paired_service or default_application or "python-app"
+        self.service = service or paired_service or self.application
+        self.environment = (environment or os.environ.get("KAIRON_ENVIRONMENT")
+                            or defaults.get("environment") or "Production")
         self.api_key = api_key
         self.enabled = enabled
         # Kept short on purpose: a slow collector must not hold the caller's thread, and a
@@ -412,7 +485,7 @@ class Kairon:
         self.last_shutdown_drained: Optional[bool] = None
         # Existing direct Kairon(...) callers keep the legacy wire contract. The one-call web
         # integrations opt into the backend's idempotent normalized batch contract below.
-        self.normalized_telemetry = bool(normalized_telemetry and machine_id is None)
+        self.normalized_telemetry = bool(normalized_telemetry)
         self.batch_size = min(200, max(1, int(batch_size)))
         self.delivery_attempts = min(5, max(1, int(delivery_attempts)))
 
@@ -467,6 +540,7 @@ class Kairon:
             shutdown_timeout_seconds=shutdown_timeout_seconds,
             normalized_telemetry=True,
             batch_size=batch_size, delivery_attempts=delivery_attempts,
+            default_application=None,
         )
 
     @classmethod
@@ -489,7 +563,7 @@ class Kairon:
         environment, api_key, enabled, timeout_seconds, queue_capacity,
         success_sample_rate, ignored_path_prefixes, enable_metrics,
         metrics_interval_seconds, machine_id, config_path, shutdown_timeout_seconds,
-        normalized_telemetry, batch_size, delivery_attempts,
+        normalized_telemetry, batch_size, delivery_attempts, default_application=None,
     ):
         from .middleware import KaironMiddleware
 
@@ -504,7 +578,7 @@ class Kairon:
         ):
             raise TypeError("Kairon.attach requires a FastAPI or Starlette application.")
 
-        inferred_application = application
+        inferred_application = default_application
         if inferred_application is None:
             title = getattr(app, "title", None)
             if isinstance(title, str) and title.strip():
@@ -515,7 +589,8 @@ class Kairon:
             project_id=project_id,
             pairing_code=pairing_code,
             service=service,
-            application=inferred_application,
+            application=application,
+            default_application=inferred_application,
             environment=environment,
             api_key=api_key,
             enabled=enabled,
@@ -550,6 +625,9 @@ class Kairon:
                     # exception text here: it could include host/application data.
                     _logger.warning("kairon: shutdown cleanup failed")
 
+        # Attach-managed collectors start with the lifespan, or lazily on the first request when
+        # the host never runs the ASGI lifespan (see KaironMiddleware).
+        collector._autostart = True
         app.add_middleware(KaironMiddleware, kairon=collector)
         app.router.lifespan_context = kairon_lifespan
         app.state._kairon_sdk_attached = True
@@ -779,14 +857,12 @@ class Kairon:
 
     def _enqueue_telemetry(self, payload: dict) -> bool:
         payload["ProjectId"] = self.project_id
-        payload["MachineId"] = self.machine_id
         if self.normalized_telemetry:
             payload["_EventId"] = str(uuid4())
         return self._enqueue(("api/telemetry/incidents", payload))
 
     def _enqueue_metric(self, payload: dict) -> bool:
         payload["ProjectId"] = self.project_id
-        payload["MachineId"] = self.machine_id
         if self.normalized_telemetry:
             payload["_EventId"] = str(uuid4())
         return self._enqueue(("api/telemetry/metrics", payload))
@@ -881,11 +957,11 @@ class Kairon:
         }
         if metric:
             event["ResourceMetrics"] = {
-                "CpuPercent": payload.get("CpuPercent"),
-                "MemoryPercent": payload.get("MemoryPercent"),
+                "CpuPercent": _clamp_percent(payload.get("CpuPercent")),
+                "MemoryPercent": _clamp_percent(payload.get("MemoryPercent")),
                 "ResponseTimeMs": payload.get("ResponseTimeMs"),
-                "RequestCount": payload.get("RequestCount") or 0,
-                "ErrorCount": payload.get("ErrorCount") or 0,
+                "RequestCount": _non_negative_int(payload.get("RequestCount")),
+                "ErrorCount": _non_negative_int(payload.get("ErrorCount")),
                 "RetryCount": payload.get("RetryCount"),
                 "QueueDepth": payload.get("QueueDepth"),
             }
@@ -896,12 +972,15 @@ class Kairon:
             event["HttpContext"] = {
                 "Endpoint": (payload.get("Endpoint") or "")[:500],
                 "Method": (payload.get("Method") or "GET")[:10],
-                "StatusCode": payload.get("StatusCode") or 0,
-                "DurationMs": payload.get("Duration") or 0,
+                "StatusCode": min(599, _non_negative_int(payload.get("StatusCode"))),
+                "DurationMs": _non_negative_int(payload.get("Duration")),
             }
         return event
 
     def _send_normalized(self, items: list[tuple]):
+        return self._send_normalized_batch(items)
+
+    def _send_normalized_batch(self, items: list[tuple]):
         if not is_endpoint_allowed(self.endpoint):
             return self._delivery_failure("Endpoint rejected: insecure transport")
         try:
@@ -911,7 +990,15 @@ class Kairon:
             return self._delivery_failure("Serialization failure")
         if len(body) > 1_048_576:
             return self._delivery_failure("Telemetry batch exceeds backend size limit")
-        for attempt in range(self.delivery_attempts):
+        homogeneous = bool(events) and all(
+            e.get("Service") == events[0].get("Service")
+            and str(e.get("Environment") or "").lower() == str(events[0].get("Environment") or "").lower()
+            for e in events
+        )
+        use_proof = homogeneous
+        attempt = 0
+        while attempt < self.delivery_attempts:
+            attempt += 1
             request = urllib.request.Request(
                 self.endpoint + "/api/v1/telemetry/events", data=body, method="POST",
                 headers={"Content-Type": "application/json"},
@@ -921,7 +1008,8 @@ class Kairon:
             # A machine scope is granted by the enrolled Agent for these exact bytes, never by
             # a hostname or machine ID supplied by this application. Without an Agent, ordinary
             # telemetry remains valid but cannot authorize machine remediation.
-            if events:
+            proof = None
+            if use_proof:
                 first = events[0]
                 proof = _machine_proof.acquire(
                     self.endpoint, str(self.project_id), first.get("Service") or self.service,
@@ -961,14 +1049,20 @@ class Kairon:
             except urllib.error.HTTPError as exc:
                 status = exc.code
                 exc.close()
-                if status not in (429, 500, 502, 503, 504) or attempt + 1 == self.delivery_attempts:
+                if status == 401 and proof:
+                    # The Agent proof (not the API key) was refused - e.g. it expired in transit.
+                    # The telemetry itself is still valid unscoped; resend once without the proof.
+                    use_proof = False
+                    attempt -= 1
+                    continue
+                if status not in (429, 500, 502, 503, 504) or attempt == self.delivery_attempts:
                     return self._delivery_failure("HTTP " + str(status))
             except (urllib.error.URLError, TimeoutError, OSError):
-                if attempt + 1 == self.delivery_attempts:
+                if attempt == self.delivery_attempts:
                     return self._delivery_failure("Transport failure")
             except (ValueError, TypeError):
                 return self._delivery_failure("Malformed collector response")
-            time.sleep(min(0.1 * (attempt + 1), 0.5))
+            time.sleep(min(0.1 * attempt, 0.5))
         return False
 
     def _run_metrics(self) -> None:

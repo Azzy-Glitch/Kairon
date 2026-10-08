@@ -428,9 +428,24 @@ def test_a_pairing_code_cannot_be_redeemed_twice(repair_server, config_path):
     _RepairHandler.next_pairing_status = 400
     _RepairHandler.next_pairing_body = b'{"error": "Pairing code is invalid, expired, revoked, or already used."}'
 
+    # Another application/machine (a different credential file) cannot redeem it again.
+    other_config = str(Path(config_path).with_name("other-app-credential.json"))
     with pytest.raises(RuntimeError, match="pairing failed"):
-        Kairon(pairing_code="pair_onceonly", endpoint=repair_server, config_path=config_path)
+        Kairon(pairing_code="pair_onceonly", endpoint=repair_server, config_path=other_config)
     assert _RepairHandler.pairing_calls == 2  # attempted once more, not retried in a loop
+
+
+def test_the_same_code_left_in_configuration_reuses_its_stored_credential(repair_server, config_path):
+    first = Kairon(pairing_code="pair_restartable", endpoint=repair_server, config_path=config_path)
+    first.stop(timeout_seconds=1)
+    _RepairHandler.next_pairing_status = 400
+    _RepairHandler.next_pairing_body = b'{"error": "Pairing code is invalid, expired, revoked, or already used."}'
+
+    restarted = Kairon(pairing_code="pair_restartable", endpoint=repair_server, config_path=config_path)
+    restarted.stop(timeout_seconds=1)
+
+    assert _RepairHandler.pairing_calls == 1  # restart never re-redeems the single-use code
+    assert restarted.project_id == first.project_id and restarted.api_key == first.api_key
 
 
 def test_expired_pairing_code_fails_cleanly(repair_server, config_path):

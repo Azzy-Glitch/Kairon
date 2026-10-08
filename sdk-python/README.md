@@ -20,29 +20,47 @@ to your host application; install `fastapi` and `uvicorn` there if absent. Pytho
 is supported. The core remains standard-library-only. Public package registry
 availability is not assumed; deployment can use a release wheel instead of source.
 
-Create/select a project in KAIRON's Pairing page and choose Python. A `pair_...` value
-is a single-use, 10-minute credential-exchange code for that existing project. It is
-not a project ID or telemetry API key.
+In KAIRON open **Connect an App**, choose your Python framework, pick the project and
+environment (and optionally the service name), and generate a pairing code. A `pair_...` value
+is a single-use, 10-minute credential-exchange code for that project. It is not a project ID or
+telemetry API key.
 
 For FastAPI/Starlette, the normal integration is one call. It redeems the code, stores the
 resulting connection, registers request telemetry, starts with the application, and performs a
 bounded drain during shutdown:
+
+### Simple mode
 
 ```python
 from fastapi import FastAPI
 from kairon import Kairon
 
 app = FastAPI()
-Kairon.attach(app, pairing_code="YOUR_PAIRING_CODE")  # First run only.
+Kairon.attach(app, pairing_code="YOUR_PAIRING_CODE")
 ```
 
-On every later run use `Kairon.attach(app)`; no pairing code, project ID, API key, credential path,
-middleware registration, `start()` or `stop()` call is needed. The low-level `Kairon` constructor
-and `KaironMiddleware` remain available for workers and applications that need manual control.
+That is the whole integration. The SDK resolves and stores the endpoint, project and credential,
+adopts the environment and service name chosen when the code was generated, proves the machine
+through the local KAIRON Agent (when installed), and starts sending request, error and CPU/latency
+telemetry. No project ID, API key, machine ID, endpoint, header, batching or storage path is needed.
 
-For multi-worker servers, perform the one-time pairing with a single worker or setup process
-before scaling out. A pairing code is single-use, and explicitly passing it to every worker
-does not fall back to an existing stored credential after the first worker redeems it.
+Leaving the same code in your source is safe: after the first redemption the SDK recognises the
+code (by a fingerprint stored with the credential) and reuses the stored connection on restart,
+and several workers started together share the one redemption instead of failing. `Kairon.attach(app)`
+without a code also works once paired. The credential file is per application (working directory
+plus service/application name) and is encrypted with DPAPI on Windows (owner-only elsewhere).
+
+### Advanced mode
+
+```python
+Kairon.attach(app, pairing_code="YOUR_PAIRING_CODE", environment="Development", service="Orders API")
+```
+
+Explicit `environment`/`service`/`application` (or `KAIRON_ENVIRONMENT`) override the pairing
+defaults; without either, the framework name (FastAPI title, Flask app name, Django settings
+package) is the last fallback. `machine_id` is accepted for compatibility but ignored: machine
+identity only ever comes from the local Agent's proof. The low-level `Kairon` constructor and
+`KaironMiddleware` remain available for workers and applications that need manual control.
 
 **Pairing against a remote or cloud KAIRON backend?** Set `KAIRON_ENDPOINT` (or pass
 `endpoint=`) to that backend's real HTTPS address *first* - the pairing call itself has
@@ -99,9 +117,9 @@ app = FastAPI(title="OrdersApp")
 Kairon.attach(app, pairing_code=os.environ.get("KAIRON_PAIRING_CODE"))
 ```
 
-After the code has been redeemed, remove `KAIRON_PAIRING_CODE`; the same source becomes
-`Kairon.attach(app)`. The FastAPI title becomes the default application/service identity unless
-you pass `application=` or `service=` explicitly.
+After the code has been redeemed you may remove `KAIRON_PAIRING_CODE` (keeping it is harmless).
+The service name chosen at pairing wins over the FastAPI title; pass `application=` or
+`service=` to override both.
 
 Explicit `endpoint`/`project_id`/`api_key` arguments and the matching `KAIRON_*` environment
 variables remain supported for managed deployments with no stored credential. The SDK does not

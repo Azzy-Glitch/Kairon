@@ -50,6 +50,10 @@ class KaironMiddleware:
             observe = False
         if not observe:
             return await self.app(scope, receive, send)
+        if getattr(kairon, "_autostart", False) and kairon._thread is None and not kairon._closed:
+            # Hosts that never run the ASGI lifespan (uvicorn --lifespan off, a TestClient used
+            # without "with") would otherwise queue telemetry forever. start() is idempotent.
+            kairon.start()
 
         start = time.monotonic()
         status_code = 500

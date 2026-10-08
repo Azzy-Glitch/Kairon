@@ -22,7 +22,10 @@ def _never_touch_the_real_credential_store(tmp_path, monkeypatch):
     from kairon import _credential_store
 
     fake_default = tmp_path / "kairon-default-credential-store" / "credential.json"
-    monkeypatch.setattr(_credential_store, "default_config_path", lambda: fake_default)
+    monkeypatch.setattr(_credential_store, "default_config_path", lambda *_args, **_kwargs: fake_default)
+    # The legacy shared file is read once for migration; it must be isolated exactly the same way.
+    monkeypatch.setattr(_credential_store, "legacy_config_path",
+                        lambda: tmp_path / "kairon-legacy-credential-store" / "credential.json")
     yield
 
 

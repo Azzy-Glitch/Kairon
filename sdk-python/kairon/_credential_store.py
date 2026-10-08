@@ -14,6 +14,7 @@ agent/Kairon.Agent's own AgentCredentialStore already relies on for its credenti
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -23,11 +24,36 @@ from pathlib import Path
 from typing import Optional
 
 
-def default_config_path() -> Path:
+def _store_directory() -> Path:
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(base) / "Kairon" / "sdk" / "credential.json"
-    return Path.home() / ".config" / "kairon" / "credential.json"
+        return Path(base) / "Kairon" / "sdk"
+    return Path.home() / ".config" / "kairon"
+
+
+def default_config_path(app_key: Optional[str] = None) -> Path:
+    """Per-application Python credential file. Two applications run by the same OS user (or a
+    .NET and a Python application, whose encryption formats differ) must never overwrite each
+    other's connection, so the file name is keyed by the application identity (working directory
+    plus application/service name) and never shared with the .NET SDK."""
+    return _store_directory() / credential_file_name(app_key)
+
+
+def credential_file_name(app_key: Optional[str] = None) -> str:
+    if not app_key:
+        return "credential-python.json"
+    return "credential-python-" + hashlib.sha256(app_key.encode("utf-8")).hexdigest()[:16] + ".json"
+
+
+def legacy_config_path() -> Path:
+    """The single shared file earlier SDK versions used. Read once for migration only."""
+    return _store_directory() / "credential.json"
+
+
+def pairing_code_hash(code: str) -> str:
+    """Non-reversible fingerprint of a pairing code, stored next to the credential it produced so
+    the same code left in configuration is recognised on restart instead of re-redeemed."""
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
 def _dpapi_protect(data: bytes) -> bytes:
@@ -103,6 +129,8 @@ def load_stored_config(path: Optional[Path] = None) -> Optional[dict]:
 def save_stored_config(
     endpoint: str, project_id: str, api_key: str, path: Optional[Path] = None,
     pending_confirmation_pairing_id: Optional[str] = None,
+    environment: Optional[str] = None, service: Optional[str] = None,
+    pairing_code_hash: Optional[str] = None,
 ) -> None:
     """Raises on any failure rather than returning a status - a caller must never report a
     successful pairing when the credential could not actually be persisted.
@@ -118,6 +146,14 @@ def save_stored_config(
     data = {"endpoint": endpoint, "projectId": project_id, "apiKey": api_key}
     if pending_confirmation_pairing_id:
         data["pendingConfirmationPairingId"] = pending_confirmation_pairing_id
+    # Non-secret defaults chosen by the operator when the pairing code was generated, and the
+    # fingerprint of that code; carried forward across confirmation rewrites by the caller.
+    if environment:
+        data["environment"] = environment
+    if service:
+        data["service"] = service
+    if pairing_code_hash:
+        data["pairingCodeHash"] = pairing_code_hash
     plaintext = json.dumps(data).encode("utf-8")
     payload = _dpapi_protect(plaintext) if sys.platform == "win32" else plaintext
 

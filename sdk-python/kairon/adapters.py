@@ -10,6 +10,7 @@ from __future__ import annotations
 import atexit
 import asyncio
 import inspect
+import threading
 import time
 
 
@@ -39,10 +40,18 @@ def attach_application(cls, app, **kwargs):
             raise RuntimeError("Kairon is already attached to this application.")
         if app._got_first_request:
             raise RuntimeError("Call Kairon.attach(app) before the application starts.")
-        if kwargs.get("application") is None:
-            kwargs["application"] = app.name
+        if kwargs.get("default_application") is None:
+            kwargs["default_application"] = app.name
         collector = _collector(cls, kwargs)
         wrapped = WSGIAdapter(app.wsgi_app, collector, kwargs["shutdown_timeout_seconds"])
+        # Flask converts an unhandled exception into a 500 inside wsgi_app, so the adapter would
+        # only see the status. got_request_exception hands over the real exception for reporting.
+        try:
+            from flask import got_request_exception
+
+            got_request_exception.connect(wrapped._remember_exception, app, weak=False)
+        except Exception:
+            pass
         app.wsgi_app = wrapped
         app.extensions["kairon"] = collector
         return collector
@@ -162,9 +171,14 @@ class WSGIAdapter:
         self.kairon = collector
         self.shutdown_timeout_seconds = shutdown_timeout_seconds
         self._kairon_adapter = True
+        self._handled = threading.local()
         atexit.register(_finish, collector, shutdown_timeout_seconds)
 
+    def _remember_exception(self, sender, exception=None, **_extra):
+        self._handled.exception = exception
+
     def __call__(self, environ, start_response):
+        self._handled.exception = None
         self.kairon.start()
         path = environ.get("PATH_INFO", "")
         if self.kairon.is_ignored(path) or not self.kairon.enabled:
@@ -181,6 +195,8 @@ class WSGIAdapter:
             return start_response(status_line, headers, exc_info)
 
         def report(exception=None):
+            if exception is None and status >= 500:
+                exception = getattr(self._handled, "exception", None)
             self.kairon.record_http_request(
                 environ.get("REQUEST_METHOD", ""), path, status,
                 int((time.monotonic() - start) * 1000), exception,

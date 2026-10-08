@@ -31,7 +31,7 @@ class KaironMiddleware(MiddlewareMixin):
         configuration.setdefault("normalized_telemetry", True)
         if not configuration.get("application") and not configuration.get("service"):
             settings_module = os.environ.get("DJANGO_SETTINGS_MODULE", "")
-            configuration["application"] = settings_module.rsplit(".", 1)[0] or "django-app"
+            configuration["default_application"] = settings_module.rsplit(".", 1)[0] or "django-app"
         self.kairon = Kairon(**configuration)
         self.kairon.start()
         self.shutdown_timeout_seconds = timeout
