@@ -7,6 +7,10 @@
 ; showing a window. The Windows Service registration Pascal Script below (backend/agent/ai package
 ; layout, validate-before-reconfigure, recovery policy, SCM verification at every step) is
 ; unchanged in substance from the source branch - it did not need adapting.
+; Architecture (1.1.0+): the backend runs as the Kairon.Backend Windows service under its own
+; virtual account NT SERVICE\Kairon.Backend (least privilege; remediation rights are granted per
+; target service to that SID only). It supervises the packaged AI service and keeps its data under
+; %ProgramData%\Kairon\backend. Kairon.exe is only the UI host; it no longer starts the backend.
 #define MyAppName "Kairon"
 #define MyAppVersion "1.1.0"
 #define MyAppPublisher "Kairon"
@@ -76,10 +80,21 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Filename: "{app}\Kairon.exe"; Description: "Launch Kairon"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
+; Remove only the remediation grants made to NT SERVICE\Kairon.Backend (its SID is unique to KAIRON),
+; then stop (waiting) and delete the backend service. Its data under %ProgramData%\Kairon\backend is
+; kept, exactly like the database policy below.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\tools\remediation\Remove-KaironBackendServiceGrants.ps1"""; Flags: runhidden waituntilterminated; RunOnceId: "SweepBackendGrants"
+Filename: "{sys}\net.exe"; Parameters: "stop Kairon.Backend"; Flags: runhidden waituntilterminated; RunOnceId: "StopBackend"
+Filename: "{sys}\sc.exe"; Parameters: "delete Kairon.Backend"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteBackend"
 Filename: "{sys}\sc.exe"; Parameters: "stop Kairon.Agent"; Flags: runhidden waituntilterminated; RunOnceId: "StopAgent"
 Filename: "{sys}\sc.exe"; Parameters: "delete Kairon.Agent"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteAgent"
 
-; Deliberately no [UninstallDelete] section: a normal uninstall must never delete kairon.db, its
+[UninstallDelete]
+; The only uninstall-time deletion: the per-start operator key (a credential for a service that no
+; longer exists after uninstall). This is not user data; the database policy below is unchanged.
+Type: filesandordirs; Name: "{commonappdata}\Kairon\backend\operator"
+
+; Deliberately no other [UninstallDelete] entries: a normal uninstall must never delete kairon.db, its
 ; WAL/SHM files, or anything under Kairon\backups - those are the user's actual incident/telemetry/
 ; remediation history, not installer-owned state. [UninstallDelete] entries run on every ordinary
 ; uninstall (Add/Remove Programs, or re-running this same installer to repair/reinstall) with no
@@ -93,6 +108,7 @@ Filename: "{sys}\sc.exe"; Parameters: "delete Kairon.Agent"; Flags: runhidden wa
 [Code]
 const
   AgentServiceName = 'Kairon.Agent';
+  BackendServiceName = 'Kairon.Backend';
   UserAgentTaskName = 'Kairon\UserAgent';
   ErrorServiceDoesNotExist = 1060;
   ErrorServiceNotActive = 1062;
@@ -510,6 +526,62 @@ begin
   Log('Kairon UserAgent: scheduled task registered successfully.');
 end;
 
+function BackendExecutablePath: String;
+begin
+  Result := ExpandConstant('{app}\backend\Kairon.Backend.exe');
+end;
+
+function BackendDataRoot: String;
+begin
+  Result := ExpandConstant('{commonappdata}\Kairon\backend');
+end;
+
+function BackendServiceExists: Boolean;
+var
+  ResultCode: Integer;
+begin
+  if not RunServiceControl('query ' + BackendServiceName, 'querying the backend service', ResultCode) then
+    RaiseException('Kairon Setup could not query the Windows Service Control Manager. ' +
+      'Review the installer log and verify administrative permissions.');
+  if ResultCode = 0 then
+    Result := True
+  else if ResultCode = ErrorServiceDoesNotExist then
+    Result := False
+  else
+    RaiseException(Format(
+      'Kairon Setup could not determine whether the %s service exists (sc.exe exit code %d). ' +
+      'Review the installer log.', [BackendServiceName, ResultCode]));
+end;
+
+procedure ValidateExistingBackendService;
+var
+  ExistingImagePath: String;
+begin
+  if not RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Services\' + BackendServiceName,
+    'ImagePath', ExistingImagePath) then
+    RaiseException('An existing Kairon.Backend service was found, but its executable path could not be verified. ' +
+      'Setup will not replace a service it cannot identify.');
+  if CompareText(NormalizeImagePath(ExistingImagePath), BackendExecutablePath) <> 0 then
+    RaiseException(Format(
+      'An existing Kairon.Backend service points to a different executable (%s). ' +
+      'Setup will not overwrite an unrelated service.', [NormalizeImagePath(ExistingImagePath)]));
+end;
+
+// net.exe stop waits for the service (and, through its job object, the AI child) to exit, so the
+// binaries are unlocked before [Files] replaces them. Exit code 2 means "not started".
+procedure StopExistingBackendService;
+var
+  ResultCode: Integer;
+begin
+  if not Exec(ExpandConstant('{sys}\net.exe'), 'stop ' + BackendServiceName, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) then
+    RaiseException('Kairon Setup could not launch net.exe to stop the existing backend service.');
+  if (ResultCode <> 0) and (ResultCode <> 2) then
+    RaiseException(Format(
+      'Kairon Setup could not stop the existing %s service (net.exe exit code %d). ' +
+      'Stop the service and retry setup.', [BackendServiceName, ResultCode]));
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   // Restart Manager cannot close the hidden WinExe UserAgent because it has no top-level window.
@@ -520,6 +592,11 @@ begin
   begin
     ValidateExistingAgentService;
     StopExistingAgentService;
+  end;
+  if BackendServiceExists then
+  begin
+    ValidateExistingBackendService;
+    StopExistingBackendService;
   end;
   Result := '';
 end;
@@ -659,6 +736,128 @@ begin
   Log('Kairon Agent: hardened separate machine and interactive UserAgent credentials.');
 end;
 
+// Kairon.Backend runs under its own virtual account (NT SERVICE\Kairon.Backend): no password, no
+// interactive logon, no administrator rights, and a SID unique to KAIRON so remediation grants made
+// to it can be audited and swept on uninstall. Configuration is the service's own Environment
+// registry value, so the command line is just the quoted executable.
+procedure InstallOrReconfigureBackendService;
+var
+  Existing: Boolean;
+  ResultCode: Integer;
+  Arguments: String;
+  Action: String;
+  Environment: String;
+begin
+  Existing := BackendServiceExists;
+  Arguments := 'binPath= "' + BackendExecutablePath + '" start= auto ' +
+    'obj= "NT SERVICE\' + BackendServiceName + '" DisplayName= "Kairon Backend"';
+  if Existing then
+  begin
+    Action := 'reconfigure';
+    ValidateExistingBackendService;
+    if not RunServiceControl('config ' + BackendServiceName + ' ' + Arguments, 'reconfiguring the backend service', ResultCode) then
+      RaiseException('Kairon Setup could not launch Service Control Manager tooling to reconfigure the backend.');
+  end
+  else
+  begin
+    Action := 'create';
+    if not RunServiceControl('create ' + BackendServiceName + ' ' + Arguments, 'creating the backend service', ResultCode) then
+      RaiseException('Kairon Setup could not launch Service Control Manager tooling to create the backend.');
+  end;
+  if ResultCode <> 0 then
+    RaiseException(Format('Kairon Setup could not %s the %s service (sc.exe exit code %d).',
+      [Action, BackendServiceName, ResultCode]));
+
+  if not RunServiceControl('sidtype ' + BackendServiceName + ' unrestricted', 'enabling the backend service SID', ResultCode) or (ResultCode <> 0) then
+    RaiseException(Format('Kairon Setup could not enable the %s service SID (sc.exe exit code %d).', [BackendServiceName, ResultCode]));
+  RunServiceControl('description ' + BackendServiceName + ' "Kairon backend: detection, AI investigation, approval-gated remediation. Supervises the Kairon AI service."',
+    'describing the backend service', ResultCode);
+  if not RunServiceControl('failure ' + BackendServiceName + ' reset= 86400 actions= restart/5000/restart/15000/restart/60000',
+    'configuring backend service recovery', ResultCode) or (ResultCode <> 0) then
+    RaiseException(Format('Kairon Setup could not configure %s recovery (sc.exe exit code %d).', [BackendServiceName, ResultCode]));
+
+  Environment :=
+    'ASPNETCORE_URLS=http://127.0.0.1:8000' + #0 +
+    'Persistence__DataRoot=' + BackendDataRoot + #0 +
+    'SreSecurity__OperatorKeyFile=' + BackendDataRoot + '\operator\operator.key' + #0 +
+    'AiService__ExecutablePath=' + ExpandConstant('{app}\ai\Kairon.AI.exe');
+  if not RegWriteMultiStringValue(HKLM, 'SYSTEM\CurrentControlSet\Services\' + BackendServiceName, 'Environment', Environment) then
+    RaiseException('Kairon Setup could not write the backend service configuration.');
+
+  if not BackendServiceExists then
+    RaiseException('Kairon Setup registered Kairon.Backend, but it is not present in the Service Control Manager.');
+  Log('Kairon Backend: service registered as NT SERVICE\Kairon.Backend with recovery and configuration.');
+end;
+
+// One-time move of the desktop-era database into the service data root: only when the service
+// has no database yet. The original under %LOCALAPPDATA%\Kairon is left in place (rollback copy).
+// Encrypted settings (AI provider key, SQL Server password) are protected with the installing
+// user's DPAPI key and cannot be read by the service account; they must be re-entered once.
+procedure MigrateDesktopDatabase;
+var
+  Source: String;
+  Target: String;
+  Suffix: String;
+  I: Integer;
+begin
+  Target := BackendDataRoot + '\data\kairon.db';
+  Source := ExpandConstant('{localappdata}\Kairon\data\kairon.db');
+  if FileExists(Target) or not FileExists(Source) then exit;
+  for I := 0 to 2 do
+  begin
+    case I of
+      0: Suffix := '';
+      1: Suffix := '-wal';
+    else
+      Suffix := '-shm';
+    end;
+    if FileExists(Source + Suffix) and not FileCopy(Source + Suffix, Target + Suffix, True) then
+      RaiseException('Kairon Setup could not copy the existing Kairon database into ' + BackendDataRoot + '.');
+  end;
+  Log('Kairon Backend: copied the existing desktop database into the service data root (original kept).');
+end;
+
+// Resets the data root's ACL on every install/upgrade: SYSTEM and Administrators full control,
+// the backend service account modify, no Users/Authenticated Users access (ProgramData's default
+// would let any user create files here). Children inherit; only the operator-key folder adds
+// read-only access for interactively logged-on users so the local desktop shell can sign in.
+procedure PrepareBackendDataRoot;
+var
+  Root: String;
+begin
+  Root := BackendDataRoot;
+  ForceDirectories(Root + '\data');
+  ForceDirectories(Root + '\logs');
+  ForceDirectories(Root + '\config');
+  ForceDirectories(Root + '\cache');
+  ForceDirectories(Root + '\backups');
+  ForceDirectories(Root + '\operator');
+  MigrateDesktopDatabase;
+
+  RunTakeownOnConfigDir(Root, 'take ownership of the backend data folder');
+  RunIcacls(Root, '/grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F"',
+    'grant SYSTEM and Administrators access to the backend data folder');
+  RunIcacls(Root, '/inheritance:r', 'remove inherited ProgramData permissions from the backend data folder');
+  RunIcacls(Root, '/grant:r "NT SERVICE\' + BackendServiceName + ':(OI)(CI)M"',
+    'grant the backend service account access to its data folder');
+  RunIcacls(Root + '\*', '/reset /T /C', 'make existing backend data inherit the data folder permissions');
+  RunIcacls(Root + '\operator', '/grant:r "*S-1-5-4:(OI)(CI)R"',
+    'let interactively logged-on users read the local operator key');
+  Log('Kairon Backend: data root ACL reset (SYSTEM/Administrators/service account; INTERACTIVE read on operator).');
+end;
+
+procedure StartBackendService;
+var
+  ResultCode: Integer;
+begin
+  if not RunServiceControl('start ' + BackendServiceName, 'starting the backend service', ResultCode) then
+    RaiseException('Kairon Setup could not launch Service Control Manager tooling to start the backend.');
+  if (ResultCode <> 0) and (ResultCode <> ErrorServiceAlreadyRunning) then
+    RaiseException(Format('Kairon Setup registered the backend service but could not start it (sc.exe exit code %d). ' +
+      'Review %s\logs.', [ResultCode, BackendDataRoot]));
+  Log('Kairon Backend: service started.');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
@@ -666,6 +865,9 @@ begin
     GrantAgentCredentialAcl;
     InstallOrReconfigureAgentService;
     HardenGeneratedAgentCredentials;
+    InstallOrReconfigureBackendService;
+    PrepareBackendDataRoot;
+    StartBackendService;
     InstallOrReconfigureUserAgentTask;
     StartInstalledUserAgentTask;
   end;

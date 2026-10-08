@@ -83,6 +83,15 @@ if ($LASTEXITCODE -ne 0) { throw "UserAgent publish failed." }
 & dotnet publish (Join-Path $repository "desktop\Kairon.Desktop\Kairon.Desktop.csproj") -c $Configuration -r $Runtime --self-contained true -o $package
 if ($LASTEXITCODE -ne 0) { throw "Desktop shell publish failed." }
 
+# Operator-run remediation permission tooling: the elevated per-service grant/revoke helper the
+# pre-flight "How to fix" command points at, and the uninstall sweep of grants made to
+# NT SERVICE\Kairon.Backend. The disposable SCM test service tooling is deliberately NOT shipped.
+$remediationTools = Join-Path $package "tools\remediation"
+New-Item -ItemType Directory -Force -Path $remediationTools | Out-Null
+foreach ($script in @("Set-KaironServicePermission.ps1", "Remove-KaironBackendServiceGrants.ps1")) {
+    Copy-Item -LiteralPath (Join-Path $repository "tools\remediation\$script") -Destination $remediationTools
+}
+
 $bootstrapPython = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $bootstrapPython) { throw "No Python interpreter was found on PATH to create the isolated packaging environment." }
 
