@@ -40,9 +40,11 @@ function renderSdkPage() {
   );
 }
 
+// Credentials and re-pairing now live under "Advanced / How it works" (the first screen is the
+// four-step Connect flow); the project is the one selected in that flow's step 2.
 async function openPairingTab() {
-  await userEvent.click(screen.getByRole('tab', { name: 'Pairing' }));
-  await screen.findByText('Orders');
+  await userEvent.click(screen.getByText('Advanced / How it works'));
+  await screen.findByRole('option', { name: 'Orders' });
   await screen.findByText('orders-sdk');
 }
 
@@ -72,7 +74,20 @@ describe('SdkPage re-pairing', () => {
     await startRepair();
 
     expect(screen.getByText(/Re-pairing "orders-sdk"/)).toBeInTheDocument();
+    // The credential doesn't record its SDK type, so the framework selected in the Connect flow
+    // (FastAPI by default) decides it - the same single source of truth as first-time pairing.
+    expect(sdkApi.createPairing).toHaveBeenCalledWith('proj-1', 'python', 'cred-1');
+  }, POLL_TEST_TIMEOUT);
+
+  it("re-pairs with the original credential's own SDK type when it is known, whatever framework is selected", async () => {
+    sdkApi.listCredentials.mockResolvedValue([{ ...credential, sdkType: 'dotnet' }]);
+    renderSdkPage();
+    await openPairingTab();
+
+    await startRepair();
+
     expect(sdkApi.createPairing).toHaveBeenCalledWith('proj-1', 'dotnet', 'cred-1');
+    expect(screen.getByText(/AddKaironAsync\("pair_freshcode"\)/)).toBeInTheDocument();
   }, POLL_TEST_TIMEOUT);
 
   it('never renders any credential secret, before or during a re-pair', async () => {

@@ -3,7 +3,7 @@ import { RemediationBadge, RiskBadge } from './Badges';
 import { AsyncView } from './StateViews';
 import Tabs from '../ui/Tabs';
 import { useIncidentActions, useIncidents, useIncidentDetails } from '../../hooks/useIncidents';
-import { formatDateTime } from '../../services/incidentService';
+import { formatDateTime, planBulkApproval } from '../../services/incidentService';
 import { getActionLabel } from '../../lib/labels';
 import { RemediationStatus } from '../../types/incident';
 import { IconZap, IconShield } from '../Icons';
@@ -83,14 +83,37 @@ export default function RemediationCenterPage() {
 
   const selectedActions = grouped.filter((a) => selectedIds.has(a.id));
   const [bulkBusy, setBulkBusy] = useState(false);
+  // Per-item outcome of the last bulk run: [{ action, outcome: 'done' | 'failed' | 'skipped', message }].
+  const [bulkResults, setBulkResults] = useState(null);
 
-  const runBulk = async (work) => {
+  // Never stops at the first failure: every selected action is attempted on its own and its own
+  // outcome reported. For approval, siblings of an action on the same incident are skipped up
+  // front - approving one cancels the others, so sending them would only fail.
+  const runBulk = async (kind, work) => {
     setBulkBusy(true);
+    setBulkResults(null);
+    const { toApprove, skipped } = kind === 'approve'
+      ? planBulkApproval(selectedActions)
+      : { toApprove: selectedActions, skipped: [] };
+    const results = [];
     try {
-      for (const action of selectedActions) {
-        await work(action);
+      for (const action of toApprove) {
+        try {
+          await work(action);
+          results.push({ action, outcome: 'done', message: kind === 'approve' ? 'Approved' : 'Rejected' });
+        } catch (err) {
+          results.push({ action, outcome: 'failed', message: err?.message || 'The request failed.' });
+        }
+      }
+      for (const action of skipped) {
+        results.push({
+          action,
+          outcome: 'skipped',
+          message: 'Skipped - another action for the same incident was approved, which cancels this one.'
+        });
       }
       setSelectedIds(new Set());
+      setBulkResults({ kind, results });
     } finally {
       setBulkBusy(false);
     }
@@ -118,14 +141,16 @@ export default function RemediationCenterPage() {
           busy={bulkBusy}
           error={bulkActions.actionError}
           onApprove={(operator, note) =>
-            runBulk((action) => bulkActions.approve(action.incidentId, action.id, operator, note))
+            runBulk('approve', (action) => bulkActions.approve(action.incidentId, action.id, operator, note))
           }
           onReject={(operator, note) =>
-            runBulk((action) => bulkActions.reject(action.incidentId, action.id, operator, note))
+            runBulk('reject', (action) => bulkActions.reject(action.incidentId, action.id, operator, note))
           }
           onClear={() => setSelectedIds(new Set())}
         />
       )}
+
+      {bulkResults && <BulkResults results={bulkResults} onDismiss={() => setBulkResults(null)} />}
 
       <AsyncView
         query={feed}
@@ -209,11 +234,21 @@ function BulkApprovalBar({ selected, busy, error, onApprove, onReject, onClear }
 
   const identityMissing = operator.trim().length === 0;
 
+  const [localError, setLocalError] = useState(null);
+
   const confirm = async () => {
     if (identityMissing) return;
-    if (confirming === 'approve') await onApprove(operator.trim(), null);
-    else await onReject(operator.trim(), 'Bulk rejection');
-    setConfirming(null);
+    setLocalError(null);
+    try {
+      if (confirming === 'approve') await onApprove(operator.trim(), null);
+      else await onReject(operator.trim(), 'Bulk rejection');
+    } catch (err) {
+      // Never an unhandled rejection: per-item failures are already reported by the caller; this
+      // only catches something going wrong around them.
+      setLocalError(err || { message: 'The request failed.' });
+    } finally {
+      setConfirming(null);
+    }
   };
 
   return (
@@ -276,7 +311,35 @@ function BulkApprovalBar({ selected, busy, error, onApprove, onReject, onClear }
         </div>
       )}
 
-      {error && <p className="approval-error">{error.message}</p>}
+      {(localError || error) && !busy && <p className="approval-error" role="alert">{(localError || error).message}</p>}
+    </div>
+  );
+}
+
+/** Per-item report of the last bulk approve/reject run - nothing is summarised as "all done". */
+function BulkResults({ results, onDismiss }) {
+  const { kind, results: items } = results;
+  const done = items.filter((r) => r.outcome === 'done').length;
+  const failed = items.filter((r) => r.outcome === 'failed').length;
+  const skipped = items.filter((r) => r.outcome === 'skipped').length;
+
+  return (
+    <div className="bulk-approval-bar bulk-results" role="status">
+      <div className="bulk-approval-summary">
+        <strong>
+          {kind === 'approve' ? 'Bulk approval' : 'Bulk rejection'}: {done} succeeded, {failed} failed
+          {skipped > 0 ? `, ${skipped} skipped` : ''}
+        </strong>
+        <button type="button" className="secondary-btn" onClick={onDismiss}>Dismiss</button>
+      </div>
+      <ul className="bulk-results-list">
+        {items.map(({ action, outcome, message }) => (
+          <li key={action.id} className={`bulk-result bulk-result-${outcome}`}>
+            <span aria-hidden="true">{outcome === 'done' ? '✓' : outcome === 'failed' ? '✗' : '–'}</span>{' '}
+            <strong>{getActionLabel(action.actionType)}</strong> for <code className="path-code">{action.incidentKey}</code>: {message}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

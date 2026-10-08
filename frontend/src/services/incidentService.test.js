@@ -3,6 +3,7 @@ import {
   buildLifecycle,
   confidenceBand,
   executedActions,
+  planBulkApproval,
   formatConfidence,
   formatMetricValue,
   isResolvedByBackend,
@@ -123,18 +124,31 @@ describe('action helpers', () => {
     expect(pendingAction(null)).toBeNull();
   });
 
-  it('lists only actions that actually ran or tried to', () => {
+  it('lists approved, running, finished, failed and policy-rejected actions - never proposals', () => {
     const executed = executedActions(
       incident({
         actions: [
           { id: 'a', status: RemediationStatus.AwaitingApproval },
           { id: 'b', status: RemediationStatus.Executed },
-          { id: 'c', status: RemediationStatus.Failed }
+          { id: 'c', status: RemediationStatus.Failed },
+          { id: 'd', status: RemediationStatus.Approved },
+          { id: 'e', status: RemediationStatus.PolicyRejected },
+          { id: 'f', status: RemediationStatus.Rejected }
         ]
       })
     );
 
-    expect(executed.map((a) => a.id)).toEqual(['b', 'c']);
+    expect(executed.map((a) => a.id)).toEqual(['b', 'c', 'd', 'e']);
+  });
+
+  it('plans a bulk approval with one action per incident and the siblings skipped', () => {
+    const plan = planBulkApproval([
+      { id: 'a1', incidentId: 'i1' },
+      { id: 'a2', incidentId: 'i1' },
+      { id: 'b1', incidentId: 'i2' }
+    ]);
+    expect(plan.toApprove.map((a) => a.id)).toEqual(['a1', 'b1']);
+    expect(plan.skipped.map((a) => a.id)).toEqual(['a2']);
   });
 
   it('picks the newest verification', () => {

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import Tabs from '../ui/Tabs';
 import Badge from '../ui/Badge';
-import { healthApi, telemetryApi } from '../../api';
+import { healthApi } from '../../api';
 import { IconServer, IconTerminal, IconShield, IconAlertTriangle, IconZap, IconCheck, IconLink } from '../Icons';
 
 // ---- Code examples. Every API used here is verified against the real SDK source, not invented:
@@ -213,69 +213,16 @@ function SubStep({ number, title, children }) {
 }
 
 /**
- * Real verification, not a claim: polls the project's own telemetry (the same
- * api/telemetry/incidents and api/telemetry/metrics routes Live Telemetry uses) and only shows
- * "Connected" once a record has actually arrived in the last minute. An active credential alone
- * never produces this state.
+ * Verification lives in the Connect flow's step 4, which watches the pairing session itself
+ * (confirmed -> machine detected -> telemetry received). The old card here polled "any telemetry
+ * in the project" and only after a project had been picked on another tab, which could both miss a
+ * real connection and claim one for the wrong application - so it only points there now.
  */
-function VerifyCard({ projectId, onTelemetry }) {
-  const [state, setState] = useState(projectId ? 'checking' : 'unknown');
-  const [detail, setDetail] = useState(null);
-
-  useEffect(() => {
-    if (!projectId) { setState('unknown'); return; }
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const [incidents, metrics] = await Promise.all([
-          telemetryApi.getTelemetryIncidents(projectId).catch(() => []),
-          telemetryApi.getMetrics(projectId).catch(() => [])
-        ]);
-        if (cancelled) return;
-        const freshest = [...(incidents || []), ...(metrics || [])]
-          .map((r) => ({ r, t: new Date(r.timestamp).getTime() }))
-          .sort((a, b) => b.t - a.t)[0];
-        if (freshest && Date.now() - freshest.t < 60_000) {
-          setState('connected');
-          setDetail(freshest.r);
-        } else {
-          setState('waiting');
-        }
-      } catch {
-        if (!cancelled) setState('waiting');
-      }
-    };
-    poll();
-    const id = setInterval(poll, 5000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [projectId]);
-
-  if (state === 'connected') {
-    return (
-      <div className="resolution-banner resolution-good sdk-verify-card" role="status">
-        <span className="sdk-verify-title"><IconCheck className="w-4 h-4" aria-hidden="true" /> Connected</span>
-        <p>Your application is sending telemetry to KAIRON.</p>
-        <ul>
-          <li>Application: <strong>{detail?.application || '—'}</strong></li>
-          <li>Service: <strong>{detail?.service || '—'}</strong></li>
-          <li>Environment: <strong>{detail?.environment || '—'}</strong></li>
-          <li>Recent timestamp: <span className="sdk-verify-meta">{detail ? new Date(detail.timestamp).toLocaleTimeString() : '—'}</span></li>
-        </ul>
-      </div>
-    );
-  }
-  if (state === 'waiting') {
-    return (
-      <div className="resolution-banner resolution-neutral sdk-verify-card" role="status">
-        <span className="sdk-verify-title">Waiting for telemetry…</span>
-        <p>Run your application and send a normal request, such as <code>/orders</code>. This updates automatically.</p>
-      </div>
-    );
-  }
+function VerifyNote({ onTelemetry }) {
   return (
-    <div className="resolution-banner resolution-neutral sdk-verify-card" role="status">
-      <span className="sdk-verify-title">Waiting for telemetry…</span>
-      <p>Send a few requests to a normal application route, then check <strong>Live Telemetry</strong> for fresh timestamps and your service name.</p>
+    <div className="resolution-banner resolution-neutral sdk-verify-card">
+      <p>Step 4 of <strong>Connect your application</strong> above detects the connection automatically once the application redeems its pairing code.</p>
+      <p>Configured manually instead? Send a few requests to a normal route, then check <strong>Live Telemetry</strong> for fresh timestamps and your service name.</p>
       <button type="button" className="small-btn sdk-primary-action" onClick={onTelemetry}>View Live Telemetry</button>
       <p className="sdk-hint">Health routes are excluded by default. An active API key alone does not prove telemetry is arriving.</p>
     </div>
@@ -284,7 +231,7 @@ function VerifyCard({ projectId, onTelemetry }) {
 
 // ---- Per-SDK guides (progressive: Install → Connect → Automatic behavior → Run → Verify) -------
 
-function PythonGuide({ CodeBlock, projectId, onTelemetry }) {
+function PythonGuide({ CodeBlock, onTelemetry }) {
   return (
     <div className="sdk-tab-panel">
       <p className="sdk-tab-intro">Install the SDK, connect once, and KAIRON handles request telemetry and delivery.</p>
@@ -338,14 +285,13 @@ function PythonGuide({ CodeBlock, projectId, onTelemetry }) {
         <p className="sdk-hint">Assumes the example above is saved as <code>app.py</code>. Then call a normal route, such as <code>/orders</code> — not <code>/health</code>, which KAIRON excludes from telemetry by default.</p>
       </SubStep>
       <SubStep number="5" title="Verify">
-        <VerifyCard projectId={projectId} onTelemetry={onTelemetry} />
-        <p className="sdk-hint">Telemetry can take a few seconds to arrive and for the page to refresh.</p>
+        <VerifyNote onTelemetry={onTelemetry} />
       </SubStep>
     </div>
   );
 }
 
-function DotNetGuide({ CodeBlock, projectId, onTelemetry }) {
+function DotNetGuide({ CodeBlock, onTelemetry }) {
   return (
     <div className="sdk-tab-panel">
       <p className="sdk-tab-intro">Connect an ASP.NET Core .NET 10 application to KAIRON.</p>
@@ -386,8 +332,7 @@ function DotNetGuide({ CodeBlock, projectId, onTelemetry }) {
         <p className="sdk-hint">Then call a normal route, such as <code>/orders</code> — not <code>/health</code>, which KAIRON excludes from telemetry by default.</p>
       </SubStep>
       <SubStep number="5" title="Verify">
-        <VerifyCard projectId={projectId} onTelemetry={onTelemetry} />
-        <p className="sdk-hint">Telemetry can take a few seconds to arrive and for the page to refresh.</p>
+        <VerifyNote onTelemetry={onTelemetry} />
       </SubStep>
     </div>
   );
@@ -422,7 +367,7 @@ function PairingCard({ CodeBlock }) {
   );
 }
 
-function RemediationCard({ onRemediation }) {
+export function RemediationCard({ onRemediation }) {
   return (
     <section className="section-card">
       <div className="section-header">
@@ -563,8 +508,18 @@ function AdvancedSection({ CodeBlock }) {
 
 // ---- Page ----------------------------------------------------------------------------------
 
-export default function SdkGuide({ CodeBlock, onPairing, onTelemetry, onRemediation, projectId }) {
-  const [platform, setPlatform] = useState('python');
+/**
+ * The reference half of "Connect an app" (rendered under "Advanced / How it works"). Its Python /
+ * .NET tabs are controlled by the page, so they always match the framework picked in the Connect
+ * flow - there is exactly one SDK choice on the page.
+ */
+export default function SdkGuide({ CodeBlock, onPairing, onTelemetry, platform: controlledPlatform, onPlatformChange }) {
+  const [localPlatform, setLocalPlatform] = useState('python');
+  const platform = controlledPlatform || localPlatform;
+  const setPlatform = (next) => {
+    if (onPlatformChange) onPlatformChange(next);
+    else setLocalPlatform(next);
+  };
   const [checking, setChecking] = useState(false);
   const [reachable, setReachable] = useState(null); // null = unknown, true/false once checked
 
@@ -585,8 +540,8 @@ export default function SdkGuide({ CodeBlock, onPairing, onTelemetry, onRemediat
   return (
     <div className="sdk-get-started sdk-onboarding">
       <header className="sdk-onboarding-intro">
-        <h3>Connect your application</h3>
-        <p>Connect your app to KAIRON in a few minutes.</p>
+        <h3>How it works</h3>
+        <p>What happens behind the Connect steps, and how to configure the SDK by hand.</p>
       </header>
 
       <FlowOverview />
@@ -616,18 +571,19 @@ export default function SdkGuide({ CodeBlock, onPairing, onTelemetry, onRemediat
           <p><strong>Local KAIRON (this machine):</strong> the pairing code is enough — nothing else to configure. The default endpoint already points at this backend.</p>
           <p><strong>Remote or cloud KAIRON:</strong> set <code>KAIRON_ENDPOINT</code> to your KAIRON backend's real HTTPS address <em>before</em> pairing, on whatever machine your application runs on. The pairing code itself must reach the right backend to be redeemed; KAIRON then tells the SDK the correct address to keep using afterward. Skip this and the SDK tries to pair against <code>http://localhost:8000</code> — this machine, not your KAIRON backend.</p>
         </div>
-        <button type="button" className="small-btn sdk-primary-action" onClick={onPairing}>Open Pairing</button>
+        {onPairing && (
+          <button type="button" className="small-btn sdk-primary-action" onClick={onPairing}>Go to pairing (step 2)</button>
+        )}
       </Step>
 
-      <Step number="3" title="Choose your SDK">
+      <Step number="3" title="SDK reference">
         <Tabs items={[{ id: 'python', label: '🐍 Python' }, { id: 'dotnet', label: '🔷 .NET' }]} activeId={platform} onChange={setPlatform} />
         {platform === 'python'
-          ? <PythonGuide CodeBlock={CodeBlock} projectId={projectId} onTelemetry={onTelemetry} />
-          : <DotNetGuide CodeBlock={CodeBlock} projectId={projectId} onTelemetry={onTelemetry} />}
+          ? <PythonGuide CodeBlock={CodeBlock} onTelemetry={onTelemetry} />
+          : <DotNetGuide CodeBlock={CodeBlock} onTelemetry={onTelemetry} />}
       </Step>
 
       <PairingCard CodeBlock={CodeBlock} />
-      <RemediationCard onRemediation={onRemediation} />
       <SecurityCard />
       <TroubleshootingSection />
       <AdvancedSection CodeBlock={CodeBlock} />

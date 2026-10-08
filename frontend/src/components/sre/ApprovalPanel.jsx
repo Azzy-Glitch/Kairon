@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { RiskBadge } from './Badges';
 import { getActionLabel } from '../../lib/labels';
+import { describeReadiness } from '../../lib/remediation';
 import { IconShield } from '../Icons';
 
 /**
@@ -10,11 +11,14 @@ import { IconShield } from '../Icons';
  * approve button: an operator identity, and an explicit confirmation step. There is no path here
  * that approves anything automatically, and no default operator name.
  */
-export default function ApprovalPanel({ action, onApprove, onReject, busy, error }) {
+export default function ApprovalPanel({ action, environment, onApprove, onReject, busy, error }) {
   const [operator, setOperator] = useState('');
   const [note, setNote] = useState('');
   const [confirming, setConfirming] = useState(false);
   const [mode, setMode] = useState(null);
+  // A rejected approve/reject call must never become an unhandled promise rejection. The caller
+  // normally surfaces the failure through `error`; this is the fallback when it doesn't.
+  const [localError, setLocalError] = useState(null);
 
   if (!action) return null;
 
@@ -37,17 +41,34 @@ export default function ApprovalPanel({ action, onApprove, onReject, busy, error
 
   const confirm = async () => {
     if (identityMissing) return;
+    setLocalError(null);
 
-    if (mode === 'approve') {
-      await onApprove(action.id, operator.trim(), note.trim() || null);
-    } else {
-      await onReject(action.id, operator.trim(), note.trim() || null);
+    try {
+      if (mode === 'approve') {
+        await onApprove(action.id, operator.trim(), note.trim() || null);
+      } else {
+        await onReject(action.id, operator.trim(), note.trim() || null);
+      }
+      setNote('');
+    } catch (err) {
+      setLocalError(err || { message: 'The request failed.' });
+    } finally {
+      setConfirming(false);
+      setMode(null);
     }
-
-    setConfirming(false);
-    setMode(null);
-    setNote('');
   };
+
+  const actionLabel = getActionLabel(action.actionType);
+  const serviceName = action.targetWindowsServiceName;
+  const hostName = action.targetHostName;
+  const readiness = action.targetReadiness ? describeReadiness(action.targetReadiness) : null;
+  const ready = action.targetReadiness === 'Ready';
+  const shownError = error || localError;
+
+  // Plain statement of exactly what will happen - no invented environment wording.
+  const approveQuestion = serviceName
+    ? `Execute "${actionLabel}" on the Windows service "${serviceName}"${hostName ? ` on ${hostName}` : ''}${environment ? ` (${environment})` : ''}?`
+    : `Execute "${actionLabel}" now?`;
 
   return (
     <section className="panel approval-panel">
@@ -61,19 +82,50 @@ export default function ApprovalPanel({ action, onApprove, onReject, busy, error
 
       <div className="approval-action-card">
         <div className="approval-action-head">
-          <code className="recommendation-action" title={action.actionType}>{getActionLabel(action.actionType)}</code>
+          <code className="recommendation-action" title={action.actionType}>{actionLabel}</code>
           <RiskBadge risk={action.riskLevel} />
         </div>
 
         <dl className="approval-details">
+          {(serviceName || action.targetReadiness) && (
+            <>
+              <div>
+                <dt>Windows service</dt>
+                <dd>{serviceName ? <code className="path-code">{serviceName}</code> : 'No remediation target configured.'}</dd>
+              </div>
+              <div>
+                <dt>Machine</dt>
+                <dd>{hostName || 'Unknown'}</dd>
+              </div>
+            </>
+          )}
+          {environment && (
+            <div>
+              <dt>Environment</dt>
+              <dd>{environment}</dd>
+            </div>
+          )}
           <div>
             <dt>Reason</dt>
             <dd>{action.reason || 'Not provided.'}</dd>
           </div>
           <div>
-            <dt>Expected outcome</dt>
+            <dt>Expected effect</dt>
             <dd>{action.expectedOutcome || 'Not provided.'}</dd>
           </div>
+          <div>
+            <dt>Risk</dt>
+            <dd>{action.riskLevel || 'Unknown'}</dd>
+          </div>
+          {readiness && (
+            <div>
+              <dt>Target readiness</dt>
+              <dd className={ready ? 'approval-readiness-ok' : 'approval-readiness-problem'}>
+                {ready ? '✓ Ready' : `✗ ${readiness.label}`}
+                {!ready && readiness.explanation && <span className="approval-readiness-detail"> - {readiness.explanation}</span>}
+              </dd>
+            </div>
+          )}
           <div>
             <dt>Policy</dt>
             <dd>{action.policyDecision || 'Validated against remediation policy.'}</dd>
@@ -107,7 +159,7 @@ export default function ApprovalPanel({ action, onApprove, onReject, busy, error
         />
       </div>
 
-      {error && <p className="approval-error">{error.message}</p>}
+      {shownError && <p className="approval-error" role="alert">{shownError.message || 'The request failed.'}</p>}
 
       {!confirming ? (
         <div className="approval-buttons">
@@ -136,9 +188,7 @@ export default function ApprovalPanel({ action, onApprove, onReject, busy, error
         // be able to do.
         <div className="approval-confirm">
           <p>
-            {mode === 'approve'
-              ? `Execute "${getActionLabel(action.actionType)}" against the ${action.riskLevel?.toLowerCase() || ''} risk demo environment?`
-              : `Reject "${getActionLabel(action.actionType)}"?`}
+            {mode === 'approve' ? approveQuestion : `Reject "${actionLabel}"?`}
           </p>
           <div className="approval-buttons">
             <button

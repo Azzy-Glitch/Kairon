@@ -1858,3 +1858,89 @@
 
 .remediation-target-form-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 .sdk-connection-status.offline { color: var(--critical); }
+
+/* Approval: remediation-target readiness line */
+.approval-readiness-ok { color: var(--healthy); font-weight: 600; }
+.approval-readiness-problem { color: var(--high); font-weight: 600; }
+.approval-readiness-detail { color: var(--text-secondary); font-weight: 400; }
+.remediation-error-detail { font-weight: 400; }
+.remediation-error-raw { margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+.remediation-error-raw > summary { cursor: pointer; }
+.remediation-error-raw code { display: block; margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bulk-results { flex-direction: column; align-items: stretch; }
+.bulk-results-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12.8px; }
+.bulk-result-done { color: var(--healthy); }
+.bulk-result-failed { color: var(--critical); }
+.bulk-result-skipped { color: var(--text-secondary); }
+
+/* -----------------------------------------------------------------------
+   Remediation Targets - list, detail and guided wizard
+------------------------------------------------------------------------ */
+
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+.remediation-target-service { display: inline-flex; flex-direction: column; gap: 2px; min-width: 0; }
+.remediation-target-subtle { font-size: 12px; color: var(--text-muted); font-weight: 400; }
+.remediation-target-subheading { margin: 18px 0 8px; font-size: 14px; }
+.remediation-target-subheading:focus { outline: none; }
+.remediation-target-subheading:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.remediation-target-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 10px 16px; margin: 8px 0 4px; }
+.remediation-target-summary dt { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); font-weight: 700; }
+.remediation-target-summary dd { margin: 2px 0 0; font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.remediation-target-advanced { margin-top: 18px; }
+
+.remediation-wizard-progress { margin: 8px 0 4px; }
+.remediation-choice-list { flex-direction: column; flex-wrap: nowrap; gap: 8px; }
+.remediation-choice-list .remediation-target-operation-checkbox { align-items: flex-start; }
+.remediation-choice-list .remediation-target-operation-checkbox input { margin-top: 3px; }
+.remediation-choice-disabled { color: var(--text-muted); }
+.remediation-service-search { display: flex; flex-direction: column; gap: 6px; max-width: 420px; margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+.remediation-service-list { max-height: 360px; overflow-y: auto; }
+
+.remediation-preflight { display: flex; flex-direction: column; gap: 12px; margin: 8px 0 12px; }
+.remediation-preflight-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.remediation-preflight-check { font-size: 13px; }
+.remediation-preflight-check.passed > span:first-child { color: var(--healthy); font-weight: 700; }
+.remediation-preflight-check.failed > span:first-child { color: var(--critical); font-weight: 700; }
+.remediation-preflight-check.pending > span:first-child { color: var(--medium); font-weight: 700; }
+.remediation-preflight-label { font-weight: 600; color: var(--text); }
+.remediation-preflight-detail { display: block; margin-left: 18px; font-size: 12.5px; color: var(--text-secondary); }
+.remediation-preflight-ok { color: var(--healthy); font-weight: 600; font-size: 13px; }
+.remediation-preflight-blocked { color: var(--high); font-weight: 600; font-size: 13px; }
+
+.remediation-permission-explainer { padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface-sunken); font-size: 13px; }
+.remediation-permission-explainer p { margin: 4px 0; }
+.remediation-permission-list { list-style: none; margin: 4px 0 8px; padding: 0 0 0 4px; display: flex; flex-direction: column; gap: 2px; color: var(--healthy); }
+.remediation-permission-denied { color: var(--critical); }
+.remediation-fix p { margin: 4px 0; }
+
+/* -----------------------------------------------------------------------
+   Connect an app - framework picker and connection detection
+------------------------------------------------------------------------ */
+
+.sdk-framework-picker { display: flex; flex-wrap: wrap; gap: 16px 28px; }
+.sdk-framework-group { display: flex; flex-direction: column; gap: 8px; }
+.sdk-framework-group-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.sdk-framework-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.sdk-framework-option { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 1px solid var(--border); border-radius: var(--radius-button); background: var(--surface); cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text); }
+.sdk-framework-option:hover { border-color: var(--accent); }
+.sdk-framework-option.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.sdk-framework-option:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.sdk-connect-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px 16px; margin-bottom: 12px; }
+.sdk-connect-form label { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+.sdk-connect-form select, .sdk-connect-form input { width: 100%; margin: 0; }
+.sdk-connect-flow .sdk-pairing-form { margin-top: 12px; }
+.sdk-hint-warning { color: var(--high); }
+
+.sdk-connection-checklist { list-style: none; padding: 0 !important; margin: 4px 0 0; display: flex; flex-direction: column; gap: 4px; }
+.sdk-connection-check.done > span:first-child { color: var(--healthy); font-weight: 700; }
+.sdk-connection-check.pending { color: var(--text-secondary); }
+.sdk-connection-details { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 6px 16px; margin: 6px 0 0; width: 100%; }
+.sdk-connection-details dt { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 700; }
+.sdk-connection-details dd { margin: 0; font-size: 12.8px; color: var(--text); overflow-wrap: anywhere; }
+.sdk-how-it-works > summary { font-size: 15px; }
+.sdk-connect { display: flex; flex-direction: column; gap: 24px; max-width: 960px; margin: 0 auto; }
+.sdk-connect-flow .sdk-onboarding-step:last-child::after { content: none; }
+.sdk-connect-flow .sdk-onboarding-step:nth-last-child(2)::after { content: '↓'; }

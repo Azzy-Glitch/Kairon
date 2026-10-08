@@ -63,6 +63,9 @@ vi.mock('./api/index', () => ({
     createPairing: vi.fn().mockResolvedValue({ pairingId: 'pair1', code: 'pair_x', expiresAt: new Date().toISOString(), sdkType: 'dotnet' }),
     revokePairing: vi.fn().mockResolvedValue(null)
   },
+  remediationTargetsApi: {
+    list: vi.fn().mockResolvedValue([])
+  },
   agentApi: {
     getMachines: vi.fn().mockResolvedValue([]),
     getApplications: vi.fn().mockResolvedValue([])
@@ -169,4 +172,12 @@ it('navigates from onboarding to the existing Live telemetry page', async () => 
   await userEvent.click(screen.getByRole('button', { name: /^Connect an app/ }));
   await userEvent.click(screen.getByRole('button', { name: 'View Live Telemetry' }));
   expect(screen.getByRole('button', { name: /^Live telemetry/ }).className).toMatch(/active/);
+});
+
+it('Configure remediation in Connect an app opens Remediation Targets, not the Actions page', async () => {
+  render(<App />);
+  await userEvent.click(screen.getByRole('button', { name: /^Connect an app/ }));
+  await userEvent.click(screen.getByRole('button', { name: 'Configure remediation →' }));
+  expect(screen.getByRole('button', { name: /^Remediation Targets/ }).className).toMatch(/active/);
+  expect(screen.getByRole('button', { name: /^Actions/ }).className).not.toMatch(/active/);
 });

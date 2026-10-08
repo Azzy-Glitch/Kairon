@@ -31,11 +31,16 @@ export function toOperatorError(error) {
       data?.title ||
       defaultMessageForStatus(status);
 
+    const fieldErrors = problemDetailsErrors(data);
     return {
       kind: kindForStatus(status),
       status,
       code: data?.errorCode || data?.code || null,
-      message
+      // ASP.NET Core model-binding failures arrive as RFC 7807 ProblemDetails whose `title` is the
+      // generic "One or more validation errors occurred." - the useful part is the `errors`
+      // dictionary. Flattened here so every caller can show what was actually wrong.
+      message: fieldErrors.length > 0 && !data?.error ? fieldErrors.join(' ') : message,
+      fieldErrors
     };
   }
 
@@ -56,6 +61,23 @@ export function toOperatorError(error) {
     code: 'BACKEND_UNREACHABLE',
     message: 'Cannot reach the Kairon backend. Check that it is running on port 8000.'
   };
+}
+
+/** Flattens a ProblemDetails `errors` dictionary ({ field: [messages] }) into readable lines.
+ * Field names are kept only when the message doesn't already say what it is about. */
+export function problemDetailsErrors(data) {
+  const errors = data?.errors;
+  if (!errors || typeof errors !== 'object' || Array.isArray(errors)) return [];
+  const lines = [];
+  for (const [field, value] of Object.entries(errors)) {
+    const messages = Array.isArray(value) ? value : [value];
+    for (const m of messages) {
+      if (typeof m !== 'string' || !m.trim()) continue;
+      const name = field.replace(/^\$\.?/, '');
+      lines.push(name && !m.toLowerCase().includes(name.toLowerCase()) ? `${name}: ${m}` : m);
+    }
+  }
+  return lines;
 }
 
 function kindForStatus(status) {

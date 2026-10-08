@@ -176,11 +176,15 @@ export function RecommendationPanel({ recommendations }) {
             )}
 
             {/* A refused recommendation is still shown, with the reason, rather than hidden. */}
-            {!rec.isRegisteredTool && (
+            {!rec.isRegisteredTool ? (
               <p className="recommendation-blocked">
                 Not executable: {rec.policyNote || 'this action is not a registered remediation tool.'}
               </p>
-            )}
+            ) : rec.policyNote ? (
+              // A registered tool can still be refused - most often because no enabled, ready
+              // remediation target authorizes it for this service and machine. Say so.
+              <p className="recommendation-blocked">Policy: {rec.policyNote}</p>
+            ) : null}
           </li>
         ))}
       </ul>

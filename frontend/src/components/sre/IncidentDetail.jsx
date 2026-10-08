@@ -203,9 +203,20 @@ function DetailBody({ incident, actions }) {
 
           <RecommendationPanel recommendations={incident.recommendations} />
 
+          {/* With a diagnosis present the AI panel does not show failureReason, so an incident
+              that ended up with nothing approvable (for example, no ready remediation target)
+              would otherwise give no explanation at all. */}
+          {!awaiting && incident.diagnosis && incident.failureReason && !FAILURE_BANNER_STATUSES.includes(incident.status) && (
+            <div className="resolution-banner resolution-neutral" role="status">
+              <strong>No action can be approved</strong>
+              <span>{incident.failureReason}</span>
+            </div>
+          )}
+
           {awaiting && (
             <ApprovalPanel
               action={awaiting}
+              environment={incident.environment}
               busy={actions.busyActionId === awaiting.id}
               error={actions.actionError}
               onApprove={(actionId, operator, note) =>
@@ -231,6 +242,14 @@ function DetailBody({ incident, actions }) {
     </div>
   );
 }
+
+// Statuses that already render their own failureReason banner above.
+const FAILURE_BANNER_STATUSES = [
+  IncidentStatus.Failed,
+  IncidentStatus.Rejected,
+  IncidentStatus.Cancelled,
+  IncidentStatus.Resolved
+];
 
 /**
  * Whether the operator may ask for a fresh investigation.

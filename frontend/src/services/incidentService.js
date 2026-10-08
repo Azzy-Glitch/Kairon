@@ -79,10 +79,40 @@ export function pendingAction(incident) {
   return (incident?.actions || []).find((a) => a.status === RemediationStatus.AwaitingApproval) || null;
 }
 
+/**
+ * Every action that has left the "proposal" stage: approved (even if not started yet), running,
+ * finished, failed, or refused by policy. Approved-not-started and PolicyRejected actions used to
+ * be filtered out here, so they silently vanished from the incident's remediation view.
+ */
 export function executedActions(incident) {
   return (incident?.actions || []).filter((a) =>
-    [RemediationStatus.Executing, RemediationStatus.Executed, RemediationStatus.Failed].includes(a.status)
+    [
+      RemediationStatus.Approved,
+      RemediationStatus.Executing,
+      RemediationStatus.Executed,
+      RemediationStatus.Failed,
+      RemediationStatus.PolicyRejected
+    ].includes(a.status)
   );
+}
+
+/**
+ * Plans a bulk approval: approving one action cancels its siblings on the same incident, so only
+ * the first selected action per incident is approved and the rest are reported as skipped rather
+ * than sent (and failing) one after another.
+ */
+export function planBulkApproval(selected = []) {
+  const seen = new Set();
+  const toApprove = [];
+  const skipped = [];
+  for (const action of selected) {
+    if (seen.has(action.incidentId)) skipped.push(action);
+    else {
+      seen.add(action.incidentId);
+      toApprove.push(action);
+    }
+  }
+  return { toApprove, skipped };
 }
 
 export function latestVerification(incident) {

@@ -28,9 +28,21 @@ export function revokeCredential(projectId, credentialId) {
  * credential this session is meant to replace - the backend binds the session to it at creation
  * and later refuses to complete against any other credential (never omit it for a re-pair; a
  * session created without it can never be completed later). Omit entirely for a first-time
- * pairing session, which has no credential to replace. Returns { pairingId, code, expiresAt, sdkType }. */
-export function createPairing(projectId, sdkType, replacesCredentialId) {
-  return request(client.post(`/v1/projects/${projectId}/pairing`, { sdkType, replacesCredentialId }));
+ * pairing session, which has no credential to replace. Optional `defaults` = { environment, service } become the SDK's defaults after redemption.
+ * Returns { pairingId, code, expiresAt, sdkType, environment, service }. */
+export function createPairing(projectId, sdkType, replacesCredentialId, defaults = {}) {
+  const body = { sdkType, replacesCredentialId };
+  // Optional defaults the SDK adopts once it redeems the code. Only sent when actually chosen, so
+  // an omitted value keeps the backend's own default rather than sending an empty string.
+  if (defaults.environment) body.environment = defaults.environment;
+  if (defaults.service && defaults.service.trim()) body.service = defaults.service.trim();
+  return request(client.post(`/v1/projects/${projectId}/pairing`, body));
+}
+
+/** Monitored applications (optionally for one project) with their logical `service` and
+ * `lastTelemetryAt` - used to suggest service names. Never carries a credential. */
+export function listApplications(projectId) {
+  return request(client.get('/v1/platform/applications', { params: projectId ? { projectId } : {} }));
 }
 
 export function revokePairing(pairingId) {
@@ -40,7 +52,10 @@ export function revokePairing(pairingId) {
 /** Polled while a pairing code (including a re-pair code) is outstanding, and also used to
  * recover a re-pair's completion status after a refresh/navigation/lost response (SdkPage.jsx's
  * RecoveringCompletion effect). Returns
- * { pairingId, projectId, sdkType, createdAt, expiresAt, redeemedAt, confirmedAt, completedAt, revokedAt, status }
+ * { pairingId, projectId, sdkType, environment, service, createdAt, expiresAt, redeemedAt, confirmedAt,
+ *   completedAt, revokedAt, status, connection }
+ * where connection (null until redeemed) is { lastTelemetryAt, application, service, environment,
+ * source, machineHostName, machineConfirmedAt }
  * where status is 'Pending' | 'Redeemed' | 'Confirmed' | 'Completed' | 'Expired' | 'Cancelled'.
  * redeemedAt means the backend issued a fresh credential; confirmedAt (set later, by the SDK
  * itself) is the only trustworthy proof that the application actually received and is using it -

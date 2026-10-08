@@ -38,3 +38,22 @@ export function enable(id) {
 export function validate(payload) {
   return request(client.post('/v1/remediation-targets/validate', payload));
 }
+
+/** Read-only Windows pre-flight for a prospective target (same body as create). Persists nothing,
+ * never changes a service or its permissions. Returns
+ * { readiness, canEnable, checks: [{ key, label, passed, blocking, detail, readiness }], service,
+ *   requiredRights, missingRights, executorAccount, executorSid, fixCommand }. */
+export function preflight(payload) {
+  return request(client.post('/v1/remediation-targets/preflight', payload));
+}
+
+/** The same pre-flight for a saved target - adds the service-identity and Agent-proof checks. */
+export function targetPreflight(id) {
+  return request(client.get(`/v1/remediation-targets/${id}/preflight`));
+}
+
+/** Windows services on an enrolled machine, with eligibility. Only the KAIRON host itself can be
+ * queried: any other machine is a 422 with code "remote-not-supported"; an unknown machine is 404. */
+export function machineServices(machineId) {
+  return request(client.get(`/v1/remediation-targets/machines/${machineId}/services`));
+}
