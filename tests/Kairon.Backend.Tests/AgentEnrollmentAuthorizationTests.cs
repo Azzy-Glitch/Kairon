@@ -37,6 +37,21 @@ public sealed class AgentEnrollmentAuthorizationTests : IDisposable
     // --- Direct boundary ------------------------------------------------------------------
 
     [Fact]
+    public async Task HeartbeatForAMachineThisBackendDoesNotKnowIs404SoTheAgentReRegisters()
+    {
+        var controller = new AgentController(new AgentRegistrationService(_h.Db, TimeProvider.System), _h.Db, TimeProvider.System)
+        { ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() } };
+        controller.ControllerContext.HttpContext.Request.Headers["X-Kairon-Agent-Key"] = "some-agent-key";
+
+        var unknown = await controller.Heartbeat(Guid.NewGuid(), new AgentHeartbeatDto(), default);
+        Assert.IsType<NotFoundObjectResult>(unknown);
+
+        var known = _h.SeedMachine();
+        var wrongKey = await controller.Heartbeat(known.Id, new AgentHeartbeatDto(), default);
+        Assert.IsType<UnauthorizedObjectResult>(wrongKey);
+    }
+
+    [Fact]
     public async Task RemoteRegistrationWithNoEnrollmentKeyIsRejectedBeforeReachingTheService()
     {
         var (status, machineExists) = await RegisterAsync(

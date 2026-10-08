@@ -66,6 +66,11 @@ public sealed class AgentController : ControllerBase
     public async Task<IActionResult> Heartbeat(Guid machineId, AgentHeartbeatDto dto, CancellationToken cancellationToken)
     {
         var key = Request.Headers[AgentKeyHeader].ToString();
+        // A fresh, reset or switched backend database legitimately no longer knows this machine.
+        // Kairon.Agent re-registers (enrollment-gated) only on 404; answering 401 here left it
+        // heartbeating into rejection forever. A known machine with a wrong key is still 401.
+        if (!string.IsNullOrWhiteSpace(key) && !await _db.Machines.AsNoTracking().AnyAsync(m => m.Id == machineId, cancellationToken))
+            return NotFound(new { error = "Machine is not registered with this backend; register again." });
         if (string.IsNullOrWhiteSpace(key) || !await _agents.RecordHeartbeatAsync(machineId, key, dto, cancellationToken))
             return Unauthorized(new { error = "Agent authentication failed." });
 
