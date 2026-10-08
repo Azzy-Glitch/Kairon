@@ -2,7 +2,7 @@
 // degraded state (slow 503 responses) that only a process restart clears, so a KAIRON
 // RestartService remediation has a real, observable effect. Loopback only; no persistent state.
 var builder = WebApplication.CreateBuilder(args);
-builder.Host.UseWindowsService(options => options.ServiceName = "KaironScmTest");
+builder.Host.UseWindowsService(options => options.ServiceName = "ScmTestDependency");
 builder.WebHost.UseUrls(Environment.GetEnvironmentVariable("KAIRON_SCM_TEST_URL") ?? "http://127.0.0.1:18080");
 
 var app = builder.Build();

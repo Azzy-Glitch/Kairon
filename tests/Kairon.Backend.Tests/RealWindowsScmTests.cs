@@ -16,14 +16,14 @@ public sealed class RealScmFactAttribute : FactAttribute
     {
         if (!OperatingSystem.IsWindows()) Skip = "Real Windows SCM tests require Windows.";
         else if (RealWindowsScmTests.ServiceName is null)
-            Skip = "Set KAIRON_REAL_SCM_TEST_SERVICE=KaironScmTest after running tools/remediation/New-KaironScmTestService.ps1.";
+            Skip = "Set KAIRON_REAL_SCM_TEST_SERVICE=ScmTestDependency after running tools/remediation/New-KaironScmTestService.ps1.";
     }
 }
 
 public sealed class RealWindowsScmTests
 {
     internal static string? ServiceName =>
-        Environment.GetEnvironmentVariable("KAIRON_REAL_SCM_TEST_SERVICE") is "KaironScmTest" ? "KaironScmTest" : null;
+        Environment.GetEnvironmentVariable("KAIRON_REAL_SCM_TEST_SERVICE") is "ScmTestDependency" ? "ScmTestDependency" : null;
 
     private static readonly HttpClient Dependency = new() { BaseAddress = new Uri("http://127.0.0.1:18080"), Timeout = TimeSpan.FromSeconds(10) };
 
