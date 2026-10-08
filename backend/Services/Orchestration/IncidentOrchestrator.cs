@@ -136,10 +136,24 @@ public class IncidentOrchestrator : IIncidentOrchestrator
     }
 
     public Task InvestigateAsync(Guid incidentId, CancellationToken cancellationToken = default) =>
-        InvestigateCoreAsync(incidentId, allowReinvestigation: false, cancellationToken);
+        WithIncidentLockAsync(incidentId, () => InvestigateCoreAsync(incidentId, allowReinvestigation: false, cancellationToken), cancellationToken);
+
+    // The work queue already gives each incident's investigation a single lease, and one worker
+    // consumes it; this per-incident gate is the backstop for any concurrent caller, so two runs can
+    // never both observe "Detected" and reserve two AI requests for the same incident. Striped:
+    // bounded memory, and a hash collision only serializes unrelated incidents briefly.
+    private static readonly SemaphoreSlim[] InvestigationLocks = Enumerable.Range(0, 64).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
+
+    private static async Task WithIncidentLockAsync(Guid incidentId, Func<Task> work, CancellationToken cancellationToken)
+    {
+        var gate = InvestigationLocks[(uint)incidentId.GetHashCode() % (uint)InvestigationLocks.Length];
+        await gate.WaitAsync(cancellationToken);
+        try { await work(); }
+        finally { gate.Release(); }
+    }
 
     public Task ReinvestigateAsync(Guid incidentId, CancellationToken cancellationToken = default) =>
-        InvestigateCoreAsync(incidentId, allowReinvestigation: true, cancellationToken);
+        WithIncidentLockAsync(incidentId, () => InvestigateCoreAsync(incidentId, allowReinvestigation: true, cancellationToken), cancellationToken);
 
     private async Task InvestigateCoreAsync(
         Guid incidentId,

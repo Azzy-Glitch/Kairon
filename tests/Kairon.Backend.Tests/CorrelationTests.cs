@@ -209,20 +209,20 @@ public class CorrelationTests : IDisposable
     }
 
     [Fact]
-    public async Task SignalsOutsideTheCorrelationWindowStartANewIncident()
+    public async Task AnActiveIncidentAbsorbsSignalsHoweverLongItHasBeenIdle()
     {
         _h.Detection.CorrelationWindowSeconds = 60;
         var engine = _h.CreateCorrelationEngine();
 
         var created = await engine.CorrelateAsync(new List<DetectionSignal> { Signal("cpu-threshold", "cpu") });
 
-        // Age the incident past the window.
+        // Age the incident past the (legacy) window: still the same unresolved problem.
         created[0].UpdatedAt = DateTime.UtcNow.AddMinutes(-10);
         await _h.Db.SaveChangesAsync();
 
         await engine.CorrelateAsync(new List<DetectionSignal> { Signal("latency-threshold", "latency") });
 
-        Assert.Equal(2, await _h.Db.SreIncidents.CountAsync());
+        Assert.Equal(1, await _h.Db.SreIncidents.CountAsync());
     }
 
     [Fact]

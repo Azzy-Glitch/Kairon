@@ -354,9 +354,24 @@ rules cover:
 - queue backlog
 - statistical metric deviation
 
-Signals are deduplicated and correlated by service and time window. The AI receives a bounded
-evidence package containing incident metadata, recent metrics, related errors, correlated signals,
-similar incidents, and the closed list of available actions. The evidence is persisted for audit.
+Signals are deduplicated deterministically on the server. Each logical problem has one active
+incident: one per project, environment and service, plus machine when proven. The AI is called once
+for a newly detected incident, or when an operator re-investigates, within per-incident and hourly
+caps. Repeated telemetry never calls it again.
+
+The AI receives a bounded, redacted evidence package confined to the incident's scope:
+
+- incident metadata;
+- recent metrics;
+- related errors;
+- a per-endpoint breakdown;
+- correlated signals;
+- similar incidents;
+- the configured service's state, when a target applies;
+- the closed list of available actions.
+
+The evidence is persisted for audit. See
+[docs/WINDOWS_PRODUCTION_REMEDIATION.md](docs/WINDOWS_PRODUCTION_REMEDIATION.md#incidents-ai-requests-and-evidence).
 
 New evidence can mark an existing diagnosis stale. An operator may re-investigate until a
 remediation has been approved or executed. Verification has three outcomes:

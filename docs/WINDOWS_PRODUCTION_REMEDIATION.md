@@ -118,6 +118,59 @@ Timeouts and failures are recorded rather than retried; Windows may already have
 the service before approving another action. An interrupted execution is never replayed
 automatically; only an unstarted approval or a pending verification is resumed after a restart.
 
+## Incidents, AI requests and evidence
+
+**One active incident per problem.** Deduplication is deterministic and server-side; the AI never
+decides it. A detection signal's correlation key is `project | environment | service`, plus
+`| machine` when the telemetry carries an Agent-proven machine. Any non-terminal incident with the
+same key absorbs new signals however long it has been idle. Terminal means Resolved, Failed,
+Rejected or Cancelled. Only after a terminal state does a later failure open a new incident.
+
+The rule details:
+
+- A rule that re-fires with the same reading changes nothing.
+- A new rule, or a changed reading, replaces that rule's row. It never appends duplicates.
+- Different projects, environments, services or machines are never merged.
+- Find-or-create is serialized inside the backend, so concurrent telemetry cannot create twins.
+- `Detection:CorrelationWindowSeconds` is still accepted, but it no longer bounds correlation.
+
+**When the AI is called.** A request goes to the AI only in two cases:
+
+- a newly created incident still in `Detected`, after the evidence-delay window;
+- an explicit operator *Re-investigate*, before any remediation is approved.
+
+Repeated or new telemetry on an incident that is already diagnosed never calls the AI again. A
+genuinely new reading only marks the diagnosis *stale* for the operator.
+
+Every request is reserved durably first, as an `AiRequestStarted` audit event, and is capped by:
+
+- `AiOrchestration:MaxInvestigationsPerIncident` (default 3);
+- `AiOrchestration:MaxInvestigationsPerHour` (default 60, across all incidents).
+
+A blocked request is recorded as `AiBudgetExceeded`. A per-incident gate makes concurrent callers
+reserve at most one request for the same incident.
+
+**What the AI sees.** The evidence is bounded and confined to the incident's exact scope: the same
+project, environment and service, and the same machine for a machine-scoped incident. That rule
+covers metrics, related errors, Agent events and similar past incidents. The evidence includes:
+
+- a per-endpoint breakdown (requests, 5xx/4xx counts, average and maximum latency, the most common
+  exception type), so the model can tell exception-driven application errors from slow,
+  exception-less dependency failures;
+- CPU, memory and latency trends;
+- the configured Windows service and its current state, read-only, when one enabled target matches
+  the incident's machine.
+
+Host names, machine ids, credentials and fingerprints are never sent.
+
+Every text field passes through the backend redaction first. Redaction masks:
+
+- bearer tokens, cookie headers, and `key=value` / `key: value` pairs whose name contains token,
+  secret, password, api key, session id, signature or credential (including compound names such as
+  `access_token` or `client_secret`);
+- provider and KAIRON credential shapes (`sk-`, `AIza`, `AKIA`, `ghp_`, JWTs, `krn_`/`ksi_`/`pair_`);
+- connection-string passwords, user-profile paths, IP addresses and e-mail addresses.
+
 ## Operations notes
 
 - **Logs:** `%ProgramData%\Kairon\backend\logs`. Service state: `Get-Service Kairon.Backend`.

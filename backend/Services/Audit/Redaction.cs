@@ -36,6 +36,17 @@ public static partial class Redaction
     [GeneratedRegex(@"(?i)\b(?:krn|ksi|pair)_[A-Za-z0-9_-]{8,}\b", RegexOptions.CultureInvariant)]
     private static partial Regex KaironCredentialPattern();
 
+    // Compound names the word-bounded KeyValuePattern misses because "_"/"-" are word characters:
+    // access_token=, refresh-token:, X-Session-Id=, client_secret=, api_signature=, sessionid= ...
+    // Query strings and exception text routinely carry these.
+    [GeneratedRegex(@"(?i)\b([A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|session[_-]?id|sessionid|signature|credential)[A-Za-z0-9_.-]*)\s*[:=]\s*[""']?[^\s""',;&]+",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex CompoundSecretPattern();
+
+    // Whole cookie headers: a cookie value is a session credential whatever its name.
+    [GeneratedRegex(@"(?i)\b(set-cookie|cookie)\s*:\s*[^\r\n]+", RegexOptions.CultureInvariant)]
+    private static partial Regex CookieHeaderPattern();
+
     [GeneratedRegex(@"(?i)\b[A-Z]:\\Users\\[^\\\s]+", RegexOptions.CultureInvariant)]
     private static partial Regex UserProfilePathPattern();
 
@@ -54,7 +65,9 @@ public static partial class Redaction
         // Bearer first: "Authorization: Bearer <token>" would otherwise match the key/value
         // pattern, which consumes only the word "Bearer" and leaves the token exposed.
         var scrubbed = BearerPattern().Replace(value, $"Bearer {Mask}");
+        scrubbed = CookieHeaderPattern().Replace(scrubbed, m => $"{m.Groups[1].Value}: {Mask}");
         scrubbed = KeyValuePattern().Replace(scrubbed, m => $"{m.Groups[1].Value}={Mask}");
+        scrubbed = CompoundSecretPattern().Replace(scrubbed, m => $"{m.Groups[1].Value}={Mask}");
         scrubbed = OpenAiStylePattern().Replace(scrubbed, Mask);
         scrubbed = GoogleStylePattern().Replace(scrubbed, Mask);
         scrubbed = ConnectionStringPattern().Replace(scrubbed, m => $"{m.Groups[1].Value}={Mask}");

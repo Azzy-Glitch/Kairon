@@ -61,42 +61,56 @@ public class CorrelationEngine : ICorrelationEngine
             return Array.Empty<SreIncident>();
 
         var touched = new List<SreIncident>();
-        var window = TimeSpan.FromSeconds(_options.CorrelationWindowSeconds);
 
-        foreach (var group in eligibleSignals.GroupBy(s => s.CorrelationKey))
+        // Find-or-create must be atomic per process: the incident worker is already a single
+        // sequential consumer, but any concurrent caller must still never race two equivalent
+        // incidents into existence.
+        await CorrelationGate.WaitAsync(cancellationToken);
+        try
         {
-            var grouped = group.ToList();
-            var cutoff = grouped.Max(s => s.DetectedAt) - window;
-
-            // An open incident with the same correlation key inside the window is the same
-            // problem still unfolding, so new signals attach to it instead of spawning a twin.
-            var existing = await _db.SreIncidents
-                .Include(i => i.Events)
-                .Where(i => i.CorrelationKey == group.Key
-                            && i.Status != IncidentStatus.Resolved
-                            && i.Status != IncidentStatus.Failed
-                            && i.Status != IncidentStatus.Rejected
-                            && i.Status != IncidentStatus.Cancelled
-                            && i.UpdatedAt >= cutoff)
-                .OrderByDescending(i => i.UpdatedAt)
-                .FirstOrDefaultAsync(cancellationToken);
-
-            if (existing is null)
+            foreach (var group in eligibleSignals.GroupBy(s => s.CorrelationKey))
             {
-                var created = await CreateIncidentAsync(grouped, cancellationToken);
-                touched.Add(created);
+                var grouped = group.ToList();
+
+                // One ongoing problem = one active incident. Any non-terminal incident with the same
+                // correlation key (project|environment|service[|machine]) is the same problem still
+                // unfolding and absorbs the new signals, however long it has been idle: an incident
+                // still awaiting approval or stuck in investigation must not be duplicated - and sent
+                // to the AI again - just because its signals paused. Only a terminal state ends it; a
+                // later failure then starts a genuinely new incident.
+                var existing = await _db.SreIncidents
+                    .Include(i => i.Events)
+                    .Where(i => i.CorrelationKey == group.Key
+                                && i.Status != IncidentStatus.Resolved
+                                && i.Status != IncidentStatus.Failed
+                                && i.Status != IncidentStatus.Rejected
+                                && i.Status != IncidentStatus.Cancelled)
+                    .OrderByDescending(i => i.UpdatedAt)
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                if (existing is null)
+                {
+                    var created = await CreateIncidentAsync(grouped, cancellationToken);
+                    touched.Add(created);
+                }
+                else
+                {
+                    var updated = await UpdateIncidentAsync(existing, grouped, cancellationToken);
+                    if (updated)
+                        touched.Add(existing);
+                }
             }
-            else
-            {
-                var updated = await UpdateIncidentAsync(existing, grouped, cancellationToken);
-                if (updated)
-                    touched.Add(existing);
-            }
+
+            await _db.SaveChangesAsync(cancellationToken);
         }
-
-        await _db.SaveChangesAsync(cancellationToken);
+        finally
+        {
+            CorrelationGate.Release();
+        }
         return touched;
     }
+
+    private static readonly SemaphoreSlim CorrelationGate = new(1, 1);
 
     private async Task<SreIncident> CreateIncidentAsync(
         List<DetectionSignal> signals,
