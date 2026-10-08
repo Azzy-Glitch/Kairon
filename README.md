@@ -70,8 +70,8 @@ The desktop dashboard is organized around the operator workflow:
 
 | Component | Responsibility |
 |---|---|
-| `desktop/Kairon.Desktop` | Single-instance WinForms/WebView2 shell; starts and health-checks the backend and AI children |
-| `backend` | APIs, projects, ingestion, detection, correlation, incident lifecycle, policy, persistence, audit |
+| `desktop/Kairon.Desktop` | Single-instance WinForms/WebView2 UI host; connects to the installed backend service (or, from a source checkout, starts the backend and AI as children) |
+| `backend` | APIs, projects, ingestion, detection, correlation, incident lifecycle, policy, remediation, persistence, audit. Installed as the `Kairon.Backend` Windows service, which also supervises the AI service |
 | `ai-service` | Provider-independent investigation, diagnosis, prediction, and recommendation |
 | `agent/Kairon.Agent` | Auto-start Windows service running as `LocalService`; machine heartbeat and machine-level monitoring |
 | `agent/Kairon.UserAgent` | Per-interactive-session process inventory through an at-logon Scheduled Task |
@@ -107,13 +107,17 @@ C:\Program Files\Kairon\
 
 Setup also creates:
 
+- `Kairon.Backend`: automatic Windows service, running as its own virtual account
+  `NT SERVICE\Kairon.Backend` (not an administrator). It hosts the API and dashboard on
+  `127.0.0.1:8000`, supervises the AI service, and keeps its data in `%ProgramData%\Kairon\backend`.
 - `Kairon.Agent`: automatic Windows service, running as `NT AUTHORITY\LocalService`.
 - `\Kairon\UserAgent`: enabled at-logon Scheduled Task for interactive process visibility.
 - Start Menu and optional public Desktop shortcuts targeting the installed `Kairon.exe`.
 - An official uninstaller at `C:\Program Files\Kairon\unins000.exe`.
 
-Launch KAIRON from the Start Menu or `Kairon.lnk`. The desktop waits for both child services to
-report healthy before loading the dashboard.
+Launch KAIRON from the Start Menu or `Kairon.lnk`. The desktop waits for the backend service to
+report healthy before loading the dashboard. Closing the window does not stop KAIRON: detection,
+approved remediation and verification continue in the service.
 
 ### Build the Windows installer
 
@@ -371,28 +375,41 @@ Four gates precede execution:
 
 1. The registered `IRemediationTool` catalog.
 2. Policy validation: enablement, allow/block lists, risk, environment, and limits.
-3. Named human approval recorded in the audit trail.
-4. Policy revalidation immediately before execution.
+3. Operator approval (operator key) with the approver's name recorded in the audit trail. The name
+   is an audit label entered by the operator, not a separate login.
+4. Policy and target revalidation immediately before execution.
 
-By default, remediation is permitted only in `Development`, `Demo`, and `Staging`; `Production` is
-not in `Remediation:AllowedEnvironments`.
+Windows service remediation additionally requires an enabled remediation target for the exact
+project, environment, service and machine, Agent-confirmed telemetry from that machine, and Windows
+rights granted to the backend service account for that one service. See
+[Windows service remediation](docs/WINDOWS_PRODUCTION_REMEDIATION.md).
+
+`Remediation:AllowedEnvironments` defaults to `Development`, `Staging` and `Production` (the only
+valid KAIRON environments; `Demo` is retired). `Remediation:RequireApprovalForEveryAction` is
+`true`, and nothing executes an action an operator has not approved.
 
 ## Data and persistence
 
-The packaged desktop uses SQLite by default. A centralized deployment can select SQL Server with
+The installed product uses SQLite by default. A centralized deployment can select SQL Server with
 `Persistence:Provider=SqlServer` and `ConnectionStrings:DefaultConnection`.
 
-Managed local data is stored beneath:
+The installed backend service stores its managed data beneath (ACL: SYSTEM, Administrators and
+`NT SERVICE\Kairon.Backend` only; `operator\` is additionally readable by interactive users):
 
 ```text
-%LOCALAPPDATA%\Kairon\
+%ProgramData%\Kairon\backend\
   data\kairon.db
   backups\
   logs\
   config\dataprotection-keys\
   cache\
-  webview2\
+  operator\operator.key        (rotated on every service start)
 ```
+
+A source checkout running without the service (and the desktop's own WebView2 profile) still uses
+`%LOCALAPPDATA%\Kairon\`. Upgrading from a desktop-hosted install copies that database into the
+service data root once (the original is kept); re-enter the AI provider key afterwards, because it
+was encrypted for the user account.
 
 Machine and UserAgent credentials are stored separately under
 `%ProgramData%\Kairon\config` with hardened ACLs.
@@ -421,10 +438,14 @@ unrelated directories.
 
 ## Security model and deployment boundaries
 
-- The installed WebView2 host generates an ephemeral operator key and attaches it to `/api/*`
-  requests at the native network boundary. It is not embedded in JavaScript, a URL, or browser
-  storage.
-- The backend-to-AI transport key is also generated per desktop launch.
+- The backend service generates a fresh operator key on every start and publishes it only to
+  `%ProgramData%\Kairon\backend\operator` (readable by SYSTEM, Administrators, the service account and
+  interactively logged-on users). The WebView2 host reads it and attaches it to `/api/*` requests at
+  the native network boundary. It is never embedded in JavaScript, a URL, or browser storage.
+- The backend-to-AI transport key is generated per service start and passed only to the AI child.
+- The backend executes Windows service operations as `NT SERVICE\Kairon.Backend`, which has no
+  administrative rights; an administrator grants it Query/Start/Stop per target service with
+  `tools\remediation\Set-KaironServicePermission.ps1`, and uninstall removes those grants.
 - Project API keys are returned once and stored only as SHA-256 hashes with revocation metadata.
 - AI-provider keys are encrypted at rest and omitted from every API response and log.
 - Normalized and legacy ingestion endpoints are rate-limited and payload-sized. SDK pairing
@@ -432,14 +453,13 @@ unrelated directories.
   tighter, dedicated rate-limit policy - separate from bulk telemetry ingestion's - since both are
   unattended, no-operator-key endpoints an automated caller could otherwise hammer.
 - Custom AI endpoints require HTTPS except for loopback development endpoints.
-- The Agent service runs as `LocalService`, not `LocalSystem`.
+- The Agent service runs as `LocalService`, not `LocalSystem`, and has no remediation role.
 - Remediation has no arbitrary command execution tool and always requires approval by default.
 
-Important deployment distinction: the local desktop configuration currently uses
-`PlatformSecurity:RequireTelemetryKey=false` for loopback development convenience. Projects must
-still exist and be active, but the project key is not enforced in this mode. The cloud compose
-configuration sets telemetry-key enforcement to `true`. Do not expose the desktop backend beyond
-loopback or reuse its defaults for an internet-facing deployment.
+Telemetry authentication is enforced by default (`PlatformSecurity:RequireTelemetryKey=true`) in
+both the installed product and the cloud compose configuration; Production refuses to start with
+telemetry or operator authentication disabled. The installed backend listens on loopback only; do
+not expose it beyond loopback or reuse its defaults for an internet-facing deployment.
 
 Agent registration (`POST /api/agent/register`) is the machine-enrollment bootstrap boundary, and
 it is a **separate trust boundary from the operator key**, with its own credential and its own
@@ -449,9 +469,8 @@ privileges, so an enrollment key never opens an operator endpoint and an operato
 a machine.
 
 - **Local, single-machine install:** nothing is configured, and registration is accepted over
-  loopback only. This is the only arrangement that can work in the packaged desktop, which mints a
-  fresh operator key per launch and hands it exclusively to the backend - the installed Agent has
-  no way to learn it.
+  loopback only. The installed Agent never holds the operator key, which is reserved for operator
+  actions.
 - **Remote/centralized deployment:** configure `AgentEnrollmentSecurity:EnrollmentKeys`
   (`docker-compose.cloud.yml` requires `KAIRON_AGENT_ENROLLMENT_KEY`) and set `Agent:EnrollmentKey`
   in each Agent's own configuration. The key is required for first-time enrollment and for later
@@ -463,7 +482,8 @@ credentials, established at registration - never the enrollment key and never th
 
 ## Remediation deployment boundary
 
-Run one active backend/executor per database and Windows service target. See
+Run one active backend/executor per database and Windows service target. Windows service
+remediation is local-only: the target service must be on the machine the backend service runs on. See
 [remediation recovery and action-specific verification](docs/REMEDIATION_RECOVERY.md) for interruption handling,
 StopService evidence requirements, and SQL Server migration validation. Multi-replica remediation is not supported.
 

@@ -12,7 +12,24 @@ machine, not just a `dotnet run`/`npm run dev` pair of dev servers: a native des
 packaged installer, and a Windows Service Agent for zero-code, no-SDK-required monitoring of a
 machine and its processes.
 
-## Desktop shell (`desktop/Kairon.Desktop/`)
+## Installed architecture (1.1.0+)
+
+The backend is no longer a child of the desktop shell. The installer registers it as the
+**`Kairon.Backend` Windows service** under its own virtual account `NT SERVICE\Kairon.Backend`
+(auto start, recovery restarts, not an administrator). The service hosts the API and dashboard on
+`127.0.0.1:8000`, supervises the packaged AI service as a kill-on-close child with a per-start
+transport secret, keeps its data in `%ProgramData%\Kaironackend`, and publishes a fresh operator
+key to `%ProgramData%\Kaironackend\operator\operator.key` on every start (readable only by
+SYSTEM, Administrators, the service account and interactively logged-on users). Remediation runs
+under that service identity, so it continues when the window is closed and never runs as the
+signed-in user. When the service is installed, `Kairon.exe` is only the UI host: it waits for the
+service's health endpoint, reads the operator key (re-reading it after a service restart rotates
+it), and injects it at the WebView2 network boundary. See
+[Windows service remediation](WINDOWS_PRODUCTION_REMEDIATION.md).
+
+The child-process mode described next remains for a source checkout with no installed service.
+
+## Desktop shell (`desktop/Kairon.Desktop/`) - source/dev mode
 
 A WinForms host with a `Microsoft.Web.WebView2` control, not a browser tab. On launch it spawns
 the backend and AI service as child processes (self-contained, published alongside it - see

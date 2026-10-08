@@ -20,6 +20,24 @@ before and after.
 
 ## What changed since 1.0.0
 
+- **Backend runs as a Windows service**: the installer registers `Kairon.Backend` under its own
+  virtual account `NT SERVICE\Kairon.Backend` (no administrator rights). It hosts the API and
+  dashboard, supervises the AI service, and stores data in `%ProgramData%\Kaironackend` with a
+  closed ACL. `Kairon.exe` is now only the UI host, so detection and approved remediation continue
+  when the window is closed. The operator key is generated per service start and readable only by
+  SYSTEM, Administrators, the service account and interactively logged-on users.
+- **Windows service remediation, end to end**: remediation targets are validated by a read-only
+  pre-flight (local host, service exists and is an eligible application service, Windows rights for
+  each allowed operation), bound to the service's executable identity, local-only, and re-checked
+  immediately before every SCM call. Failures are classified (`PermissionMissing`,
+  `ServiceMissing`, `ServiceIdentityChanged`, ...). Rights are granted per service by an
+  administrator with `tools\remediation\Set-KaironServicePermission.ps1`; uninstall removes them.
+- **Simpler onboarding**: pairing codes carry the environment and service chosen in *Connect an
+  app*; both SDKs need only the pairing code, reuse it safely across restarts and workers, and
+  report connection, machine and telemetry status back to the page.
+- **Approval**: the incident page lists every pending alternative and approves only the one the
+  operator selects; the required approver name and confirmation wording are explicit.
+
 - **Remediation target management**: operators can create, list, update, and disable remediation
   targets through an authorized management API, on top of the Phase 1 persistence/resolver
   foundation. Environment matching (create, list/filter, update, uniqueness, and runtime
@@ -132,11 +150,27 @@ with no configuration changes; a centralized/cloud deployment must configure
 previous `deploy/Caddyfile.cloud.example` should also adopt the new one (see above) to keep the
 dashboard genuinely authenticated.
 
+## Upgrade notes (desktop-hosted install to the backend service)
+
+- The installer copies the existing `%LOCALAPPDATA%\Kairon\data\kairon.db` into
+  `%ProgramData%\Kaironackend\data` once, when the service has no database yet. The original is
+  left in place as a rollback copy. The copy uses the profile of the account that runs Setup.
+- Secrets encrypted for the user account (the AI provider key, a saved SQL Server connection) cannot
+  be decrypted by the service account. **Re-enter the AI provider key in Settings → AI
+  configuration** (and any SQL Server connection) once after upgrading.
+- Remediation targets enabled before this release have no recorded service identity and report
+  *Needs re-confirmation*; re-save each one to confirm it.
+- Remediation rights must be granted to the new executor identity (`NT SERVICE\Kairon.Backend`);
+  grants made to a user account for earlier testing are no longer used and can be revoked with
+  `Set-KaironServicePermission.ps1 -Remove`.
+
 ## Known limitations
 
 - The published, unsigned Release desktop `Kairon.exe` and the installer's own self-extracting stub
   can both be blocked by Windows Smart App Control on a machine where it's enabled; code-signing
   would resolve this but is not configured in this environment.
-- Installer compilation requires Inno Setup (`ISCC.exe`); this was not available in the environment
-  this release was validated in, so the installer script was verified by inspection and prior
-  successful compiles, not by a fresh compile in this pass.
+- Installer compilation requires Inno Setup 6 (`ISCC.exe`).
+- Windows service remediation is local-only (the target must be on the backend's machine), and one
+  backend instance must own each target; multi-replica remediation is not supported.
+- Machine proof is applied to telemetry whose environment name is at most 50 characters; only
+  Development/Staging/Production can be remediation targets, so this does not affect remediation.

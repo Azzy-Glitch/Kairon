@@ -4,6 +4,21 @@ Adapted from Azzy's productization branch (`origin/main` / `codex/productization
 onto this codebase's actual layout — see `docs/DESKTOP_SHELL.md` for why this is an adaptation
 rather than a merge.
 
+## What Setup installs (1.1.0+)
+
+| Item | Account / location | Lifecycle |
+|---|---|---|
+| `Kairon.Backend` Windows service | `NT SERVICE\Kairon.Backend` (virtual account, unrestricted service SID), auto start, recovery restarts | Upgrade: refuses an unrelated service with the same name, stops it with `net stop` (waits), reconfigures. Uninstall: sweeps its remediation grants, stops and deletes it |
+| Backend data | `%ProgramData%\Kairon\backend` (`data`, `logs`, `config`, `cache`, `backups`, `operator`) | ACL reset every install: SYSTEM/Administrators full, service account modify, INTERACTIVE read on `operator` only. Kept on uninstall (except the operator key) |
+| `Kairon.Agent` Windows service | `NT AUTHORITY\LocalService` | Unchanged |
+| `\Kairon\UserAgent` task | Interactive user at logon | Unchanged |
+| `tools\remediation` | `Set-KaironServicePermission.ps1`, `Remove-KaironBackendServiceGrants.ps1` | Operator-run grant helper; uninstall sweep |
+
+Backend configuration is the service's `Environment` registry value (`ASPNETCORE_URLS`,
+`Persistence__DataRoot`, `SreSecurity__OperatorKeyFile`, `AiService__ExecutablePath`). On the first
+upgrade from a desktop-hosted install, Setup copies the existing `%LOCALAPPDATA%\Kairon\data`
+database (of the account running Setup) into the service data root and keeps the original.
+
 ## What changed from the source branch
 
 - The source branch's `--desktop` flag opened a system browser

@@ -1,86 +1,135 @@
 # Windows service remediation
 
-KAIRON runtime environments are Development, Staging and Production. These use the same real
-executor and safety gates. SDK telemetry environment labels remain application metadata; labels
-such as Demo or Hackathon do not authorize product remediation.
+KAIRON can remediate a Windows service when, and only when, an operator has explicitly authorized
+that exact service as a **remediation target**, the backend's Windows identity has been granted
+the minimum rights on that one service, the AI recommends one of the target's allowed operations
+for a real incident, and an operator approves it. Every one of those gates is re-checked
+immediately before the operation runs.
 
-## Enrollment and authorization
+## Architecture
 
-1. Register the project and issue a dedicated project API credential for the target workload.
-2. Enroll the Windows machine with distinct generated Agent and UserAgent credentials. Keep its
-   machine heartbeat active. Obtain the enrolled machine ID and verify its hostname independently.
-3. Configure exactly one `WindowsRemediation:Targets` entry per project/environment/logical service.
-   Assign a distinct logical service name when separately targeting multiple instances.
-4. Configure the workload SDK with that dedicated API key, project ID, logical service,
-   environment and `MachineId` (`machine_id` in Python).
-5. Give the backend's Windows account SCM query and only the required service-control rights on
-   the named machine/service. Remote targets also need the appropriate Windows RPC connectivity.
-   Protect target configuration and the backend identity from untrusted writers. The executor
-   never accepts credentials, hostnames, commands or service names from the AI.
+| Component | Runs as | Role in remediation |
+|---|---|---|
+| **Kairon.Backend** Windows service | `NT SERVICE\Kairon.Backend` (virtual account, no password, not an administrator, SID unique to KAIRON) | Detection, AI orchestration, approval, **executes** the SCM operation (`sc.exe` query/start/stop) and verifies recovery. Supervises the AI service. |
+| Kairon AI service | Child of the backend service (same identity), loopback `127.0.0.1:8001` | Diagnosis and recommendations only. Never executes anything. |
+| **Kairon.Agent** Windows service | `NT AUTHORITY\LocalService` | Machine enrollment, heartbeat, and **machine proof** for application telemetry. It does not execute remediation and holds no service-control rights. |
+| Kairon.UserAgent | The interactive user (logon task) | Per-session process inventory. No remediation role. |
+| Kairon.exe (desktop) | The interactive user | UI host only (WebView2). It reads the operator key the backend publishes and attaches it to UI requests. It does not start or stop the backend. |
 
-Example target (replace every placeholder; no targets are enabled by default):
+Data lives in `%ProgramData%\Kairon\backend` (`data`, `logs`, `config`, `cache`, `backups`,
+`operator`). The installer resets that folder's ACL on every install/upgrade: SYSTEM and
+Administrators full control, `NT SERVICE\Kairon.Backend` modify, no access for other users.
+Only `operator\operator.key` is readable by interactively logged-on users; the backend writes a
+fresh 256-bit operator key there on every start (a service restart rotates it).
 
-```json
-{
-  "WindowsRemediation": {
-    "MachineHeartbeatMaxAgeSeconds": 90,
-    "Targets": [{
-      "ProjectId": "<registered-project-guid>",
-      "Environment": "Production",
-      "Service": "orders-primary",
-      "MachineId": "<enrolled-machine-guid>",
-      "TelemetryCredentialId": "<dedicated-project-credential-guid>",
-      "ExpectedHostName": "orders-host",
-      "WindowsServiceName": "OrdersService",
-      "AllowedOperations": ["RestartService", "RunHealthCheck"]
-    }]
-  }
-}
+Remediation is **local-only**: a target must be the machine the backend runs on. A remote target
+(`sc.exe \\host`) is refused as `RemoteNotSupported`, because nothing would bind that remote SCM
+endpoint to the enrolled Agent.
+
+## What can be targeted
+
+Only stand-alone application services (`SERVICE_WIN32_OWN_PROCESS`) whose executable is outside
+the Windows directory. KAIRON always refuses:
+
+- KAIRON's own services (`Kairon*`), so it can never disable its witness or itself;
+- drivers, shared `svchost` services and per-user service templates;
+- launch-protected (PPL) services;
+- executables under `%SystemRoot%` (Windows components such as Spooler or W32Time).
+
+Supported operations: `RunHealthCheck` (read-only), `StartService`, `StopService` (high risk) and
+`RestartService` (requires the service to be running). Each target lists the operations it allows.
+
+## Setting up a target
+
+1. **Connect the application.** In KAIRON, *Connect an app* → choose the framework, project,
+   environment and service name → generate a pairing code → add the one-line SDK call to the app
+   (`Kairon.attach(app, pairing_code="...")` for Python, `AddKaironAsync("...")` for .NET). Run it
+   on the same machine as KAIRON so the Agent can confirm its telemetry.
+2. **Configure the target.** *Remediation Targets* → *Configure Target*: project, environment and
+   logical service (the app's service name), the machine, the Windows service (picked from the
+   machine's eligible services), and the operations. Start with `RunHealthCheck` only.
+3. **Read the pre-flight.** KAIRON checks, read-only, that the project, credential, machine
+   enrollment, local host, heartbeat, service existence and eligibility, and the backend's Windows
+   rights are all in place. *Enable* stays unavailable until every blocking check passes.
+4. **Grant the minimum rights** if the pre-flight reports *Needs Permission*. It shows the exact
+   command; run it once, elevated (it is also at `C:\Program Files\Kairon\tools\remediation`):
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\Kairon\tools\remediation\Set-KaironServicePermission.ps1" -ServiceName OrdersService -Sid <executor SID from the pre-flight> -Rights Query,Start,Stop
+   ```
+
+   The helper adds exactly one allow ACE to that one service for that one SID: `Query`
+   (`SERVICE_QUERY_STATUS`), plus `Start` (`SERVICE_START`) and/or `Stop` (`SERVICE_STOP`) as the
+   allowed operations require. It never grants configuration, DACL or ownership rights, never
+   touches another service, refuses `Kairon*` services and broad group SIDs, and refuses to modify
+   any ACE it did not create. KAIRON itself never holds `WRITE_DAC` and cannot grant itself rights.
+   Revoke with `-Remove`. Uninstalling KAIRON removes every grant made to the backend service SID.
+5. **Enable.** Enabling binds the target to the service's current identity (service type,
+   executable path, run-as account). If the service is later recreated around a different
+   executable or account, execution is refused (`ServiceIdentityChanged`) until an operator
+   re-confirms the target.
+
+A target reports its readiness: *Ready*, *Needs Permission*, *Service Missing*, *Machine Offline*,
+*Waiting for app telemetry* (the Agent has not yet confirmed fresh telemetry from the app since the
+target last changed), *Needs re-confirmation*, *Blocked* (denylisted or remote), *Disabled* or
+*Unsupported*.
+
+## Authorization chain
+
+```text
+App telemetry (SDK) ──proof──▶ Agent confirms this machine ──▶ machine-scoped telemetry
+  ▶ detection & correlation (scoped to the target's machine)
+  ▶ AI diagnosis; recommendations limited to the target's allowed operations, no parameters
+  ▶ policy: registered tool, risk ceiling, allowed environment
+  ▶ server-generated target fingerprint (project, environment, service, machine, credential,
+    host, Windows service, operation, Agent key, service identity)
+  ▶ operator approval (operator key + named approver, recorded in the audit trail)
+  ▶ immediately before execution: policy re-check, fingerprint re-derived from the live target,
+    machine heartbeat ≤ 90 s, Agent confirmation of the credential ≤ 5 min and newer than the
+    target, live service probe (exists, eligible, same identity, required right present)
+  ▶ sc.exe (fixed verbs, argument array) under NT SERVICE\Kairon.Backend
+  ▶ verification: after settling, fresh telemetry for the same project/environment/service/machine
+    must show every breached signal back within threshold, plus a fresh SCM state probe
+  ▶ Resolved, or Failed / back to approval with the classified reason
 ```
 
-The supported operations are `StartService`, `RestartService`, `StopService` and `RunHealthCheck`.
-Restart requires a currently running service, so it cannot silently start one deliberately stopped
-by an operator. Stop is high risk and must be explicitly allowed. SCM service names currently use
-letters, digits, periods, underscores or hyphens. Arbitrary process execution and application-specific
-cache/retry/concurrency controls are not Windows service operations. The previous simulator
-implementations exist only as historical test fixtures, not product executors or API routes.
+Telemetry is accepted without a machine scope when it carries no valid Agent proof, or when no
+enabled target yet names that credential, project, environment, service and machine (for example,
+everything an app sent before its target was created). Such telemetry is visible and alertable, but
+it cannot drive Windows service remediation.
 
-Production requires operator and telemetry authentication. Keep `RequireApprovalForEveryAction`
-enabled unless an operator has deliberately authorized another policy. Global risk/tool limits,
-per-target operation allowlists and execution limits are cumulative. A server-generated fingerprint
-binds each recommendation and approval to the exact target, operation, enrollment and telemetry
-credential. Target changes or stale enrollment invalidate it. Restart the backend after editing
-target configuration; existing approvals must be regenerated when their binding changes.
+Approval is always required: nothing executes an action that an operator has not approved. The
+operator chooses which pending alternative to approve; approving one cancels the others. An
+approval must start executing within 15 minutes, and a target or identity change after approval
+invalidates it.
 
-## Execution and verification
+Failures are classified, never generic: `PermissionMissing`, `ServiceMissing`,
+`ServiceIdentityChanged`, `Denylisted`, `DependentServicesRunning`, `ServiceTimeout`,
+`ServiceDisabled`, `RemoteNotSupported`, … A Windows `ERROR_ACCESS_DENIED` is reported as a missing
+permission, not as an opaque `sc.exe` exit code.
 
-AI recommendations pass deterministic policy before approval and again before execution. The
-Windows backend invokes only fixed SCM operations through `sc.exe` using argument arrays, with a
-30-second tool deadline and the configured executor deadline. Operations against the same physical
-service are serialized within a backend process. Deploy one active executor per target; coordination
-across independent backend replicas is not implemented.
+## Verification semantics
 
-SCM success does not resolve an incident. After settling, verification requires sufficient fresh
-telemetry for the exact project, environment, service and enrolled machine, plus a fresh SCM Running
-probe. Ingestion accepts a machine identity only with its assigned active telemetry credential.
-Legacy rows without a machine identity remain readable but cannot establish machine-target recovery.
-Every actual breached signal must be accounted for and within threshold. Unsupported signals and
-missing measurements cannot pass. A stopped service alone is not application recovery; successful
-StopService execution will not manufacture a recovered incident.
+SCM success never resolves an incident. Restart/Start actions resolve only when fresh telemetry
+from the same machine shows every breached signal recovered and the service is running. A
+`StopService` action is containment, not recovery: it requires two fresh "stopped" probes and a
+post-operation heartbeat. Missing or insufficient telemetry is *Inconclusive*, never *Passed*.
+Timeouts and failures are recorded rather than retried; Windows may already have acted, so inspect
+the service before approving another action. An interrupted execution is never replayed
+automatically; only an unstarted approval or a pending verification is resumed after a restart.
 
-Timeouts and failures are recorded rather than retried blindly. Windows may already have accepted
-an operation when a timeout occurs; inspect the target before authorizing another action. A failed
-restart may leave the service stopped. Do not interpret a failed action as proof that no change took
-place. Audit records retain execution identity and the verification scope/result.
+## Operations notes
 
-## Local validation and deployment limits
-
-Run backend/frontend and AI service on localhost from the same checkout for validation. Use a
-dedicated non-critical service and an isolated database; never point a validation allowlist at a
-system or production service. The SDK queues are bounded in memory, expose failed/dropped delivery,
-and support bounded drain; they do not guarantee durable or exactly-once delivery.
-
-The mock AI provider remains explicitly identified as mock. Passing a lifecycle test with mock
-reasoning proves the pipeline and executor, not a live provider's diagnosis quality. Operators must
-configure their actual AI provider, Windows permissions, protected configuration and deployment
-network boundary before use. These changes alone do not certify every deployment production-ready.
+- **Logs:** `%ProgramData%\Kairon\backend\logs`. Service state: `Get-Service Kairon.Backend`.
+- **One executor per target.** Coordination between multiple backends is not implemented.
+- **AI provider:** configure it in *Settings → AI configuration*. The key is encrypted with the
+  backend service's data-protection key ring and never returned to the UI.
+- **Upgrading from a desktop-hosted (pre-service) install:** the installer copies the existing
+  `%LOCALAPPDATA%\Kairon` database into the service data root (the original is kept). Secrets that
+  were encrypted for the user account cannot be decrypted by the service account, so **re-enter the
+  AI provider key** (and any SQL Server connection) once in *Settings*. Remediation targets enabled
+  before schema version 11 must be re-confirmed (re-saved) so their service identity is recorded.
+- **Validating real execution:** `tools/remediation/New-KaironScmTestService.ps1` creates a
+  disposable dependency service for the opt-in real-SCM tests (`KAIRON_REAL_SCM_TEST_SERVICE`);
+  `Remove-KaironScmTestService.ps1` removes it. Never point validation at a production or system
+  service.
