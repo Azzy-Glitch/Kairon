@@ -765,8 +765,7 @@ begin
       RaiseException('Kairon Setup could not launch Service Control Manager tooling to create the backend.');
   end;
   if ResultCode <> 0 then
-    RaiseException(Format('Kairon Setup could not %s the %s service (sc.exe exit code %d).',
-      [Action, BackendServiceName, ResultCode]));
+    RaiseException(Format('Kairon Setup could not %s the %s service (sc.exe exit code %d).', [Action, BackendServiceName, ResultCode]));
 
   if not RunServiceControl('sidtype ' + BackendServiceName + ' unrestricted', 'enabling the backend service SID', ResultCode) or (ResultCode <> 0) then
     RaiseException(Format('Kairon Setup could not enable the %s service SID (sc.exe exit code %d).', [BackendServiceName, ResultCode]));
@@ -811,7 +810,7 @@ begin
     else
       Suffix := '-shm';
     end;
-    if FileExists(Source + Suffix) and not FileCopy(Source + Suffix, Target + Suffix, True) then
+    if FileExists(Source + Suffix) and not CopyFile(Source + Suffix, Target + Suffix, True) then
       RaiseException('Kairon Setup could not copy the existing Kairon database into ' + BackendDataRoot + '.');
   end;
   Log('Kairon Backend: copied the existing desktop database into the service data root (original kept).');
