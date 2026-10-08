@@ -68,7 +68,10 @@ public sealed class BackendServiceModeTests : IDisposable
     [Fact]
     public void SupervisedAiServiceGetsOnlyItsTransportSecretAndAPrivateTempFolder()
     {
-        var supervisor = new AiServiceSupervisor(@"C:\Program Files\Kairon\ai\Kairon.AI.exe", "TRANSPORT", Path.Combine(_root, "ai-tmp"),
+        // Built with the platform's separator: CI runs this suite on Linux, where a hard-coded
+        // C:\...\Kairon.AI.exe has no directory part at all.
+        var aiFolder = Path.Combine(_root, "Program Files", "Kairon", "ai");
+        var supervisor = new AiServiceSupervisor(Path.Combine(aiFolder, "Kairon.AI.exe"), "TRANSPORT", Path.Combine(_root, "ai-tmp"),
             NullLogger<AiServiceSupervisor>.Instance);
 
         var info = supervisor.BuildStartInfo();
@@ -82,7 +85,7 @@ public sealed class BackendServiceModeTests : IDisposable
         // WaitForExitAsync from ever observing the bootloader's exit.
         Assert.False(info.RedirectStandardOutput);
         Assert.False(info.RedirectStandardError);
-        Assert.Equal(@"C:\Program Files\Kairon\ai", info.WorkingDirectory);
+        Assert.Equal(aiFolder, info.WorkingDirectory);
     }
 
     [Fact]

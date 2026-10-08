@@ -17,7 +17,7 @@ namespace Kairon.Backend.Infrastructure;
 public static class KaironLogging
 {
     public static LoggerConfiguration WriteToRedactedSinks(this LoggerConfiguration configuration, string logsDirectory) =>
-        LoggerSinkConfiguration.Wrap(configuration.WriteTo, sink => new RedactingLogSink(sink), sinks =>
+        configuration.WriteTo.Sink(LoggerSinkConfiguration.Wrap(sink => new RedactingLogSink(sink), sinks =>
         {
             sinks.Console();
             sinks.File(
@@ -26,7 +26,7 @@ public static class KaironLogging
                 retainedFileCountLimit: 31,
                 fileSizeLimitBytes: 10 * 1024 * 1024,
                 rollOnFileSizeLimit: true);
-        });
+        }));
 }
 
 /// <summary>
