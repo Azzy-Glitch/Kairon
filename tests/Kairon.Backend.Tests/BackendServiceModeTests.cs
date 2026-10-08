@@ -78,6 +78,10 @@ public sealed class BackendServiceModeTests : IDisposable
         Assert.Equal(Path.Combine(_root, "ai-tmp"), info.Environment["TMP"]);
         Assert.False(info.UseShellExecute);
         Assert.True(info.CreateNoWindow);
+        // A redirected pipe inherited by the PyInstaller server grandchild would keep
+        // WaitForExitAsync from ever observing the bootloader's exit.
+        Assert.False(info.RedirectStandardOutput);
+        Assert.False(info.RedirectStandardError);
         Assert.Equal(@"C:\Program Files\Kairon\ai", info.WorkingDirectory);
     }
 

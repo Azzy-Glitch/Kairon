@@ -36,10 +36,12 @@ public sealed class AiServiceSupervisor : BackgroundService
     {
         var info = new ProcessStartInfo(_executable)
         {
+            // Not redirected: the packaged AI service is a PyInstaller one-file executable (a
+            // bootloader plus the real server as its child). A redirected pipe inherited by that
+            // grandchild keeps WaitForExitAsync waiting for EOF after the bootloader dies, so the
+            // supervisor would never notice. As a service there is no console to inherit anyway.
             UseShellExecute = false,
             CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
             WorkingDirectory = Path.GetDirectoryName(_executable)!
         };
         info.Environment["KAIRON_AI_API_KEY"] = _transportKey;
@@ -63,11 +65,6 @@ public sealed class AiServiceSupervisor : BackgroundService
                     ?? throw new InvalidOperationException("The AI service process did not start.");
                 _process = process;
                 _job.Assign(process);
-                // Drain (and discard) its console output so a full pipe can never block it.
-                process.OutputDataReceived += (_, _) => { };
-                process.ErrorDataReceived += (_, _) => { };
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
                 _logger.LogInformation("Started the local AI service (pid {Pid}).", process.Id);
                 await process.WaitForExitAsync(stoppingToken);
                 _logger.LogWarning("The local AI service exited with code {Code}; restarting.", process.ExitCode);
@@ -83,6 +80,9 @@ public sealed class AiServiceSupervisor : BackgroundService
             finally
             {
                 _process = null;
+                // Whatever is still in the job (e.g. the server process of a bootloader that died)
+                // would keep holding port 8001 and make every restart fail; clear it first.
+                _job.TerminateAll();
             }
 
             failures = DateTime.UtcNow - started > TimeSpan.FromMinutes(5) ? 0 : failures + 1;
@@ -143,6 +143,8 @@ public sealed class AiServiceSupervisor : BackgroundService
         private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool CloseHandle(IntPtr handle);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
 
         public KillOnCloseJob()
         {
@@ -161,6 +163,12 @@ public sealed class AiServiceSupervisor : BackgroundService
         public void Assign(Process process)
         {
             if (_handle != IntPtr.Zero) AssignProcessToJobObject(_handle, process.Handle);
+        }
+
+        /// <summary>Terminates every process still in the job; the job stays usable.</summary>
+        public void TerminateAll()
+        {
+            if (_handle != IntPtr.Zero) TerminateJobObject(_handle, 1);
         }
 
         public void Dispose()
