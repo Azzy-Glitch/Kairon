@@ -10,6 +10,12 @@ using Serilog;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
+// Windows-service hosting (Kairon.Backend under NT SERVICE\Kairon.Backend): SCM lifecycle and
+// content root = install folder. A no-op when started from the console or the desktop dev shell.
+builder.Host.UseWindowsService(options => options.ServiceName = "Kairon.Backend");
+var operatorKeyFile = builder.Configuration["SreSecurity:OperatorKeyFile"];
+if (!string.IsNullOrWhiteSpace(operatorKeyFile) && string.IsNullOrWhiteSpace(builder.Configuration["SreSecurity:OperatorKey"]))
+    builder.Configuration["SreSecurity:OperatorKey"] = OperatorKeyFile.Provision(operatorKeyFile);
 if (!ProductEnvironments.Contains(builder.Environment.EnvironmentName))
     throw new InvalidOperationException("KAIRON runtime environment must be Development, Staging or Production.");
 if (builder.Environment.IsProduction() &&
@@ -145,6 +151,19 @@ builder.Services.AddScoped<IContractValidator, ContractValidator>();
 builder.Services.AddScoped<IContextEngine, ContextEngine>();
 
 // AI service + HttpClient
+// Windows-service mode: the backend supervises the packaged AI service (AiServiceSupervisor.cs)
+// with a fresh per-start transport secret shared only with that child process.
+var aiExecutable = builder.Configuration["AiService:ExecutablePath"];
+if (!string.IsNullOrWhiteSpace(aiExecutable))
+{
+    aiExecutable = Path.GetFullPath(Environment.ExpandEnvironmentVariables(aiExecutable));
+    if (string.IsNullOrWhiteSpace(builder.Configuration["AiService:ApiKey"]))
+        builder.Configuration["AiService:ApiKey"] = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+    var aiTransportKey = builder.Configuration["AiService:ApiKey"]!;
+    var aiTemp = Path.Combine(dataPaths.Cache, "ai-tmp");
+    builder.Services.AddHostedService(sp => new AiServiceSupervisor(aiExecutable, aiTransportKey, aiTemp,
+        sp.GetRequiredService<ILogger<AiServiceSupervisor>>()));
+}
 builder.Services.AddAiServices(builder.Configuration);
 
 // Autonomous AI SRE control plane

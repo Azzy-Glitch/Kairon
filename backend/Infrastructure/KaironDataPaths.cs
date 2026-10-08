@@ -17,6 +17,14 @@ public sealed record KaironDataPaths(string Root, string Data, string Logs, stri
         var explicitDatabase = string.IsNullOrWhiteSpace(options.DatabasePath)
             ? null
             : Path.GetFullPath(Environment.ExpandEnvironmentVariables(options.DatabasePath));
+        if (explicitDatabase is null && !string.IsNullOrWhiteSpace(options.DataRoot))
+        {
+            // Service mode: the same managed layout as %LOCALAPPDATA%\Kairon, rooted where the
+            // installer placed it (a machine-wide folder only the service account may write).
+            var serviceRoot = Path.GetFullPath(Environment.ExpandEnvironmentVariables(options.DataRoot));
+            return new KaironDataPaths(serviceRoot, Path.Combine(serviceRoot, "data"), Path.Combine(serviceRoot, "logs"),
+                Path.Combine(serviceRoot, "config"), Path.Combine(serviceRoot, "cache"), Path.Combine(serviceRoot, "backups"), true);
+        }
         var root = explicitDatabase is null
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kairon")
             : Directory.GetParent(explicitDatabase)?.FullName

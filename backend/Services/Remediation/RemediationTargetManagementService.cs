@@ -484,8 +484,16 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             ExecutorAccount = account,
             ExecutorSid = sid,
             FixCommand = missing.Count == 0 || sid is null || details is null ? null :
-                $"powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\remediation\\Set-KaironServicePermission.ps1 -ServiceName '{details.ServiceName}' -Sid '{sid}' -Rights {string.Join(",", required)}"
+                $"powershell -NoProfile -ExecutionPolicy Bypass -File \"{PermissionHelperPath()}\" -ServiceName '{details.ServiceName}' -Sid '{sid}' -Rights {string.Join(",", required)}"
         };
+    }
+
+    /// <summary>The installer ships the helper at {app}\tools\remediation beside {app}\backend; a
+    /// source checkout has it at the repository's tools\remediation.</summary>
+    private static string PermissionHelperPath()
+    {
+        var installed = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "tools", "remediation", "Set-KaironServicePermission.ps1"));
+        return File.Exists(installed) ? installed : @".\tools\remediation\Set-KaironServicePermission.ps1";
     }
 
     private static (string? Account, string? Sid) ExecutorIdentity()

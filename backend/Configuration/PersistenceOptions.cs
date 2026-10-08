@@ -18,6 +18,12 @@ public sealed class PersistenceOptions
     /// layout" (backend/Infrastructure/KaironDataPaths.cs).</summary>
     public string DatabasePath { get; set; } = string.Empty;
 
+    /// <summary>Root of the full managed data layout (data/logs/config/cache/backups) when the
+    /// backend runs as the Kairon.Backend Windows service - %ProgramData%\Kaironackend, set by the
+    /// installer. Empty means %LOCALAPPDATA%\Kairon (desktop/dev mode). DatabasePath, when also set,
+    /// still wins for the database file itself.</summary>
+    public string DataRoot { get; set; } = string.Empty;
+
     /// <summary>How long a normalized-telemetry idempotency receipt (TelemetryReceipt) is kept
     /// before PersistenceMaintenanceService prunes it - the raw payload, not the compatibility
     /// Incident/Metric rows it also produces, which follow LegacySignalRetentionDays instead.</summary>

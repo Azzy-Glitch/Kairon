@@ -212,6 +212,12 @@ public class SreSecurityOptions
 
     /// <summary>Server-side only. Never returned by any endpoint and never logged.</summary>
     public string? OperatorKey { get; set; }
+
+    /// <summary>Windows-service mode: when set and OperatorKey is empty, a fresh random key is
+    /// generated at every backend start and written here for the local desktop shell to read
+    /// (OperatorKeyFile.cs). The installer restricts the folder to SYSTEM, Administrators, the
+    /// service account and interactively logged-on users (read).</summary>
+    public string? OperatorKeyFile { get; set; }
 }
 
 /// <summary>

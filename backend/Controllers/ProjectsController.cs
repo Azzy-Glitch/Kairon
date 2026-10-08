@@ -76,12 +76,25 @@ public sealed class ProjectsController : ControllerBase
 
     [HttpGet("{projectId:guid}/credentials")]
     [RequiresOperator]
-    public async Task<IActionResult> ListCredentials(Guid projectId, CancellationToken cancellationToken) => Ok(
-        await _db.ProjectApiCredentials.AsNoTracking()
+    public async Task<IActionResult> ListCredentials(Guid projectId, CancellationToken cancellationToken)
+    {
+        var credentials = await _db.ProjectApiCredentials.AsNoTracking()
             .Where(x => x.ProjectId == projectId)
             .OrderByDescending(x => x.CreatedAt)
             .Select(x => new { x.Id, x.Name, x.KeyPrefix, x.CreatedAt, x.RevokedAt })
-            .ToListAsync(cancellationToken));
+            .ToListAsync(cancellationToken);
+        // SdkPairingService names every paired credential "{sdkType}-sdk"; surfacing that lets a
+        // re-pair mint a code the same SDK can redeem (redeem refuses a mismatched SDK type). Null
+        // for manually issued credentials, whose SDK is unknown.
+        return Ok(credentials.Select(x => new { x.Id, x.Name, x.KeyPrefix, x.CreatedAt, x.RevokedAt, SdkType = SdkTypeFromName(x.Name) }));
+    }
+
+    private static string? SdkTypeFromName(string name) => name switch
+    {
+        "python-sdk" => "python",
+        "dotnet-sdk" => "dotnet",
+        _ => null
+    };
 
     [HttpDelete("{projectId:guid}/credentials/{credentialId:guid}")]
     [RequiresOperator]
