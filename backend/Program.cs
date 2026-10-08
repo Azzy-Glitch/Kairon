@@ -41,17 +41,12 @@ var persistenceOptions = builder.Configuration
 var dataPaths = KaironDataPaths.Resolve(persistenceOptions);
 dataPaths.EnsureLogsCreated();
 
-// Configure Serilog
+// Configure Serilog. The console and file sinks sit behind the central redaction wrapper
+// (Infrastructure/RedactingLogSink.cs), so no log line reaches them unscrubbed.
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
     .Enrich.FromLogContext()
-    .WriteTo.Console()
-    .WriteTo.File(
-        Path.Combine(dataPaths.Logs, "kairon-.txt"),
-        rollingInterval: RollingInterval.Day,
-        retainedFileCountLimit: 31,
-        fileSizeLimitBytes: 10 * 1024 * 1024,
-        rollOnFileSizeLimit: true)
+    .WriteToRedactedSinks(dataPaths.Logs)
     .CreateLogger();
 
 builder.Host.UseSerilog();

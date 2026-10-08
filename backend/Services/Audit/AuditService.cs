@@ -70,7 +70,9 @@ public class AuditService : IAuditService
             // must never become the place a secret leaks (PRD section 19, AI PRD section 19).
             Error = Redaction.Scrub(error),
             ActionId = actionId,
-            DataJson = data is null ? null : SreJson.Truncate(SreJson.Serialize(data), 8000)
+            // Structured data is scrubbed value by value before it is bounded: truncating first
+            // could cut a secret into a fragment no pattern recognises.
+            DataJson = data is null ? null : SreJson.Truncate(Redaction.ScrubJson(SreJson.Serialize(data))!, 8000)
         };
 
         incident.Events.Add(evt);

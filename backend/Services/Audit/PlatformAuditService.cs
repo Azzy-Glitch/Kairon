@@ -37,7 +37,7 @@ public sealed class PlatformAuditService : IPlatformAuditService
             ProjectId = projectId,
             Result = Clean(result, 40),
             Message = Truncate(Redaction.Scrub(message), 2000),
-            DataJson = data is null ? null : Truncate(Redaction.Scrub(SreJson.Serialize(data)), 8000)
+            DataJson = data is null ? null : Truncate(Redaction.ScrubJson(SreJson.Serialize(data)), 8000)
         };
         _db.PlatformAuditEvents.Add(evt);
         _logger.LogInformation("Platform audit {Action} target={TargetType}:{TargetId} actor={Actor} result={Result}",
