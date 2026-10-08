@@ -32,6 +32,10 @@ public sealed class MainForm : Form
     private readonly ManagedProcess _ai;
     private readonly string _operatorKey = CreateEphemeralKey();
     private readonly string _aiApiKey = CreateEphemeralKey();
+    // Installed mode: the Kairon.Backend Windows service owns the backend and AI processes and
+    // publishes the operator key; null in source/dev mode, where this window owns its children.
+    private readonly OperatorKeySource? _serviceKey =
+        BackendService.IsInstalled() ? new OperatorKeySource(BackendService.OperatorKeyPath()) : null;
     private WebView2? _webView;
     private bool _shuttingDown;
 
@@ -59,6 +63,24 @@ public sealed class MainForm : Form
         // here overlaps it with backend/AI startup instead of paying for it afterwards, and changes
         // no startup or failure behaviour: the awaits below still gate in exactly the same order.
         var webViewEnvironment = CreateWebViewEnvironmentAsync();
+
+        if (_serviceKey is not null)
+        {
+            _statusLabel.Text = "Connecting to the Kairon service...";
+            var serviceFailure = await BackendService.WaitUntilHealthyAsync(
+                new Uri($"{BackendUrl}/api/health"), TimeSpan.FromSeconds(90), CancellationToken.None);
+            if (serviceFailure is not null) { ShowStartupFailure(serviceFailure); return; }
+            if (!await _serviceKey.WaitAvailableAsync(TimeSpan.FromSeconds(15), CancellationToken.None))
+            {
+                ShowStartupFailure(new StartupFailure("Operator access",
+                    "The Kairon service is running but its operator key could not be read. Sign in " +
+                    "interactively on this machine, or reinstall Kairon to repair its permissions."));
+                return;
+            }
+            _statusLabel.Text = "Loading Kairon...";
+            await ShowWebViewAsync(webViewEnvironment);
+            return;
+        }
 
         var backendFailure = await StartBackendAsync(cts.Token);
         if (backendFailure is not null) { ShowStartupFailure(backendFailure); return; }
@@ -195,7 +217,10 @@ public sealed class MainForm : Form
             $"{BackendUrl}/api/*",
             Microsoft.Web.WebView2.Core.CoreWebView2WebResourceContext.All);
         _webView.CoreWebView2.WebResourceRequested += (_, args) =>
-            args.Request.Headers.SetHeader("X-Kairon-Operator-Key", _operatorKey);
+        {
+            var key = _serviceKey is null ? _operatorKey : _serviceKey.Current;
+            if (key is not null) args.Request.Headers.SetHeader("X-Kairon-Operator-Key", key);
+        };
 
         Controls.Remove(_statusLabel);
         _webView.CoreWebView2.Navigate(BackendUrl);
