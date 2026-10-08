@@ -24,7 +24,9 @@ public class DetectionOptions
     /// <summary>Suppression window for an identical signal (PRD section 7: dedup + cooldown).</summary>
     public int CooldownSeconds { get; set; } = 60;
 
-    /// <summary>Signals for the same service inside this window fold into one incident (PRD section 8).</summary>
+    /// <summary>Retained so existing configuration still binds. No longer bounds correlation: an
+    /// active (non-terminal) incident absorbs every matching signal for its correlation key however
+    /// long it has been idle, so one ongoing problem stays one incident (CorrelationEngine).</summary>
     public int CorrelationWindowSeconds { get; set; } = 300;
 
     public double CpuPercentThreshold { get; set; } = 80;
@@ -167,6 +169,9 @@ public class AiOrchestrationOptions
     public int MaxMetricSamples { get; set; } = 30;
     public int MaxRelatedErrors { get; set; } = 20;
     public int MaxHistoricalIncidents { get; set; } = 5;
+
+    /// <summary>Per-endpoint summaries included in AI evidence (busiest/most-failing first).</summary>
+    public int MaxEndpointSummaries { get; set; } = 10;
     public int MaxAgentEvents { get; set; } = 20;
     public int MaxEvidencePayloadChars { get; set; } = 16000;
 

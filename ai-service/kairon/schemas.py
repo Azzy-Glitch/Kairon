@@ -133,6 +133,27 @@ class AvailableAction(BaseModel):
     risk_level: str = "medium"
 
 
+class EndpointSummary(BaseModel):
+    """Per-endpoint totals for the incident's exact scope and window (successes included)."""
+
+    endpoint: str = ""
+    method: str = ""
+    requests: int = 0
+    server_errors: int = 0
+    client_errors: int = 0
+    avg_duration_ms: float = 0.0
+    max_duration_ms: int = 0
+    top_error_type: Optional[str] = None
+
+
+class RemediationTargetContext(BaseModel):
+    """The operator-authorized Windows service for this scope and its live state (no host/ids)."""
+
+    windows_service: str = ""
+    service_state: str = "Unknown"
+    telemetry_machine_scoped: bool = False
+
+
 class EvidencePackage(BaseModel):
     incident: IncidentContext = Field(default_factory=IncidentContext)
     recent_metrics: List[MetricSample] = Field(default_factory=list)
@@ -141,6 +162,8 @@ class EvidencePackage(BaseModel):
     log_events: List[AgentEvent] = Field(default_factory=list)
     historical_incidents: List[HistoricalIncident] = Field(default_factory=list)
     available_actions: List[AvailableAction] = Field(default_factory=list)
+    endpoint_breakdown: List[EndpointSummary] = Field(default_factory=list)
+    remediation_target: Optional[RemediationTargetContext] = None
 
 
 # --- Structured investigation result (AI PRD section 7). ---

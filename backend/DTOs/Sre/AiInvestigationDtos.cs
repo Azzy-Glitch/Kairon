@@ -28,6 +28,61 @@ public class EvidencePackageDto
 
     [JsonPropertyName("available_actions")]
     public List<AvailableActionDto> AvailableActions { get; set; } = new();
+
+    /// <summary>Every endpoint seen for this incident's exact scope in the evidence window, with
+    /// totals rather than only the error rows, so the model can tell slow server errors without an
+    /// application exception (a dependency/downstream pattern) from fast exception-driven ones.</summary>
+    [JsonPropertyName("endpoint_breakdown")]
+    public List<EndpointSummaryDto> EndpointBreakdown { get; set; } = new();
+
+    /// <summary>The operator-authorized Windows service for this incident's scope and its live state,
+    /// when one is enabled. No host name, machine id or credential is included.</summary>
+    [JsonPropertyName("remediation_target")]
+    public RemediationTargetContextDto? RemediationTarget { get; set; }
+}
+
+public class EndpointSummaryDto
+{
+    [JsonPropertyName("endpoint")]
+    public string Endpoint { get; set; } = string.Empty;
+
+    [JsonPropertyName("method")]
+    public string Method { get; set; } = string.Empty;
+
+    [JsonPropertyName("requests")]
+    public int Requests { get; set; }
+
+    [JsonPropertyName("server_errors")]
+    public int ServerErrors { get; set; }
+
+    [JsonPropertyName("client_errors")]
+    public int ClientErrors { get; set; }
+
+    [JsonPropertyName("avg_duration_ms")]
+    public double AvgDurationMs { get; set; }
+
+    [JsonPropertyName("max_duration_ms")]
+    public long MaxDurationMs { get; set; }
+
+    /// <summary>Most common application exception type among this endpoint's errors; null when the
+    /// errors carried no exception (e.g. a handled 5xx returned by the application itself).</summary>
+    [JsonPropertyName("top_error_type")]
+    public string? TopErrorType { get; set; }
+}
+
+public class RemediationTargetContextDto
+{
+    [JsonPropertyName("windows_service")]
+    public string WindowsService { get; set; } = string.Empty;
+
+    /// <summary>Running/Stopped/... from a read-only local SCM probe, or "Unknown".</summary>
+    [JsonPropertyName("service_state")]
+    public string ServiceState { get; set; } = "Unknown";
+
+    /// <summary>The incident's telemetry was proven (by the local Agent) to come from the machine
+    /// this service runs on.</summary>
+    [JsonPropertyName("telemetry_machine_scoped")]
+    public bool TelemetryMachineScoped { get; set; }
 }
 
 public class IncidentContextDto

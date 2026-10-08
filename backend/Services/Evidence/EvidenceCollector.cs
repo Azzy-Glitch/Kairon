@@ -31,16 +31,22 @@ public class EvidenceCollector : IEvidenceCollector
     private readonly AiOrchestrationOptions _options;
     private readonly DetectionOptions _detection;
     private readonly ILogger<EvidenceCollector> _logger;
+    private readonly IWindowsServiceInspector _inspector;
+    private readonly ILocalMachine _localMachine;
 
     public EvidenceCollector(
         AppDbContext db,
         IRemediationToolRegistry tools,
         IOptions<AiOrchestrationOptions> options,
         IOptions<DetectionOptions> detection,
-        ILogger<EvidenceCollector> logger)
+        ILogger<EvidenceCollector> logger,
+        IWindowsServiceInspector? inspector = null,
+        ILocalMachine? localMachine = null)
     {
         _db = db;
         _tools = tools;
+        _inspector = inspector ?? WindowsServiceInspector.Instance;
+        _localMachine = localMachine ?? LocalMachine.Instance;
         _options = options.Value;
         _detection = detection.Value;
         _logger = logger;
@@ -97,15 +103,67 @@ public class EvidenceCollector : IEvidenceCollector
                 .Take(_options.MaxRelatedErrors)
                 .ToList();
 
-        var history = await _db.SreIncidents
+        // Same project, environment and service - and, for a machine-scoped incident, the same
+        // machine - so another environment's or machine's history never reaches the model.
+        var history = (await _db.SreIncidents
             .AsNoTracking()
             .Where(i => i.Id != incident.Id
                         && i.ProjectId == incident.ProjectId
+                        && i.Environment == incident.Environment
                         && i.Service == incident.Service
                         && i.RootCause != null)
             .OrderByDescending(i => i.Timestamp)
+            .Take(Math.Max(1, _options.MaxHistoricalIncidents) * 4)
+            .ToListAsync(cancellationToken))
+            .Where(h => !machineId.HasValue || IncidentMachineScope.GetMachineId(h) == machineId)
             .Take(_options.MaxHistoricalIncidents)
+            .ToList();
+
+        // Per-endpoint totals for the exact scope and window (successes included), bounded.
+        var endpointRows = await _db.Incidents
+            .AsNoTracking()
+            .Where(i => i.ProjectId == incident.ProjectId
+                        && i.Environment == incident.Environment
+                        && i.Service == incident.Service && (!machineId.HasValue || i.MachineId == machineId)
+                        && i.Timestamp >= windowStart)
+            .GroupBy(i => new { i.Endpoint, i.Method })
+            .Select(g => new
+            {
+                g.Key.Endpoint,
+                g.Key.Method,
+                Requests = g.Count(),
+                ServerErrors = g.Count(x => x.StatusCode >= 500),
+                ClientErrors = g.Count(x => x.StatusCode >= 400 && x.StatusCode < 500),
+                AvgDuration = g.Average(x => (double)x.DurationMs),
+                MaxDuration = g.Max(x => x.DurationMs)
+            })
             .ToListAsync(cancellationToken);
+        var endpointErrorTypes = await _db.Incidents
+            .AsNoTracking()
+            .Where(i => i.ProjectId == incident.ProjectId
+                        && i.Environment == incident.Environment
+                        && i.Service == incident.Service && (!machineId.HasValue || i.MachineId == machineId)
+                        && i.Timestamp >= windowStart && i.ErrorType != null)
+            .GroupBy(i => new { i.Endpoint, i.Method, i.ErrorType })
+            .Select(g => new { g.Key.Endpoint, g.Key.Method, g.Key.ErrorType, Count = g.Count() })
+            .ToListAsync(cancellationToken);
+        var endpointBreakdown = endpointRows
+            .OrderByDescending(e => e.ServerErrors).ThenByDescending(e => e.Requests)
+            .Take(Math.Max(1, _options.MaxEndpointSummaries))
+            .Select(e => new EndpointSummaryDto
+            {
+                Endpoint = Safe(e.Endpoint, 300) ?? string.Empty,
+                Method = Safe(e.Method, 20) ?? string.Empty,
+                Requests = e.Requests,
+                ServerErrors = e.ServerErrors,
+                ClientErrors = e.ClientErrors,
+                AvgDurationMs = Math.Round(e.AvgDuration, 1),
+                MaxDurationMs = e.MaxDuration,
+                TopErrorType = Safe(endpointErrorTypes
+                    .Where(t => t.Endpoint == e.Endpoint && t.Method == e.Method)
+                    .OrderByDescending(t => t.Count).Select(t => t.ErrorType).FirstOrDefault(), 200)
+            })
+            .ToList();
 
         // KAIRON Agent events (log pattern matches, process events) for the same window
         // (docs/OBSERVABILITY_MIGRATION.md). The compact CorrelatedSignals entry for these already
@@ -130,8 +188,12 @@ public class EvidenceCollector : IEvidenceCollector
                 authorizedToolNames.Add(t.Name);
         }
 
+        var remediationTarget = await RemediationTargetContextAsync(incident, machineId, cancellationToken);
+
         var package = new EvidencePackageDto
         {
+            EndpointBreakdown = endpointBreakdown,
+            RemediationTarget = remediationTarget,
             Incident = new IncidentContextDto
             {
                 IncidentId = incident.Id.ToString(),
@@ -287,6 +349,44 @@ public class EvidenceCollector : IEvidenceCollector
     private static string? Safe(string? value, int max) =>
         Bound(Audit.Redaction.Scrub(value), max);
 
+    /// <summary>The single enabled target for this incident's scope, when the incident's telemetry
+    /// was proven to come from that target's machine; the service state is a read-only local probe.
+    /// Never includes host names, machine ids, credentials or fingerprints.</summary>
+    private async Task<RemediationTargetContextDto?> RemediationTargetContextAsync(
+        SreIncident incident, Guid? machineId, CancellationToken cancellationToken)
+    {
+        var environment = incident.Environment.ToLowerInvariant();
+        var targets = await _db.RemediationTargets.AsNoTracking()
+            .Where(t => t.Enabled && t.ProjectId == incident.ProjectId && t.EnvironmentNormalized == environment && t.Service == incident.Service)
+            .ToListAsync(cancellationToken);
+        if (targets.Count != 1 || !machineId.HasValue || targets[0].MachineId != machineId) return null;
+
+        var target = targets[0];
+        var state = "Unknown";
+        try
+        {
+            if (_inspector.IsSupported && _localMachine.IsLocal(target.ExpectedHostName))
+            {
+                var probe = _inspector.Probe(target.WindowsServiceName);
+                state = !probe.Exists ? "Missing" : probe.State switch
+                {
+                    1 => "Stopped", 2 => "Starting", 3 => "Stopping", 4 => "Running", 7 => "Paused", null => "Unknown", _ => "Transitioning"
+                };
+            }
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            state = "Unknown";
+        }
+
+        return new RemediationTargetContextDto
+        {
+            WindowsService = Safe(target.WindowsServiceName, 256) ?? string.Empty,
+            ServiceState = state,
+            TelemetryMachineScoped = true
+        };
+    }
+
     private void EnforcePayloadBudget(EvidencePackageDto package)
     {
         var limit = Math.Max(1024, _options.MaxEvidencePayloadChars);
@@ -299,6 +399,7 @@ public class EvidenceCollector : IEvidenceCollector
             else if (package.LogEvents.Count > 0) package.LogEvents.RemoveAt(0);
             else if (package.RelatedErrors.Count > 0) package.RelatedErrors.RemoveAt(0);
             else if (package.RecentMetrics.Count > 3) package.RecentMetrics.RemoveAt(0);
+            else if (package.EndpointBreakdown.Count > 1) package.EndpointBreakdown.RemoveAt(package.EndpointBreakdown.Count - 1);
             else if (package.CorrelatedSignals.Count > 1) package.CorrelatedSignals.RemoveAt(0);
             else if (package.Incident.Symptoms.Count > 1) package.Incident.Symptoms.RemoveAt(0);
             else
