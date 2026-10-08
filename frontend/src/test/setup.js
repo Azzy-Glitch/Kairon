@@ -5,6 +5,13 @@ import { cleanup } from '@testing-library/react';
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  // Some components remember small conveniences (e.g. the last operator name); never let one
+  // test's leftovers pre-fill another test's form.
+  try {
+    window.localStorage.clear();
+  } catch {
+    // localStorage unavailable - nothing to clear.
+  }
 });
 
 // jsdom does not implement these, and the polling hook and charts touch them.

@@ -14,7 +14,7 @@ import {
   pendingAction,
   verificationFailed
 } from '../../services/incidentService';
-import { IncidentStatus } from '../../types/incident';
+import { IncidentStatus, RemediationStatus } from '../../types/incident';
 import { getRuleLabel, getSignalLabel } from '../../lib/labels';
 import { resolveSource, sourceMeta } from '../../lib/source';
 
@@ -40,6 +40,8 @@ export default function IncidentDetail({ query, actions }) {
 function DetailBody({ incident, actions }) {
   const lifecycle = useMemo(() => buildLifecycle(incident), [incident]);
   const awaiting = pendingAction(incident);
+  // Every action still awaiting a decision - the operator chooses which one to run.
+  const awaitingAll = (incident.actions || []).filter((a) => a.status === RemediationStatus.AwaitingApproval);
   const executed = executedActions(incident);
   const verification = latestVerification(incident);
 
@@ -215,9 +217,10 @@ function DetailBody({ incident, actions }) {
 
           {awaiting && (
             <ApprovalPanel
-              action={awaiting}
+              key={incident.id}
+              actions={awaitingAll}
               environment={incident.environment}
-              busy={actions.busyActionId === awaiting.id}
+              busy={awaitingAll.some((a) => a.id === actions.busyActionId)}
               error={actions.actionError}
               onApprove={(actionId, operator, note) =>
                 actions.approve(incident.id, actionId, operator, note)

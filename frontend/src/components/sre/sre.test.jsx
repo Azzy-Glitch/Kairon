@@ -283,7 +283,7 @@ describe('ApprovalPanel', () => {
     const onApprove = vi.fn();
     render(<ApprovalPanel action={action} onApprove={onApprove} onReject={vi.fn()} />);
 
-    await userEvent.type(screen.getByLabelText(/Operator identity/i), 'alice');
+    await userEvent.type(screen.getByLabelText(/Your name/i), 'alice');
     await userEvent.click(screen.getByText('Approve and run'));
 
     expect(onApprove).not.toHaveBeenCalled();
@@ -294,7 +294,7 @@ describe('ApprovalPanel', () => {
     const onApprove = vi.fn();
     render(<ApprovalPanel action={action} onApprove={onApprove} onReject={vi.fn()} />);
 
-    await userEvent.type(screen.getByLabelText(/Operator identity/i), 'alice');
+    await userEvent.type(screen.getByLabelText(/Your name/i), 'alice');
     await userEvent.click(screen.getByText('Approve and run'));
     await userEvent.click(screen.getByText('Yes, execute it'));
 
@@ -305,7 +305,7 @@ describe('ApprovalPanel', () => {
     const onReject = vi.fn();
     render(<ApprovalPanel action={action} onApprove={vi.fn()} onReject={onReject} />);
 
-    await userEvent.type(screen.getByLabelText(/Operator identity/i), 'bob');
+    await userEvent.type(screen.getByLabelText(/Your name/i), 'bob');
     await userEvent.type(screen.getByLabelText(/Note/i), 'not now');
     await userEvent.click(screen.getByText('Reject'));
     await userEvent.click(screen.getByText('Yes, reject it'));
@@ -317,7 +317,7 @@ describe('ApprovalPanel', () => {
     const onApprove = vi.fn();
     render(<ApprovalPanel action={action} onApprove={onApprove} onReject={vi.fn()} />);
 
-    await userEvent.type(screen.getByLabelText(/Operator identity/i), 'alice');
+    await userEvent.type(screen.getByLabelText(/Your name/i), 'alice');
     await userEvent.click(screen.getByText('Approve and run'));
     await userEvent.click(screen.getByText('Cancel'));
 

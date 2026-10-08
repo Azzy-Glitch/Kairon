@@ -58,7 +58,7 @@ describe('ApprovalPanel - what exactly will run', () => {
 
   it('confirms with real wording - never a "demo environment"', async () => {
     render(<ApprovalPanel action={restartAction} environment="Production" onApprove={vi.fn()} onReject={vi.fn()} />);
-    await userEvent.type(screen.getByLabelText(/Operator identity/i), 'alice');
+    await userEvent.type(screen.getByLabelText(/Your name/i), 'alice');
     await userEvent.click(screen.getByText('Approve and run'));
 
     expect(screen.getByText('Execute "Restart the Windows service" on the Windows service "OrdersWorker" on kairon-host (Production)?')).toBeInTheDocument();
@@ -68,7 +68,7 @@ describe('ApprovalPanel - what exactly will run', () => {
   it('catches a rejected approval instead of leaking an unhandled rejection, and shows the error', async () => {
     const onApprove = vi.fn().mockRejectedValue({ message: 'That action is not valid in the current state.' });
     render(<ApprovalPanel action={restartAction} onApprove={onApprove} onReject={vi.fn()} />);
-    await userEvent.type(screen.getByLabelText(/Operator identity/i), 'alice');
+    await userEvent.type(screen.getByLabelText(/Your name/i), 'alice');
     await userEvent.click(screen.getByText('Approve and run'));
     await userEvent.click(screen.getByText('Yes, execute it'));
 
@@ -225,9 +225,11 @@ describe('RemediationCenterPage bulk approval', () => {
     render(<RemediationCenterPage />);
 
     await user.click(screen.getByLabelText('Select all pending actions'));
-    await user.type(screen.getByLabelText('Operator identity'), 'alice');
+    await user.type(screen.getByLabelText(/Your name/), 'alice');
     await user.click(screen.getByText('Approve selected'));
-    await user.click(screen.getByText('Yes, execute all'));
+    expect(screen.getByText('Approve and execute 4 actions?')).toBeInTheDocument();
+    expect(screen.getByText(/1 of these will be skipped/)).toBeInTheDocument();
+    await user.click(screen.getByText('Yes, approve and execute 4 actions'));
 
     await waitFor(() => expect(screen.getByText(/Bulk approval: 2 succeeded, 1 failed, 1 skipped/)).toBeInTheDocument());
     // One approval per incident; i3 was still attempted after i2 failed.
@@ -236,5 +238,224 @@ describe('RemediationCenterPage bulk approval', () => {
     expect(hooks.actions.approve).not.toHaveBeenCalledWith('i1', 'a2', expect.anything(), expect.anything());
     expect(screen.getByText(/Target is not ready\./)).toBeInTheDocument();
     expect(screen.getByText(/Skipped - another action for the same incident was approved/)).toBeInTheDocument();
+  });
+});
+
+describe('Approval UX - operator identity is explained', () => {
+  it('labels the name as required and says next to the disabled buttons why they are disabled', async () => {
+    render(<ApprovalPanel action={restartAction} environment="Production" onApprove={vi.fn()} onReject={vi.fn()} />);
+
+    const name = screen.getByLabelText('Your name (required — recorded in the audit trail)');
+    expect(name).toBeRequired();
+    expect(name).toHaveAccessibleDescription(/requires your name/);
+
+    const approve = screen.getByRole('button', { name: 'Approve and run' });
+    expect(approve).toBeDisabled();
+    expect(approve).toHaveAccessibleDescription('Enter your name to approve or reject.');
+    expect(screen.getByRole('button', { name: 'Reject' })).toHaveAccessibleDescription('Enter your name to approve or reject.');
+
+    await userEvent.type(name, 'alice');
+    expect(approve).toBeEnabled();
+    expect(approve).not.toHaveAccessibleDescription();
+    expect(screen.queryByText('Enter your name to approve or reject.')).not.toBeInTheDocument();
+  });
+
+  it('remembers the last operator name as a pre-fill only after a decision was sent', async () => {
+    const onApprove = vi.fn().mockResolvedValue({});
+    const { unmount } = render(<ApprovalPanel action={restartAction} onApprove={onApprove} onReject={vi.fn()} />);
+    expect(screen.getByLabelText(/Your name/)).toHaveValue('');
+    await userEvent.type(screen.getByLabelText(/Your name/), 'alice');
+    await userEvent.click(screen.getByText('Approve and run'));
+    await userEvent.click(screen.getByText('Yes, execute it'));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledWith('a1', 'alice', null));
+    unmount();
+
+    render(<ApprovalPanel action={restartAction} onApprove={vi.fn()} onReject={vi.fn()} />);
+    expect(screen.getByLabelText(/Your name/)).toHaveValue('alice');
+  });
+
+  it('still renders when localStorage throws', () => {
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    try {
+      render(<ApprovalPanel action={restartAction} onApprove={vi.fn()} onReject={vi.fn()} />);
+      expect(screen.getByLabelText(/Your name/)).toHaveValue('');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('explains the disabled bulk buttons on the Actions page too', async () => {
+    hooks.feed = { state: 'success', data: [{ id: 'i1' }], isLoading: false, isError: false, isEmpty: false, reload: vi.fn() };
+    hooks.details = {
+      data: [{ id: 'i1', incidentKey: 'INC-0001', environment: 'Development', actions: [{ ...restartAction }] }],
+      reload: vi.fn()
+    };
+    hooks.actions = { approve: vi.fn(), reject: vi.fn(), actionError: null };
+    render(<RemediationCenterPage />);
+
+    await userEvent.click(screen.getByLabelText('Select Restart the Windows service for INC-0001'));
+    const name = screen.getByLabelText('Your name (required — recorded in the audit trail)');
+    expect(name).toBeRequired();
+    const approve = screen.getByRole('button', { name: 'Approve selected' });
+    expect(approve).toBeDisabled();
+    expect(approve).toHaveAccessibleDescription('Enter your name to approve or reject.');
+    await userEvent.type(name, 'alice');
+    expect(approve).toBeEnabled();
+  });
+});
+
+describe('IncidentDetail - choosing among several pending actions', () => {
+  const healthCheck = {
+    id: 'a0',
+    actionKey: 'ACT-0000',
+    actionType: 'RunHealthCheck',
+    reason: 'Confirm whether the worker is responsive',
+    expectedOutcome: 'A health report with no side effects',
+    riskLevel: 'Low',
+    status: RemediationStatus.AwaitingApproval,
+    targetWindowsServiceName: 'OrdersWorker',
+    targetHostName: 'kairon-host',
+    targetReadiness: 'Ready'
+  };
+
+  const renderIncident = (pendingActions) => {
+    const approve = vi.fn().mockResolvedValue({});
+    const reject = vi.fn().mockResolvedValue({});
+    const incident = {
+      id: 'i1',
+      incidentKey: 'INC-0001',
+      title: 'Orders degraded',
+      service: 'OrdersService',
+      environment: 'Development',
+      status: IncidentStatus.AwaitingApproval,
+      severity: 'High',
+      detectedAt: '2026-08-25T12:00:00Z',
+      diagnosis: { summary: 's', rootCause: 'worker hung', confidence: 0.8 },
+      actions: pendingActions,
+      recommendations: [],
+      timeline: []
+    };
+    render(
+      <IncidentDetail
+        query={{ state: 'success', data: incident, isLoading: false, isError: false, isEmpty: false, isSuccess: true, reload: vi.fn() }}
+        actions={{ approve, reject, investigate: vi.fn(), busyActionId: null, actionError: null }}
+      />
+    );
+    return { approve, reject };
+  };
+
+  it('lists every pending action, requires a choice, and approves the one chosen', async () => {
+    const user = userEvent.setup();
+    const { approve } = renderIncident([healthCheck, restartAction]);
+
+    const radios = screen.getAllByRole('radio');
+    expect(radios).toHaveLength(2);
+    radios.forEach((r) => expect(r).not.toBeChecked());
+    expect(screen.getByText(healthCheck.reason)).toBeInTheDocument();
+    expect(screen.getByText(restartAction.reason)).toBeInTheDocument();
+    expect(screen.getByText(/cancels the other 1 pending alternative for this incident/)).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText(/Your name/), 'alice');
+    const approveBtn = screen.getByRole('button', { name: 'Approve and run' });
+    expect(approveBtn).toBeDisabled();
+    expect(approveBtn).toHaveAccessibleDescription('Choose which action to approve or reject.');
+
+    await user.click(screen.getByRole('radio', { name: /^Restart the Windows service/ }));
+    expect(approveBtn).toBeEnabled();
+    await user.click(approveBtn);
+    expect(screen.getByText('Execute "Restart the Windows service" on the Windows service "OrdersWorker" on kairon-host (Development)?')).toBeInTheDocument();
+    expect(screen.getByText('This cancels the other 1 pending alternative for this incident.')).toBeInTheDocument();
+    await user.click(screen.getByText('Yes, execute it'));
+
+    await waitFor(() => expect(approve).toHaveBeenCalledWith('i1', 'a1', 'alice', null));
+    expect(approve).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects only the selected action', async () => {
+    const user = userEvent.setup();
+    const { reject } = renderIncident([healthCheck, restartAction]);
+    await user.type(screen.getByLabelText(/Your name/), 'bob');
+    await user.click(screen.getByRole('radio', { name: /^Run a health check/ }));
+    await user.click(screen.getByRole('button', { name: 'Reject' }));
+    expect(screen.getByText('Reject "Run a health check" on OrdersWorker (kairon-host, Development)?')).toBeInTheDocument();
+    await user.click(screen.getByText('Yes, reject it'));
+    await waitFor(() => expect(reject).toHaveBeenCalledWith('i1', 'a0', 'bob', null));
+    expect(reject).toHaveBeenCalledTimes(1);
+  });
+
+  it('preselects the only pending action when there is just one', async () => {
+    const user = userEvent.setup();
+    const { approve } = renderIncident([restartAction]);
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    await user.type(screen.getByLabelText(/Your name/), 'alice');
+    await user.click(screen.getByRole('button', { name: 'Approve and run' }));
+    await user.click(screen.getByText('Yes, execute it'));
+    await waitFor(() => expect(approve).toHaveBeenCalledWith('i1', 'a1', 'alice', null));
+  });
+});
+
+describe('RemediationCenterPage - confirmation wording follows the selection', () => {
+  const scm = {
+    ...restartAction,
+    id: 's1',
+    targetWindowsServiceName: 'ScmTestDependency',
+    targetHostName: 'DESKTOP-ABC'
+  };
+
+  beforeEach(() => {
+    hooks.feed = { state: 'success', data: [{ id: 'i1' }], isLoading: false, isError: false, isEmpty: false, reload: vi.fn() };
+    hooks.details = {
+      data: [
+        { id: 'i1', incidentKey: 'INC-0001', environment: 'Development', actions: [scm] },
+        { id: 'i2', incidentKey: 'INC-0002', environment: 'Production', actions: [{ ...restartAction, id: 'b1' }] }
+      ],
+      reload: vi.fn()
+    };
+    hooks.actions = { approve: vi.fn().mockResolvedValue({}), reject: vi.fn().mockResolvedValue({}), actionError: null };
+  });
+
+  it('names the single selected action, its service, machine and environment', async () => {
+    const user = userEvent.setup();
+    render(<RemediationCenterPage />);
+    await user.click(screen.getByLabelText('Select Restart the Windows service for INC-0001'));
+    await user.type(screen.getByLabelText(/Your name/), 'alice');
+    await user.click(screen.getByText('Approve selected'));
+
+    expect(screen.getByText('Approve and execute "Restart the Windows service" on ScmTestDependency (DESKTOP-ABC, Development)?')).toBeInTheDocument();
+    expect(screen.queryByText(/execute all/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Yes, approve and execute' }));
+    await waitFor(() => expect(hooks.actions.approve).toHaveBeenCalledWith('i1', 's1', 'alice', null));
+  });
+
+  it('counts and lists multiple selected actions', async () => {
+    const user = userEvent.setup();
+    render(<RemediationCenterPage />);
+    await user.click(screen.getByLabelText('Select all pending actions'));
+    await user.type(screen.getByLabelText(/Your name/), 'alice');
+    await user.click(screen.getByText('Approve selected'));
+
+    expect(screen.getByText('Approve and execute 2 actions?')).toBeInTheDocument();
+    expect(screen.getByText(/"Restart the Windows service" on ScmTestDependency \(DESKTOP-ABC, Development\)/)).toBeInTheDocument();
+    expect(screen.getByText(/"Restart the Windows service" on OrdersWorker \(kairon-host, Production\)/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Yes, approve and execute 2 actions' })).toBeInTheDocument();
+  });
+
+  it('uses matching reject wording for one and for many', async () => {
+    const user = userEvent.setup();
+    render(<RemediationCenterPage />);
+    await user.click(screen.getByLabelText('Select Restart the Windows service for INC-0001'));
+    await user.type(screen.getByLabelText(/Your name/), 'alice');
+    await user.click(screen.getByText('Reject selected'));
+    expect(screen.getByText('Reject "Restart the Windows service" on ScmTestDependency (DESKTOP-ABC, Development)?')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Yes, reject' })).toBeInTheDocument();
+    await user.click(screen.getByText('Cancel'));
+
+    await user.click(screen.getByLabelText('Select Restart the Windows service for INC-0002'));
+    await user.click(screen.getByText('Reject selected'));
+    expect(screen.getByText('Reject 2 actions?')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Yes, reject 2 actions' }));
+    await waitFor(() => expect(hooks.actions.reject).toHaveBeenCalledTimes(2));
   });
 });

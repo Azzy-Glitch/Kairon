@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useState } from 'react';
 import { RemediationBadge, RiskBadge } from './Badges';
 import { AsyncView } from './StateViews';
 import Tabs from '../ui/Tabs';
 import { useIncidentActions, useIncidents, useIncidentDetails } from '../../hooks/useIncidents';
 import { formatDateTime, planBulkApproval } from '../../services/incidentService';
 import { getActionLabel } from '../../lib/labels';
+import { describeActionTarget, loadLastOperator, saveLastOperator } from '../../lib/operatorIdentity';
 import { RemediationStatus } from '../../types/incident';
 import { IconZap, IconShield } from '../Icons';
 
@@ -34,7 +35,12 @@ export default function RemediationCenterPage() {
 
   const actions = useMemo(() => {
     return (details.data || []).flatMap((incident) =>
-      (incident.actions || []).map((action) => ({ ...action, incidentKey: incident.incidentKey, incidentId: incident.id }))
+      (incident.actions || []).map((action) => ({
+        ...action,
+        incidentKey: incident.incidentKey,
+        incidentId: incident.id,
+        incidentEnvironment: incident.environment
+      }))
     );
   }, [details.data]);
 
@@ -229,19 +235,29 @@ export default function RemediationCenterPage() {
  * applied to every selected action in turn rather than one at a time.
  */
 function BulkApprovalBar({ selected, busy, error, onApprove, onReject, onClear }) {
-  const [operator, setOperator] = useState('');
+  const [operator, setOperator] = useState(loadLastOperator);
   const [confirming, setConfirming] = useState(null); // null | 'approve' | 'reject'
+  const [localError, setLocalError] = useState(null);
+
+  const uid = useId();
+  const operatorId = `${uid}-operator`;
+  const operatorHelpId = `${uid}-operator-help`;
+  const disabledReasonId = `${uid}-disabled-reason`;
 
   const identityMissing = operator.trim().length === 0;
-
-  const [localError, setLocalError] = useState(null);
+  const count = selected.length;
+  const single = count === 1 ? selected[0] : null;
+  // Approving an action cancels its siblings on the same incident server-side; say so up front.
+  const { skipped } = planBulkApproval(selected);
 
   const confirm = async () => {
     if (identityMissing) return;
     setLocalError(null);
+    const name = operator.trim();
     try {
-      if (confirming === 'approve') await onApprove(operator.trim(), null);
-      else await onReject(operator.trim(), 'Bulk rejection');
+      if (confirming === 'approve') await onApprove(name, null);
+      else await onReject(name, 'Bulk rejection');
+      saveLastOperator(name);
     } catch (err) {
       // Never an unhandled rejection: per-item failures are already reported by the caller; this
       // only catches something going wrong around them.
@@ -251,50 +267,92 @@ function BulkApprovalBar({ selected, busy, error, onApprove, onReject, onClear }
     }
   };
 
+  const describeOne = (action) =>
+    `"${getActionLabel(action.actionType)}"${describeActionTarget(action, action.incidentEnvironment)}`;
+
+  let question;
+  let confirmLabel;
+  if (confirming === 'approve') {
+    question = single ? `Approve and execute ${describeOne(single)}?` : `Approve and execute ${count} actions?`;
+    confirmLabel = single ? 'Yes, approve and execute' : `Yes, approve and execute ${count} actions`;
+  } else {
+    question = single ? `Reject ${describeOne(single)}?` : `Reject ${count} actions?`;
+    confirmLabel = single ? 'Yes, reject' : `Yes, reject ${count} actions`;
+  }
+
   return (
     <div className="bulk-approval-bar">
       <div className="bulk-approval-summary">
-        <strong>{selected.length}</strong> action{selected.length === 1 ? '' : 's'} selected
+        <strong>{count}</strong> action{count === 1 ? '' : 's'} selected
         <button type="button" className="secondary-btn" onClick={onClear} disabled={busy}>
           Clear selection
         </button>
       </div>
 
       {!confirming ? (
-        <div className="bulk-approval-form">
-          <input
-            className="approval-input"
-            value={operator}
-            onChange={(e) => setOperator(e.target.value)}
-            placeholder="Operator identity (recorded in the audit trail)"
-            autoComplete="off"
-            aria-label="Operator identity"
-          />
-          <button
-            type="button"
-            className="approve-btn"
-            onClick={() => setConfirming('approve')}
-            disabled={identityMissing || busy}
-            title={identityMissing ? 'Enter your operator identity first' : undefined}
-          >
-            Approve selected
-          </button>
-          <button
-            type="button"
-            className="reject-btn"
-            onClick={() => setConfirming('reject')}
-            disabled={identityMissing || busy}
-          >
-            Reject selected
-          </button>
-        </div>
+        <>
+          <label className="block-label" htmlFor={operatorId}>
+            Your name (required — recorded in the audit trail)
+          </label>
+          <div className="bulk-approval-form">
+            <input
+              id={operatorId}
+              className="approval-input"
+              value={operator}
+              onChange={(e) => setOperator(e.target.value)}
+              placeholder="e.g. Jane Smith"
+              autoComplete="off"
+              required
+              aria-required="true"
+              aria-describedby={operatorHelpId}
+            />
+            <button
+              type="button"
+              className="approve-btn"
+              onClick={() => setConfirming('approve')}
+              disabled={identityMissing || busy}
+              aria-describedby={identityMissing ? disabledReasonId : undefined}
+            >
+              Approve selected
+            </button>
+            <button
+              type="button"
+              className="reject-btn"
+              onClick={() => setConfirming('reject')}
+              disabled={identityMissing || busy}
+              aria-describedby={identityMissing ? disabledReasonId : undefined}
+            >
+              Reject selected
+            </button>
+          </div>
+          {identityMissing && (
+            <p id={disabledReasonId} className="approval-disabled-reason" aria-live="polite">
+              Enter your name to approve or reject.
+            </p>
+          )}
+          <p id={operatorHelpId} className="approval-help">
+            Approving or rejecting requires your name. It is stored with each decision so the audit trail shows who
+            made it. Approving an action cancels any other pending actions for the same incident.
+          </p>
+        </>
       ) : (
         <div className="approval-confirm">
-          <p>
-            {confirming === 'approve'
-              ? `Execute all ${selected.length} selected actions?`
-              : `Reject all ${selected.length} selected actions?`}
-          </p>
+          <p>{question}</p>
+          {!single && (
+            <ul className="bulk-confirm-list">
+              {selected.map((action) => (
+                <li key={action.id}>
+                  {describeOne(action)} for <code className="path-code">{action.incidentKey}</code>
+                </li>
+              ))}
+            </ul>
+          )}
+          {confirming === 'approve' && skipped.length > 0 && (
+            <p className="approval-confirm-note">
+              {skipped.length} of these will be skipped: only one action per incident can be approved, and approving it
+              cancels the other pending actions for that incident.
+            </p>
+          )}
           <div className="approval-buttons">
             <button
               type="button"
@@ -302,7 +360,7 @@ function BulkApprovalBar({ selected, busy, error, onApprove, onReject, onClear }
               onClick={confirm}
               disabled={busy}
             >
-              {busy ? 'Working...' : confirming === 'approve' ? 'Yes, execute all' : 'Yes, reject all'}
+              {busy ? 'Working...' : confirmLabel}
             </button>
             <button type="button" className="secondary-btn" onClick={() => setConfirming(null)} disabled={busy}>
               Cancel

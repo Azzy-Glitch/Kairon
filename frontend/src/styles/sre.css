@@ -1863,6 +1863,20 @@
 .approval-readiness-ok { color: var(--healthy); font-weight: 600; }
 .approval-readiness-problem { color: var(--high); font-weight: 600; }
 .approval-readiness-detail { color: var(--text-secondary); font-weight: 400; }
+
+/* Approval: required-identity help, disabled-button reason, choosing among pending alternatives */
+.approval-help { margin: -4px 0 8px; font-size: 12px; color: var(--text-secondary); }
+.approval-disabled-reason { margin-top: 6px; font-size: 12px; font-weight: 600; color: var(--high); }
+.approval-confirm .approval-confirm-note { margin-top: 6px; font-weight: 400; color: var(--text-secondary); }
+.approval-choice { border: none; padding: 0; margin: 0; min-width: 0; }
+.approval-choice .approval-alternatives-note { margin: 2px 0 10px; }
+.approval-choice-list { display: flex; flex-direction: column; gap: 10px; }
+.approval-choice-option { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.approval-choice-option > input[type="radio"] { margin-top: 14px; flex-shrink: 0; accent-color: var(--accent); }
+.approval-choice-option > .approval-action-card { flex: 1; min-width: 0; }
+.approval-choice-option.is-selected > .approval-action-card { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.approval-choice-option > input[type="radio"]:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.bulk-confirm-list { margin: 8px 0 0 18px; font-size: 12.8px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 2px; }
 .remediation-error-detail { font-weight: 400; }
 .remediation-error-raw { margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
 .remediation-error-raw > summary { cursor: pointer; }
