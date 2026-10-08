@@ -212,7 +212,8 @@ internal static class KaironIdentity
     public static string ResolveApplication(KaironOptions options) =>
         !string.IsNullOrWhiteSpace(options.ApplicationName)
             ? options.ApplicationName!
-            : Environment.GetEnvironmentVariable("Kairon_APPLICATION_NAME")
+            : Environment.GetEnvironmentVariable("KAIRON_APPLICATION_NAME")
+              ?? Environment.GetEnvironmentVariable("Kairon_APPLICATION_NAME")
               ?? options.PairedService
               ?? System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name
               ?? "UnknownApplication";
@@ -223,9 +224,21 @@ internal static class KaironIdentity
             : ResolveApplication(options);
 
     public static string ResolveEnvironment(KaironOptions options) =>
+        ResolveEnvironment(options, Environment.GetEnvironmentVariable);
+
+    /// <summary>Same precedence as the Python SDK: explicit option, then KAIRON_ENVIRONMENT, then the
+    /// environment the operator chose when generating the pairing code, and only then the host
+    /// framework's ambient ASPNETCORE_ENVIRONMENT/DOTNET_ENVIRONMENT. The ambient value used to
+    /// outrank the pairing choice, so an app paired for "Staging" but hosted with
+    /// ASPNETCORE_ENVIRONMENT=Production reported Production and never matched its Staging target.</summary>
+    internal static string ResolveEnvironment(KaironOptions options, Func<string, string?> environmentVariable) =>
         !string.IsNullOrWhiteSpace(options.Environment)
             ? options.Environment!
-            : Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
-              ?? options.PairedEnvironment
+            : NonEmpty(environmentVariable("KAIRON_ENVIRONMENT"))
+              ?? NonEmpty(options.PairedEnvironment)
+              ?? NonEmpty(environmentVariable("ASPNETCORE_ENVIRONMENT"))
+              ?? NonEmpty(environmentVariable("DOTNET_ENVIRONMENT"))
               ?? "Production";
+
+    private static string? NonEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

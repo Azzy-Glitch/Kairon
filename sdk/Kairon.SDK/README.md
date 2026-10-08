@@ -22,9 +22,11 @@ of redeeming the spent code again.
 
 **Advanced mode - explicit configuration.** Set `Endpoint`/`ProjectId`/`ApiKey` (or
 `KAIRON_ENDPOINT`/`KAIRON_PROJECT_ID`/`KAIRON_API_KEY`) for CI/CD or containers, and/or set
-`ApplicationName`, `ServiceName` and `Environment`. Explicit identity values, and the
-`Kairon_APPLICATION_NAME`/`ASPNETCORE_ENVIRONMENT` environment variables, always win over the
-operator's pairing defaults.
+`ApplicationName`, `ServiceName` and `Environment`. Precedence matches the Python SDK:
+explicit options, then `KAIRON_ENVIRONMENT` / `KAIRON_APPLICATION_NAME`, then the operator's
+pairing defaults, and only then the host's ambient `ASPNETCORE_ENVIRONMENT`/`DOTNET_ENVIRONMENT`
+or entry-assembly name. (The ambient ASP.NET environment no longer overrides the environment an
+operator chose for the pairing code, which would otherwise mismatch its remediation target.)
 
 Pairing errors say what happened: HTTP 429 means pairing is rate limited and the code was **not**
 consumed (retry shortly with the same code); HTTP 400 means the code is invalid, expired, already

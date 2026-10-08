@@ -21,8 +21,22 @@ public sealed class PairingDefaultsAndStoreTests : IDisposable
 
     // Ambient environment variables outrank pairing defaults by design; assertions about the
     // fallback itself are only meaningful when the test process does not set them.
-    private static bool NoAmbientEnvironment => Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") is null;
-    private static bool NoAmbientApplication => Environment.GetEnvironmentVariable("Kairon_APPLICATION_NAME") is null;
+    private static bool NoAmbientEnvironment => Environment.GetEnvironmentVariable("KAIRON_ENVIRONMENT") is null;
+    private static bool NoAmbientApplication => Environment.GetEnvironmentVariable("Kairon_APPLICATION_NAME") is null &&
+        Environment.GetEnvironmentVariable("KAIRON_APPLICATION_NAME") is null;
+
+    [Theory]
+    [InlineData(null, null, "Staging", "Production", "Staging")]       // pairing choice beats the host framework's ambient value
+    [InlineData(null, "Development", "Staging", "Production", "Development")] // KAIRON_ENVIRONMENT beats the pairing choice
+    [InlineData("Production", "Development", "Staging", null, "Production")]  // explicit option beats everything
+    [InlineData(null, null, null, "Development", "Development")]        // ambient framework value is the fallback
+    [InlineData(null, null, null, null, "Production")]
+    public void EnvironmentPrecedenceMatchesThePythonSdk(string? option, string? kaironEnv, string? paired, string? aspnetEnv, string expected)
+    {
+        var options = new KaironOptions { Environment = option, PairedEnvironment = paired };
+        var variables = new Dictionary<string, string?> { ["KAIRON_ENVIRONMENT"] = kaironEnv, ["ASPNETCORE_ENVIRONMENT"] = aspnetEnv };
+        Assert.Equal(expected, KaironIdentity.ResolveEnvironment(options, name => variables.GetValueOrDefault(name)));
+    }
 
     public void Dispose()
     {
