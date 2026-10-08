@@ -40,6 +40,7 @@ public class IncidentQueryService : IIncidentQueryService
     private readonly IAiMicroservice _ai;
     private readonly DetectionOptions _detection;
     private readonly RemediationOptions _remediation;
+    private readonly IRemediationTargetResolver? _targets;
 
     public IncidentQueryService(
         AppDbContext db,
@@ -47,8 +48,10 @@ public class IncidentQueryService : IIncidentQueryService
         IRemediationPolicy policy,
         IAiMicroservice ai,
         IOptions<DetectionOptions> detection,
-        IOptions<RemediationOptions> remediation)
+        IOptions<RemediationOptions> remediation,
+        IRemediationTargetResolver? targets = null)
     {
+        _targets = targets;
         _db = db;
         _tools = tools;
         _policy = policy;
@@ -165,6 +168,8 @@ public class IncidentQueryService : IIncidentQueryService
             Timeline = incident.Events.OrderBy(e => e.Timestamp).Select(ToEventDto).ToList(),
             AllowedNextStates = IncidentLifecycle.NextStates(incident.Status).Select(s => s.ToString()).ToList()
         };
+
+        await AttachTargetsAsync(incident, detail.Actions, cancellationToken);
 
         // The diagnosis object only exists once the AI has actually produced one, so the UI can
         // distinguish "no diagnosis yet" from "a diagnosis with empty fields".
@@ -448,6 +453,27 @@ public class IncidentQueryService : IIncidentQueryService
                 : symptoms.FirstOrDefault() ?? i.Title,
             NeedsApproval = i.Status == IncidentStatus.AwaitingApproval
         };
+    }
+
+    /// <summary>Display-only: which configured Windows service each Windows-service action would
+    /// act on, and whether that exact operation could execute right now.</summary>
+    private async Task AttachTargetsAsync(SreIncident incident, List<RemediationActionDto> actions, CancellationToken cancellationToken)
+    {
+        if (actions.Count == 0 || !actions.Any(a => RemediationTargetOperations.IsKnown(a.ActionType))) return;
+        var environment = incident.Environment.ToLowerInvariant();
+        var targets = await _db.RemediationTargets.AsNoTracking()
+            .Where(t => t.Enabled && t.ProjectId == incident.ProjectId && t.EnvironmentNormalized == environment && t.Service == incident.Service)
+            .ToListAsync(cancellationToken);
+        if (targets.Count != 1) return;
+        var target = targets[0];
+        foreach (var action in actions.Where(a => RemediationTargetOperations.IsKnown(a.ActionType)))
+        {
+            action.TargetId = target.Id;
+            action.TargetWindowsServiceName = target.WindowsServiceName;
+            action.TargetHostName = target.ExpectedHostName;
+            if (_targets is not null)
+                action.TargetReadiness = (await _targets.EvaluateTargetAsync(target, action.ActionType, cancellationToken)).Readiness.ToString();
+        }
     }
 
     private static RemediationActionDto ToActionDto(RemediationAction a, List<VerificationResultDto> verifications) => new()

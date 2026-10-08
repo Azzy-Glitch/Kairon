@@ -388,6 +388,8 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.CodeHash).IsUnique();
             entity.Property(e => e.SdkType).HasMaxLength(20).IsRequired();
             entity.Property(e => e.CodeHash).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.Environment).HasMaxLength(50);
+            entity.Property(e => e.Service).HasMaxLength(200);
         });
 
         modelBuilder.Entity<PlatformAuditEvent>(entity =>

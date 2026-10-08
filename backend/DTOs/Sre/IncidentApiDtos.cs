@@ -122,6 +122,16 @@ public class RemediationActionDto
     public string? ExecutionResult { get; set; }
     public string? ExecutionError { get; set; }
     public VerificationResultDto? VerificationResult { get; set; }
+
+    /// <summary>The operator-configured Windows service this action would act on, resolved
+    /// server-side from the incident's project/environment/service - display only. Execution
+    /// re-resolves and re-validates the target independently; nothing here is ever read back.</summary>
+    public string? TargetWindowsServiceName { get; set; }
+    public string? TargetHostName { get; set; }
+    public Guid? TargetId { get; set; }
+    /// <summary>TargetReadiness for this exact operation right now (Ready, MachineOffline,
+    /// AwaitingAgentConfirmation, OperationNotAllowed, ...). Null when no target applies.</summary>
+    public string? TargetReadiness { get; set; }
 }
 
 public class VerificationResultDto

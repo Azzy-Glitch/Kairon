@@ -84,6 +84,65 @@ public sealed class SdkPairingTests : IDisposable
     }
 
     [Fact]
+    public async Task PairingCarriesOperatorChosenEnvironmentAndServiceToTheSdk()
+    {
+        _h.EnsureProject();
+        var service = Service();
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, environment: "development", service: " Orders API "))!;
+
+        var paired = (await service.RedeemAsync(created.Code, "python", "1.1.0", default))!;
+
+        Assert.Equal("Development", paired.Environment);
+        Assert.Equal("Orders API", paired.Service);
+        var status = (await service.GetStatusAsync(created.PairingId, default))!;
+        Assert.Equal("Development", status.Environment);
+        Assert.Equal("Orders API", status.Service);
+    }
+
+    [Theory]
+    [InlineData("Demo", null)]
+    [InlineData(null, "badname")]
+    public async Task PairingRejectsInvalidDefaults(string? environment, string? serviceName)
+    {
+        _h.EnsureProject();
+        Assert.Null(await Service().CreateAsync(_h.ProjectId, "python", default, environment: environment, service: serviceName));
+        Assert.Empty(_h.Db.SdkPairingSessions);
+    }
+
+    [Fact]
+    public async Task PairingStatusReportsTelemetryAndTheAgentConfirmedMachineWithoutSecrets()
+    {
+        _h.EnsureProject();
+        var service = Service();
+        var created = (await service.CreateAsync(_h.ProjectId, "python", default, service: "Orders API"))!;
+        var paired = (await service.RedeemAsync(created.Code, "python", "1.1.0", default))!;
+
+        var before = (await service.GetStatusAsync(created.PairingId, default))!;
+        Assert.NotNull(before.Connection);
+        Assert.Null(before.Connection!.LastTelemetryAt);
+        Assert.Null(before.Connection.MachineHostName);
+
+        var machine = _h.SeedMachine(hostName: "APP-HOST");
+        var credentialId = _h.Db.SdkPairingSessions.Single().IssuedCredentialId!.Value;
+        _h.Db.SdkMachineBindings.Add(new SdkMachineBinding { CredentialId = credentialId, ProjectId = _h.ProjectId,
+            MachineId = machine.Id, AgentCredentialHash = machine.AgentCredentialHash, LastConfirmedAt = DateTime.UtcNow });
+        _h.Db.TelemetryReceipts.Add(new TelemetryReceipt { EventId = Guid.NewGuid(), ProjectId = _h.ProjectId, Service = "Orders API",
+            Application = "Orders API", Environment = "Development", Source = "python-sdk", EventType = "http", Severity = "info",
+            EventTimestamp = DateTime.UtcNow, ReceivedAt = DateTime.UtcNow.AddSeconds(1) });
+        _h.Db.TelemetryReceipts.Add(new TelemetryReceipt { EventId = Guid.NewGuid(), ProjectId = _h.ProjectId, Service = "Other",
+            Application = "Other", Environment = "Development", Source = "dotnet-sdk", EventType = "http", Severity = "info",
+            EventTimestamp = DateTime.UtcNow, ReceivedAt = DateTime.UtcNow.AddSeconds(2) });
+        _h.Db.SaveChanges();
+
+        var after = (await service.GetStatusAsync(created.PairingId, default))!;
+        Assert.Equal("APP-HOST", after.Connection!.MachineHostName);
+        Assert.Equal("Orders API", after.Connection.Service);
+        Assert.Equal("python-sdk", after.Connection.Source);
+        Assert.NotNull(after.Connection.LastTelemetryAt);
+        Assert.DoesNotContain(paired.ApiKey, System.Text.Json.JsonSerializer.Serialize(after));
+    }
+
+    [Fact]
     public async Task RedeemFailsForWrongSdkType()
     {
         _h.EnsureProject();

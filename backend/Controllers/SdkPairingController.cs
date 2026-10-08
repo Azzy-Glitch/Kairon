@@ -29,12 +29,13 @@ public sealed class SdkPairingController : ControllerBase
         CancellationToken cancellationToken)
     {
         var created = await _pairing.CreateAsync(projectId, request.SdkType, cancellationToken,
-            request.ReplacesCredentialId, Actor());
+            request.ReplacesCredentialId, Actor(), request.Environment, request.Service);
         if (created is null)
             return BadRequest(new
             {
-                error = "Project not found or inactive, SDK type is invalid (use 'dotnet' or 'python'), or the " +
-                         "credential to replace does not exist, belongs to another project, or is already revoked."
+                error = "Project not found or inactive, SDK type is invalid (use 'dotnet' or 'python'), the environment " +
+                         "is not Development/Staging/Production, the service name is invalid, or the credential to replace " +
+                         "does not exist, belongs to another project, or is already revoked."
             });
 
         return Ok(created);
@@ -146,6 +147,12 @@ public sealed class PairingRequest
     /// creation time. Omitted (null) for a first-time pairing session, which has no credential to
     /// replace yet.</summary>
     public Guid? ReplacesCredentialId { get; set; }
+
+    /// <summary>Optional default environment (Development/Staging/Production) the SDK adopts.</summary>
+    public string? Environment { get; set; }
+
+    /// <summary>Optional default logical service name the SDK adopts.</summary>
+    public string? Service { get; set; }
 }
 
 public sealed class RedeemPairingRequest

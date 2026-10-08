@@ -15,7 +15,8 @@ public sealed record CreatedPairing(Guid PairingId, string Code, DateTime Expire
 /// <summary>PairingId lets the SDK call ConfirmAsync once it has durably persisted ApiKey - the
 /// only trustworthy proof that this response was actually received, distinct from the backend
 /// merely having issued the credential.</summary>
-public sealed record PairedSdk(string ApiKey, Guid ProjectId, string Endpoint, Guid PairingId);
+public sealed record PairedSdk(string ApiKey, Guid ProjectId, string Endpoint, Guid PairingId,
+    string? Environment = null, string? Service = null);
 
 /// <summary>Safe, secret-free status projection of an SdkPairingSession - never includes the
 /// pairing code, its hash, or the issued credential's id/secret. Status is computed, not stored,
@@ -31,7 +32,15 @@ public sealed record PairedSdk(string ApiKey, Guid ProjectId, string Endpoint, G
 /// other caller of this endpoint.</summary>
 public sealed record PairingStatus(
     Guid PairingId, Guid ProjectId, string SdkType, DateTime CreatedAt, DateTime ExpiresAt,
-    DateTime? RedeemedAt, DateTime? ConfirmedAt, DateTime? CompletedAt, DateTime? RevokedAt, string Status);
+    DateTime? RedeemedAt, DateTime? ConfirmedAt, DateTime? CompletedAt, DateTime? RevokedAt, string Status,
+    string? Environment = null, string? Service = null, PairingConnection? Connection = null);
+
+/// <summary>What the paired application has done since redemption - the Connect-an-App "Connected /
+/// Machine detected / Telemetry received" signals. Secret-free; derived from the issued
+/// credential's Agent-confirmed machine binding and telemetry received in this pairing's scope.</summary>
+public sealed record PairingConnection(
+    DateTime? LastTelemetryAt, string? Application, string? Service, string? Environment, string? Source,
+    string? MachineHostName, DateTime? MachineConfirmedAt);
 
 public enum CompleteRepairOutcome
 {
@@ -108,7 +117,7 @@ public sealed record CompleteRepairResult(
 public interface ISdkPairingService
 {
     Task<CreatedPairing?> CreateAsync(Guid projectId, string sdkType, CancellationToken cancellationToken,
-        Guid? replacesCredentialId = null, string actor = "local-operator");
+        Guid? replacesCredentialId = null, string actor = "local-operator", string? environment = null, string? service = null);
 
     Task<PairedSdk?> RedeemAsync(string code, string sdkType, string version, CancellationToken cancellationToken);
 
@@ -162,8 +171,13 @@ public sealed class SdkPairingService : ISdkPairingService
     }
 
     public async Task<CreatedPairing?> CreateAsync(Guid projectId, string sdkType, CancellationToken cancellationToken,
-        Guid? replacesCredentialId = null, string actor = "local-operator")
+        Guid? replacesCredentialId = null, string actor = "local-operator", string? environment = null, string? service = null)
     {
+        environment = string.IsNullOrWhiteSpace(environment) ? null : environment.Trim();
+        service = string.IsNullOrWhiteSpace(service) ? null : service.Trim();
+        if (environment is not null && !ProductEnvironments.Contains(environment)) return null;
+        if (environment is not null) environment = ProductEnvironments.All.First(e => e.Equals(environment, StringComparison.OrdinalIgnoreCase));
+        if (service is not null && (service.Length > 200 || service.Any(char.IsControl))) return null;
         // Matches ProjectCredentialService.AuthorizeAsync's own IsActive requirement: an inactive
         // project can never authenticate telemetry, so pairing must not issue a usable-looking
         // credential for one - that credential would be valid-shaped but permanently unusable.
@@ -193,11 +207,14 @@ public sealed class SdkPairingService : ISdkPairingService
             CodeHash = Hash(code),
             CreatedAt = now,
             ExpiresAt = now.AddMinutes(10),
-            ReplacesCredentialId = replacesCredentialId
+            ReplacesCredentialId = replacesCredentialId,
+            Environment = environment,
+            Service = service
         };
         _db.SdkPairingSessions.Add(session);
         _audit.Record("sdk.pairing-created", actor, "project", projectId.ToString(), projectId,
-            data: new { PairingId = session.Id, SdkType = normalized, session.ExpiresAt, ReplacesCredentialId = replacesCredentialId });
+            data: new { PairingId = session.Id, SdkType = normalized, session.ExpiresAt, ReplacesCredentialId = replacesCredentialId,
+                session.Environment, session.Service });
         await _db.SaveChangesAsync(cancellationToken);
         return new CreatedPairing(session.Id, code, session.ExpiresAt, normalized);
     }
@@ -245,7 +262,7 @@ public sealed class SdkPairingService : ISdkPairingService
         await _db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        return new PairedSdk(created.ApiKey, session.ProjectId, endpoint, session.Id);
+        return new PairedSdk(created.ApiKey, session.ProjectId, endpoint, session.Id, session.Environment, session.Service);
     }
 
     public async Task<bool> RevokePairingAsync(Guid pairingId, CancellationToken cancellationToken, string actor = "local-operator")
@@ -280,8 +297,30 @@ public sealed class SdkPairingService : ISdkPairingService
             : session.ExpiresAt <= now ? "Expired"
             : "Pending";
 
+        PairingConnection? connection = null;
+        if (session.RedeemedAt is { } redeemedAt)
+        {
+            // Telemetry in this pairing's scope since redemption. Receipts do not record which
+            // credential sent them, so this is scoped by project (+ service/environment when the
+            // pairing chose them) - honest "telemetry is arriving", not per-credential attribution.
+            var receipts = _db.TelemetryReceipts.AsNoTracking()
+                .Where(r => r.ProjectId == session.ProjectId && r.ReceivedAt >= redeemedAt);
+            if (session.Service is not null) receipts = receipts.Where(r => r.Service == session.Service);
+            var latest = await receipts.OrderByDescending(r => r.ReceivedAt)
+                .Select(r => new { r.ReceivedAt, r.Application, r.Service, r.Environment, r.Source })
+                .FirstOrDefaultAsync(cancellationToken);
+            var binding = session.IssuedCredentialId is { } credentialId
+                ? await _db.SdkMachineBindings.AsNoTracking().SingleOrDefaultAsync(b => b.CredentialId == credentialId, cancellationToken)
+                : null;
+            var host = binding is null ? null : await _db.Machines.AsNoTracking()
+                .Where(m => m.Id == binding.MachineId).Select(m => m.HostName).FirstOrDefaultAsync(cancellationToken);
+            connection = new PairingConnection(latest?.ReceivedAt, latest?.Application, latest?.Service, latest?.Environment,
+                latest?.Source, host, binding?.LastConfirmedAt);
+        }
+
         return new PairingStatus(session.Id, session.ProjectId, session.SdkType, session.CreatedAt,
-            session.ExpiresAt, session.RedeemedAt, session.ConfirmedAt, session.CompletedAt, session.RevokedAt, status);
+            session.ExpiresAt, session.RedeemedAt, session.ConfirmedAt, session.CompletedAt, session.RevokedAt, status,
+            session.Environment, session.Service, connection);
     }
 
     public async Task<bool> ConfirmAsync(Guid pairingId, string? apiKey, CancellationToken cancellationToken)

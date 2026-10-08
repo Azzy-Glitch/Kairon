@@ -16,6 +16,13 @@ public sealed class SdkPairingSession
     public DateTime ExpiresAt { get; set; }
     public DateTime? RedeemedAt { get; set; }
 
+    /// <summary>Optional operator-chosen defaults handed to the SDK on redemption, so the
+    /// developer's code needs only the pairing code. An explicit value in the application's own
+    /// code or environment still wins in the SDK. Never authorization: the backend validates every
+    /// telemetry event's scope and every remediation target independently.</summary>
+    public string? Environment { get; set; }
+    public string? Service { get; set; }
+
     /// <summary>The ProjectApiCredential this session's redemption issued - set alongside
     /// RedeemedAt. A loose Guid reference (this codebase's dominant cross-entity convention), not
     /// a real FK: a credential's own lifecycle (revocation) is independent of the pairing session

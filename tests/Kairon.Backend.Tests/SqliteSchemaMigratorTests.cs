@@ -42,10 +42,28 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
 
         await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
 
-        Assert.Equal(11, await UserVersionAsync(db));
+        Assert.Equal(SqliteSchemaMigrator.CurrentVersion, await UserVersionAsync(db));
         var columns = await db.Database.SqlQueryRaw<string>(
             "SELECT name AS Value FROM pragma_table_info('RemediationTargets')").ToListAsync();
         Assert.Contains("ServiceIdentityHash", columns);
+    }
+
+    [Fact]
+    public async Task VersionElevenUpgradeAddsPairingDefaults()
+    {
+        await using var db = CreateContext();
+        await db.Database.EnsureCreatedAsync();
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"Environment\";");
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkPairingSessions\" DROP COLUMN \"Service\";");
+        await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 11;");
+
+        await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
+
+        Assert.Equal(12, await UserVersionAsync(db));
+        var columns = await db.Database.SqlQueryRaw<string>(
+            "SELECT name AS Value FROM pragma_table_info('SdkPairingSessions')").ToListAsync();
+        Assert.Contains("Environment", columns);
+        Assert.Contains("Service", columns);
     }
 
     [Fact]

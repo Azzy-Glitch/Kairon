@@ -19,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 11;
+    public const int CurrentVersion = 12;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -285,6 +285,19 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                         "ALTER TABLE \"RemediationTargets\" ADD COLUMN \"ServiceIdentityHash\" TEXT NULL;", cancellationToken);
                 await ExecuteAsync(connection, transaction, "PRAGMA user_version = 11;", cancellationToken);
                 version = 11;
+            }
+
+            // Version 12: optional operator-chosen environment/service defaults on pairing codes.
+            if (version == 11) {
+                var pairingColumns = await ColumnsAsync(connection, transaction, "SdkPairingSessions", cancellationToken);
+                if (!pairingColumns.Contains("Environment"))
+                    await ExecuteAsync(connection, transaction,
+                        "ALTER TABLE \"SdkPairingSessions\" ADD COLUMN \"Environment\" TEXT NULL;", cancellationToken);
+                if (!pairingColumns.Contains("Service"))
+                    await ExecuteAsync(connection, transaction,
+                        "ALTER TABLE \"SdkPairingSessions\" ADD COLUMN \"Service\" TEXT NULL;", cancellationToken);
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 12;", cancellationToken);
+                version = 12;
             }
 
             if (version != CurrentVersion)
