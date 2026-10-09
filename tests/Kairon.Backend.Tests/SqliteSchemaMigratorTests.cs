@@ -59,11 +59,45 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
 
         await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
 
-        Assert.Equal(12, await UserVersionAsync(db));
+        Assert.Equal(SqliteSchemaMigrator.CurrentVersion, await UserVersionAsync(db));
         var columns = await db.Database.SqlQueryRaw<string>(
             "SELECT name AS Value FROM pragma_table_info('SdkPairingSessions')").ToListAsync();
         Assert.Contains("Environment", columns);
         Assert.Contains("Service", columns);
+    }
+
+    [Fact]
+    public async Task VersionTwelveUpgradeAddsApplicationProcessRemediationAndKeepsExistingTargetsAsServices()
+    {
+        await using var db = CreateContext();
+        await db.Database.EnsureCreatedAsync();
+        await db.Database.ExecuteSqlRawAsync("DROP TABLE \"ProcessRestartCommands\";");
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"RemediationTargets\" DROP COLUMN \"Kind\";");
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SdkMachineProofChallenges\" DROP COLUMN \"ProcessId\";");
+        foreach (var column in new[] { "ProcessId", "ProcessWorkingDirectory", "ProcessExecutable" })
+            await db.Database.ExecuteSqlRawAsync($"ALTER TABLE \"SdkMachineBindings\" DROP COLUMN \"{column}\";");
+        var projectId = Guid.NewGuid();
+        await db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO \"Projects\" (\"Id\", \"Name\", \"Slug\", \"IsActive\", \"CreatedAt\") VALUES ({0}, 'Orders', 'orders', 1, '2026-01-01');",
+            projectId.ToString().ToUpperInvariant());
+        await db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO \"RemediationTargets\" (\"Id\", \"ProjectId\", \"Environment\", \"EnvironmentNormalized\", \"Service\", \"MachineId\", " +
+            "\"TelemetryCredentialId\", \"ExpectedHostName\", \"WindowsServiceName\", \"AllowedOperationsJson\", \"Enabled\", \"CreatedAt\", " +
+            "\"UpdatedAt\", \"RowVersion\") VALUES ({0}, {1}, 'Production', 'production', 'Orders', {2}, {3}, 'host', 'OrdersSvc', " +
+            "'[\"RestartService\"]', 1, '2026-01-01', '2026-01-01', {4});",
+            Guid.NewGuid().ToString().ToUpperInvariant(), projectId.ToString().ToUpperInvariant(), Guid.NewGuid().ToString().ToUpperInvariant(),
+            Guid.NewGuid().ToString().ToUpperInvariant(), Guid.NewGuid().ToString().ToUpperInvariant());
+        await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 12;");
+
+        await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
+
+        Assert.Equal(13, await UserVersionAsync(db));
+        Assert.Equal(Kairon.Backend.Models.Platform.RemediationTargetKinds.WindowsService,
+            (await db.RemediationTargets.AsNoTracking().SingleAsync()).Kind);
+        var bindingColumns = await db.Database.SqlQueryRaw<string>(
+            "SELECT name AS Value FROM pragma_table_info('SdkMachineBindings')").ToListAsync();
+        Assert.Contains("ProcessWorkingDirectory", bindingColumns);
+        Assert.Equal(0, await db.ProcessRestartCommands.CountAsync());
     }
 
     [Fact]

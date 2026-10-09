@@ -111,6 +111,22 @@ public sealed class RemediationTargetsController : ControllerBase
         };
     }
 
+    /// <summary>One click from Connect an App: let KAIRON restart this connected application (after
+    /// approval). Everything is derived server-side from the pairing session and the Agent-confirmed
+    /// machine binding. Idempotent for the same application.</summary>
+    [HttpPost("app-process/from-pairing/{pairingId:guid}")]
+    public async Task<IActionResult> EnableAppRestart(Guid pairingId, CancellationToken cancellationToken)
+    {
+        var result = await _targets.EnableAppRestartForPairingAsync(pairingId, Actor(), cancellationToken);
+        return result.Outcome switch
+        {
+            RemediationTargetOperationOutcome.Success => Ok(result.Target),
+            RemediationTargetOperationOutcome.NotFound => NotFound(Error(result.Error!, result.ErrorCode!, StatusCodes.Status404NotFound)),
+            RemediationTargetOperationOutcome.Conflict => Conflict(Error(result.Error!, result.ErrorCode!, StatusCodes.Status409Conflict)),
+            _ => UnprocessableEntity(Error(result.Error!, result.ErrorCode!, 422))
+        };
+    }
+
     /// <summary>Preflight-only validation for a prospective target. Never persists anything, never
     /// executes sc.exe, never creates an incident or remediation action, never changes runtime
     /// state - purely a validation pass the future UI can call before submitting Create.</summary>

@@ -128,6 +128,11 @@ public class RemediationActionDto
     /// re-resolves and re-validates the target independently; nothing here is ever read back.</summary>
     public string? TargetWindowsServiceName { get; set; }
     public string? TargetHostName { get; set; }
+    /// <summary>"WindowsService" or "AppProcess"; for an application-process target, the program
+    /// and folder that would be restarted (as identified by the Agent and the SDK) - display only.</summary>
+    public string? TargetKind { get; set; }
+    public string? TargetProcessExecutable { get; set; }
+    public string? TargetProcessWorkingDirectory { get; set; }
     public Guid? TargetId { get; set; }
     /// <summary>TargetReadiness for this exact operation right now (Ready, MachineOffline,
     /// AwaitingAgentConfirmation, OperationNotAllowed, ...). Null when no target applies.</summary>

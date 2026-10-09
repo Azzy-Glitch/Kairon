@@ -29,6 +29,9 @@ public static class ServiceToolNames
     public const string StartService = "StartService";
     public const string StopService = "StopService";
     public const string RunHealthCheck = "RunHealthCheck";
+
+    /// <summary>Restart the SDK-connected application's own process (AppProcess targets only).</summary>
+    public const string RestartApplication = "RestartApplication";
 }
 
 public interface IWindowsServiceControl

@@ -46,7 +46,13 @@ public enum TargetReadiness
     Denylisted,
     PermissionMissing,
     ServiceIdentityChanged,
-    UnsupportedPlatform
+    UnsupportedPlatform,
+    /// <summary>AppProcess: the Agent has not yet identified which process sends the app's
+    /// telemetry, or the SDK has not reported its working directory (older Agent or SDK).</summary>
+    ProcessUnknown,
+    /// <summary>AppProcess: no KAIRON UserAgent in the app owner's signed-in session currently
+    /// reports that process, so nothing could restart it.</summary>
+    UserAgentOffline
 }
 
 public sealed record TargetEvaluation(WindowsServiceTarget? Target, TargetReadiness Readiness)
@@ -66,8 +72,15 @@ public static class RemediationTargetOperations
         ServiceToolNames.RestartService,
         ServiceToolNames.StartService,
         ServiceToolNames.StopService,
-        ServiceToolNames.RunHealthCheck
+        ServiceToolNames.RunHealthCheck,
+        ServiceToolNames.RestartApplication
     ];
+
+    /// <summary>The operations each target kind can carry. A Windows-service target never
+    /// restarts an application process and an application-process target never touches the SCM.</summary>
+    public static IReadOnlyList<string> ForKind(string kind) => kind == RemediationTargetKinds.AppProcess
+        ? [ServiceToolNames.RestartApplication]
+        : [ServiceToolNames.RestartService, ServiceToolNames.StartService, ServiceToolNames.StopService, ServiceToolNames.RunHealthCheck];
 
     public static bool IsKnown(string operation) => Known.Contains(operation, StringComparer.Ordinal);
 
@@ -183,11 +196,13 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
             return TargetEvaluation.Fail(TargetReadiness.CredentialInvalid);
 
         var target = ToRuntimeTarget(entity);
-        if (operation is not null && !target.AllowedOperations.Contains(operation, StringComparer.Ordinal))
+        var isAppProcess = target.Kind == RemediationTargetKinds.AppProcess;
+        if (operation is not null && (!target.AllowedOperations.Contains(operation, StringComparer.Ordinal) ||
+                                      !RemediationTargetOperations.ForKind(target.Kind).Contains(operation, StringComparer.Ordinal)))
             return TargetEvaluation.Fail(TargetReadiness.OperationNotAllowed);
-        if (target.MachineId == Guid.Empty ||
+        if (!RemediationTargetKinds.IsKnown(target.Kind) || target.MachineId == Guid.Empty ||
             !Regex.IsMatch(target.ExpectedHostName, @"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$") ||
-            !Regex.IsMatch(target.WindowsServiceName, @"^[A-Za-z0-9_.-]{1,256}$"))
+            (isAppProcess ? target.WindowsServiceName.Length != 0 : !Regex.IsMatch(target.WindowsServiceName, @"^[A-Za-z0-9_.-]{1,256}$")))
             return TargetEvaluation.Fail(TargetReadiness.InvalidTarget);
         // Remediation is local-only: sc.exe against another host would authenticate to that SCM as
         // the backend's network identity with nothing binding the endpoint to the enrolled Agent.
@@ -205,7 +220,8 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
 
         // A target whose Windows service identity was never confirmed against the live SCM (legacy
         // appsettings import, or a row from before schema v11) must be re-confirmed by an operator.
-        if (string.IsNullOrWhiteSpace(entity.ServiceIdentityHash))
+        // An application-process target has no service identity; its process is identified below.
+        if (!isAppProcess && string.IsNullOrWhiteSpace(entity.ServiceIdentityHash))
             return TargetEvaluation.Fail(TargetReadiness.StaleTarget);
 
         // A selected target and a machine-shaped incident are not proof of SDK origin. Require
@@ -223,6 +239,33 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
         // Bundled into the same result WindowsServiceTool.TargetFingerprint needs, rather than
         // making that caller re-query this exact Machine row a second time.
         target.AgentCredentialHash = machine.AgentCredentialHash;
+
+        if (isAppProcess)
+        {
+            // Which process: the one the Agent saw send this credential's confirmed telemetry (from
+            // the OS TCP table), never a process id the application chose to report.
+            if (binding.ProcessId is not int processId || string.IsNullOrWhiteSpace(binding.ProcessWorkingDirectory))
+                return TargetEvaluation.Fail(TargetReadiness.ProcessUnknown);
+
+            // Who can restart it: the UserAgent running in that process owner's signed-in session,
+            // which reports the process itself (start time, executable) from the OS.
+            var seenAfter = DateTime.UtcNow.AddSeconds(-Math.Clamp(_legacyOptions.MachineHeartbeatMaxAgeSeconds, 10, 300));
+            var process = await _db.DiscoveredApplications.AsNoTracking()
+                .Where(a => a.MachineId == machine.Id && a.Source == "UserAgent" && a.ProcessId == processId &&
+                            a.IsRunning && a.SessionId != null && a.LastSeenAt >= seenAfter)
+                .OrderByDescending(a => a.LastSeenAt)
+                .FirstOrDefaultAsync(ct);
+            if (process is null) return TargetEvaluation.Fail(TargetReadiness.UserAgentOffline);
+            if (AppProcessEligibility.Refusal(process.Executable) is not null)
+                return TargetEvaluation.Fail(TargetReadiness.Denylisted);
+
+            target.ProcessId = processId;
+            target.ProcessStartedAt = process.ProcessStartedAt;
+            target.ProcessExecutable = process.Executable;
+            target.ProcessWorkingDirectory = binding.ProcessWorkingDirectory!;
+            target.SessionId = process.SessionId!.Value;
+        }
+
         return new TargetEvaluation(target, TargetReadiness.Ready);
     }
 
@@ -265,6 +308,7 @@ public sealed class RemediationTargetResolver : IRemediationTargetResolver
         ExpectedHostName = entity.ExpectedHostName,
         WindowsServiceName = entity.WindowsServiceName,
         AllowedOperations = RemediationTargetOperations.Deserialize(entity.AllowedOperationsJson),
-        ServiceIdentityHash = entity.ServiceIdentityHash ?? ""
+        ServiceIdentityHash = entity.ServiceIdentityHash ?? "",
+        Kind = entity.Kind
     };
 }

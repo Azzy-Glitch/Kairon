@@ -93,6 +93,30 @@ public sealed class AgentController : ControllerBase
         return Ok(new { accepted = true, applications = dto.Processes.Count });
     }
 
+    /// <summary>The UserAgent claims the operator-approved application restarts addressed to its
+    /// own machine and session. Claiming is atomic: an instruction is handed out at most once.</summary>
+    [HttpPost("machines/{machineId:guid}/user-session/process-restarts/claim")]
+    public async Task<IActionResult> ClaimProcessRestarts(Guid machineId, ClaimProcessRestartsDto dto,
+        [FromServices] Services.Remediation.Tools.IProcessRestartQueue queue, CancellationToken cancellationToken)
+    {
+        if (!await _agents.AuthenticateUserAgentAsync(machineId, Request.Headers[AgentKeyHeader].ToString(), cancellationToken))
+            return Unauthorized(new { error = "Agent authentication failed." });
+        var claimed = await queue.ClaimAsync(machineId, dto.SessionId, cancellationToken);
+        return Ok(claimed.Select(c => new ProcessRestartInstructionDto(c.Id, c.ProcessId, c.ProcessStartedAt,
+            c.Executable, c.WorkingDirectory)).ToList());
+    }
+
+    [HttpPost("machines/{machineId:guid}/user-session/process-restarts/{commandId:guid}/result")]
+    public async Task<IActionResult> CompleteProcessRestart(Guid machineId, Guid commandId, ProcessRestartResultDto dto,
+        [FromServices] Services.Remediation.Tools.IProcessRestartQueue queue, CancellationToken cancellationToken)
+    {
+        if (!await _agents.AuthenticateUserAgentAsync(machineId, Request.Headers[AgentKeyHeader].ToString(), cancellationToken))
+            return Unauthorized(new { error = "Agent authentication failed." });
+        return await queue.CompleteAsync(machineId, commandId, dto.Succeeded, dto.NewProcessId, dto.Error, cancellationToken)
+            ? Ok(new { recorded = true })
+            : NotFound(new { error = "No claimed restart with that id for this machine." });
+    }
+
     [HttpGet("machines")]
     [RequiresOperator]
     public async Task<IReadOnlyList<MachineStatusDto>> Machines(CancellationToken cancellationToken)

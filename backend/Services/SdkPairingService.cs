@@ -40,7 +40,7 @@ public sealed record PairingStatus(
 /// credential's Agent-confirmed machine binding and telemetry received in this pairing's scope.</summary>
 public sealed record PairingConnection(
     DateTime? LastTelemetryAt, string? Application, string? Service, string? Environment, string? Source,
-    string? MachineHostName, DateTime? MachineConfirmedAt);
+    string? MachineHostName, DateTime? MachineConfirmedAt, Guid? AppRestartTargetId = null);
 
 public enum CompleteRepairOutcome
 {
@@ -314,8 +314,13 @@ public sealed class SdkPairingService : ISdkPairingService
                 : null;
             var host = binding is null ? null : await _db.Machines.AsNoTracking()
                 .Where(m => m.Id == binding.MachineId).Select(m => m.HostName).FirstOrDefaultAsync(cancellationToken);
+            var restartTarget = session.IssuedCredentialId is { } issued
+                ? await _db.RemediationTargets.AsNoTracking()
+                    .Where(t => t.Enabled && t.TelemetryCredentialId == issued && t.Kind == RemediationTargetKinds.AppProcess)
+                    .Select(t => (Guid?)t.Id).FirstOrDefaultAsync(cancellationToken)
+                : null;
             connection = new PairingConnection(latest?.ReceivedAt, latest?.Application, latest?.Service, latest?.Environment,
-                latest?.Source, host, binding?.LastConfirmedAt);
+                latest?.Source, host, binding?.LastConfirmedAt, restartTarget);
         }
 
         return new PairingStatus(session.Id, session.ProjectId, session.SdkType, session.CreatedAt,

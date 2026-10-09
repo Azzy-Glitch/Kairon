@@ -13,6 +13,17 @@ public sealed class SdkMachineBinding
     public Guid MachineId { get; set; }
     public string AgentCredentialHash { get; set; } = string.Empty;
     public DateTime LastConfirmedAt { get; set; }
+
+    /// <summary>The process that sent the last Agent-confirmed telemetry, as observed by the
+    /// Agent from the operating system (the owner of the loopback connection that carried the
+    /// proof) - never a value the application reported about itself.</summary>
+    public int? ProcessId { get; set; }
+
+    /// <summary>The working directory and executable the SDK in that same process reported. Only
+    /// recorded when the SDK's own process id equals the Agent-observed one; used to relaunch the
+    /// application in the right folder, and shown to the operator.</summary>
+    public string? ProcessWorkingDirectory { get; set; }
+    public string? ProcessExecutable { get; set; }
 }
 
 /// <summary>
@@ -33,5 +44,10 @@ public sealed class SdkMachineProofChallenge
     public string? AgentCredentialHash { get; set; }
     public DateTime? ConfirmedAt { get; set; }
     public DateTime? ConsumedAt { get; set; }
+
+    /// <summary>Process that owned the loopback connection the Agent received this proof on, as
+    /// reported by the Agent from the OS TCP table. Null for Agents that predate this.</summary>
+    public int? ProcessId { get; set; }
+
     public Guid RowVersion { get; set; } = Guid.NewGuid();
 }

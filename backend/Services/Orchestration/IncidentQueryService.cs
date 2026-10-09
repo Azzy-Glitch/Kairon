@@ -471,6 +471,14 @@ public class IncidentQueryService : IIncidentQueryService
             action.TargetId = target.Id;
             action.TargetWindowsServiceName = target.WindowsServiceName;
             action.TargetHostName = target.ExpectedHostName;
+            action.TargetKind = target.Kind;
+            if (target.Kind == Models.Platform.RemediationTargetKinds.AppProcess)
+            {
+                var binding = await _db.SdkMachineBindings.AsNoTracking()
+                    .SingleOrDefaultAsync(b => b.CredentialId == target.TelemetryCredentialId, cancellationToken);
+                action.TargetProcessExecutable = binding?.ProcessExecutable;
+                action.TargetProcessWorkingDirectory = binding?.ProcessWorkingDirectory;
+            }
             if (_targets is not null)
                 action.TargetReadiness = (await _targets.EvaluateTargetAsync(target, action.ActionType, cancellationToken)).Readiness.ToString();
         }

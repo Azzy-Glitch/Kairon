@@ -656,6 +656,11 @@ namespace Kairon.Backend.Migrations
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("nvarchar(30)");
+
                     b.Property<string>("ServiceIdentityHash")
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
@@ -800,12 +805,41 @@ namespace Kairon.Backend.Migrations
                     b.ToTable("SdkPairingSessions");
                 });
 
+            modelBuilder.Entity("Kairon.Backend.Models.Platform.ProcessRestartCommand", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uniqueidentifier");
+                    b.Property<string>("ActionKey").IsRequired().HasMaxLength(100).HasColumnType("nvarchar(100)");
+                    b.Property<DateTime?>("ClaimedAt").HasColumnType("datetime2");
+                    b.Property<DateTime?>("CompletedAt").HasColumnType("datetime2");
+                    b.Property<DateTime>("CreatedAt").HasColumnType("datetime2");
+                    b.Property<string>("Error").HasMaxLength(1000).HasColumnType("nvarchar(1000)");
+                    b.Property<string>("Executable").IsRequired().HasMaxLength(1024).HasColumnType("nvarchar(1024)");
+                    b.Property<DateTime>("ExpiresAt").HasColumnType("datetime2");
+                    b.Property<Guid>("IncidentId").HasColumnType("uniqueidentifier");
+                    b.Property<Guid>("MachineId").HasColumnType("uniqueidentifier");
+                    b.Property<int?>("NewProcessId").HasColumnType("int");
+                    b.Property<int>("ProcessId").HasColumnType("int");
+                    b.Property<DateTime>("ProcessStartedAt").HasColumnType("datetime2");
+                    b.Property<Guid>("ProjectId").HasColumnType("uniqueidentifier");
+                    b.Property<Guid>("RowVersion").IsConcurrencyToken().HasColumnType("uniqueidentifier");
+                    b.Property<int>("SessionId").HasColumnType("int");
+                    b.Property<string>("Status").IsRequired().HasMaxLength(20).HasColumnType("nvarchar(20)");
+                    b.Property<string>("WorkingDirectory").IsRequired().HasMaxLength(1024).HasColumnType("nvarchar(1024)");
+                    b.HasKey("Id");
+                    b.HasIndex("IncidentId", "ActionKey");
+                    b.HasIndex("MachineId", "SessionId", "Status");
+                    b.ToTable("ProcessRestartCommands");
+                });
+
             modelBuilder.Entity("Kairon.Backend.Models.Platform.SdkMachineBinding", b =>
                 {
                     b.Property<Guid>("CredentialId").HasColumnType("uniqueidentifier");
                     b.Property<string>("AgentCredentialHash").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");
                     b.Property<DateTime>("LastConfirmedAt").HasColumnType("datetime2");
                     b.Property<Guid>("MachineId").HasColumnType("uniqueidentifier");
+                    b.Property<string>("ProcessExecutable").HasMaxLength(1024).HasColumnType("nvarchar(1024)");
+                    b.Property<int?>("ProcessId").HasColumnType("int");
+                    b.Property<string>("ProcessWorkingDirectory").HasMaxLength(1024).HasColumnType("nvarchar(1024)");
                     b.Property<Guid>("ProjectId").HasColumnType("uniqueidentifier");
                     b.HasKey("CredentialId");
                     b.HasIndex("ProjectId", "MachineId");
@@ -823,6 +857,7 @@ namespace Kairon.Backend.Migrations
                     b.Property<string>("EnvironmentNormalized").IsRequired().HasMaxLength(50).HasColumnType("nvarchar(50)");
                     b.Property<DateTime>("ExpiresAt").HasColumnType("datetime2");
                     b.Property<Guid?>("MachineId").HasColumnType("uniqueidentifier");
+                    b.Property<int?>("ProcessId").HasColumnType("int");
                     b.Property<Guid>("ProjectId").HasColumnType("uniqueidentifier");
                     b.Property<Guid>("RowVersion").IsConcurrencyToken().HasColumnType("uniqueidentifier");
                     b.Property<string>("Service").IsRequired().HasMaxLength(200).HasColumnType("nvarchar(200)");

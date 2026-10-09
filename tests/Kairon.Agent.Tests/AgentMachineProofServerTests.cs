@@ -45,8 +45,35 @@ public sealed class AgentMachineProofServerTests
             Assert.Equal($"/api/agent/machines/{registration.MachineId}/telemetry-proofs/{id}/confirm",
                 handler.LastPath);
             Assert.Equal(agentKey, handler.LastAgentKey);
+            // The confirmation names the process that opened the connection, as Windows reports it
+            // (here: this test process). Elsewhere the owner is unknown, never guessed.
+            using var sent = JsonDocument.Parse(handler.LastBody!);
+            var processId = sent.RootElement.GetProperty("processId");
+            if (OperatingSystem.IsWindows()) Assert.Equal(Environment.ProcessId, processId.GetInt32());
+            else Assert.Equal(JsonValueKind.Null, processId.ValueKind);
         }
         finally { await server.StopAsync(default); server.Dispose(); }
+    }
+
+    [Fact]
+    public async Task TheOwnerOfALoopbackConnectionIsReadFromTheOperatingSystem()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port);
+            using var accepted = await listener.AcceptTcpClientAsync();
+
+            var owner = LoopbackConnectionOwner.Find(accepted.Client.RemoteEndPoint as IPEndPoint, port);
+
+            if (OperatingSystem.IsWindows()) Assert.Equal(Environment.ProcessId, owner);
+            else Assert.Null(owner);
+            Assert.Null(LoopbackConnectionOwner.Find(new IPEndPoint(IPAddress.Parse("10.1.2.3"), 1234), port)); // never remote
+        }
+        finally { listener.Stop(); }
     }
 
     private static async Task<bool> ExchangeAsync(int port, string endpoint, Guid? id)
@@ -81,13 +108,15 @@ public sealed class AgentMachineProofServerTests
         public int Calls { get; private set; }
         public string? LastPath { get; private set; }
         public string? LastAgentKey { get; private set; }
+        public string? LastBody { get; private set; }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Calls++;
             LastPath = request.RequestUri?.AbsolutePath;
             LastAgentKey = request.Headers.GetValues("X-Kairon-Agent-Key").Single();
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            LastBody = request.Content is null ? null : await request.Content.ReadAsStringAsync(ct);
+            return new HttpResponseMessage(HttpStatusCode.OK);
         }
     }
 }

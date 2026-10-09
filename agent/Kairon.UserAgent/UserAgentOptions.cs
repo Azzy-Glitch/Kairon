@@ -21,4 +21,11 @@ public class UserAgentOptions
     /// must not turn into an unbounded payload. The busiest (highest-CPU) processes are kept when
     /// the cap is hit.</summary>
     public int MaxProcesses { get; set; } = 300;
+
+    /// <summary>Performs operator-approved restarts of applications in this user's session
+    /// (ProcessRestartWorker). Each restart was approved in KAIRON and is re-verified here.</summary>
+    public bool EnableProcessRestart { get; set; } = true;
+
+    /// <summary>How often to collect approved restarts; the backend waits about 15 s for pickup.</summary>
+    public int ProcessRestartPollSeconds { get; set; } = 3;
 }

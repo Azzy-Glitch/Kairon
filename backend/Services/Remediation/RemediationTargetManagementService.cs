@@ -5,6 +5,7 @@ using Kairon.Backend.DTOs;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models.Platform;
 using Kairon.Backend.Services.Audit;
+using Kairon.Backend.Services.Remediation.Tools;
 using Microsoft.EntityFrameworkCore;
 
 namespace Kairon.Backend.Services.Remediation;
@@ -72,6 +73,12 @@ public interface IRemediationTargetManagementService
     /// <summary>Windows services on an enrolled machine, with eligibility. Local machine only; null
     /// when the machine is unknown, throws InvalidOperationException when it is not this host.</summary>
     Task<IReadOnlyList<WindowsServiceListItem>?> ListWindowsServicesAsync(Guid machineId, CancellationToken ct = default);
+
+    /// <summary>One-click "let KAIRON restart this app" for an application connected through a
+    /// pairing code: creates (or returns the existing) enabled application-process target, deriving
+    /// project, environment, service, credential and machine entirely from server-side state - the
+    /// pairing session and the Agent-confirmed machine binding - never from the browser.</summary>
+    Task<RemediationTargetOperationResult> EnableAppRestartForPairingAsync(Guid pairingId, string actor, CancellationToken ct = default);
 }
 
 public sealed class RemediationTargetManagementService : IRemediationTargetManagementService
@@ -145,8 +152,9 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
                     "An enabled remediation target already exists for this project, environment and service.", "duplicate-target");
         }
         string? identity = null;
+        var kind = request.Kind ?? RemediationTargetKinds.WindowsService;
         if (request.Enabled && errors.Count == 0)
-            identity = ValidateWindowsService(request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, errors);
+            identity = ValidateKind(kind, request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, errors);
         if (errors.Count > 0) return RemediationTargetOperationResult.Invalid(string.Join(" ", errors), "invalid-target");
 
         var now = _time.GetUtcNow().UtcDateTime;
@@ -156,6 +164,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             Environment = request.Environment,
             EnvironmentNormalized = request.Environment.ToLowerInvariant(),
             Service = request.Service.Trim(),
+            Kind = kind,
             MachineId = request.MachineId,
             TelemetryCredentialId = request.TelemetryCredentialId,
             ExpectedHostName = request.ExpectedHostName.Trim(),
@@ -209,9 +218,11 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         // captured again. A disabled target keeps its identity only while it still names the same
         // service on the same host; otherwise it must be confirmed again when enabled.
         string? identity = null;
+        var kind = request.Kind ?? RemediationTargetKinds.WindowsService;
         if (request.Enabled && errors.Count == 0)
-            identity = ValidateWindowsService(request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, errors);
-        else if (string.Equals(entity.WindowsServiceName, request.WindowsServiceName.Trim(), StringComparison.OrdinalIgnoreCase) &&
+            identity = ValidateKind(kind, request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, errors);
+        else if (kind == entity.Kind &&
+                 string.Equals(entity.WindowsServiceName, request.WindowsServiceName.Trim(), StringComparison.OrdinalIgnoreCase) &&
                  string.Equals(entity.ExpectedHostName, request.ExpectedHostName.Trim(), StringComparison.OrdinalIgnoreCase))
             identity = entity.ServiceIdentityHash;
         if (errors.Count > 0) return RemediationTargetOperationResult.Invalid(string.Join(" ", errors), "invalid-target");
@@ -221,6 +232,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         entity.Environment = request.Environment;
         entity.EnvironmentNormalized = request.Environment.ToLowerInvariant();
         entity.Service = request.Service.Trim();
+        entity.Kind = kind;
         entity.MachineId = request.MachineId;
         entity.TelemetryCredentialId = request.TelemetryCredentialId;
         entity.ExpectedHostName = request.ExpectedHostName.Trim();
@@ -269,7 +281,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         if (entity is null) return RemediationTargetOperationResult.NotFoundResult("Remediation target not found.", "target-not-found");
 
         string? confirmedIdentity = null;
-        var reconfirm = enabled && entity.Enabled && _inspector.IsSupported &&
+        var reconfirm = enabled && entity.Enabled && entity.Kind == RemediationTargetKinds.WindowsService && _inspector.IsSupported &&
             (string.IsNullOrEmpty(entity.ServiceIdentityHash) || _inspector.Probe(entity.WindowsServiceName).IdentityHash != entity.ServiceIdentityHash);
         if ((enabled && !entity.Enabled) || reconfirm)
         {
@@ -277,11 +289,11 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             // invariant). Enabling it must not skip straight past validation just because it was
             // valid once, before it was disabled.
             var errors = ValidateShape(entity.Environment, entity.Service, entity.ExpectedHostName, entity.WindowsServiceName,
-                RemediationTargetOperations.Deserialize(entity.AllowedOperationsJson));
+                RemediationTargetOperations.Deserialize(entity.AllowedOperationsJson), entity.Kind);
             if (errors.Count == 0)
                 await ValidateRelationshipsAsync(entity.ProjectId, entity.MachineId, entity.TelemetryCredentialId, entity.ExpectedHostName, errors, ct);
             if (errors.Count == 0)
-                confirmedIdentity = ValidateWindowsService(entity.ExpectedHostName, entity.WindowsServiceName,
+                confirmedIdentity = ValidateKind(entity.Kind, entity.ExpectedHostName, entity.WindowsServiceName,
                     RemediationTargetOperations.Deserialize(entity.AllowedOperationsJson), errors);
             if (errors.Count > 0)
                 return RemediationTargetOperationResult.Invalid("This target cannot be enabled: " + string.Join(" ", errors), "invalid-target");
@@ -329,7 +341,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         if (errors.Count == 0 && await ConflictsWithEnabledTargetAsync(request.ProjectId, request.Environment, request.Service, excludeId: null, ct))
             errors.Add("An enabled remediation target already exists for this project, environment and service.");
         if (errors.Count == 0)
-            ValidateWindowsService(request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, errors);
+            ValidateKind(request.Kind ?? RemediationTargetKinds.WindowsService, request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, errors);
         return errors;
     }
 
@@ -372,14 +384,61 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
 
     public Task<RemediationPreflightResponse> PreflightAsync(CreateRemediationTargetRequest request, CancellationToken ct = default) =>
         BuildPreflightAsync(request.ProjectId, request.Environment, request.Service, request.MachineId, request.TelemetryCredentialId,
-            request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, entity: null, ct);
+            request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, entity: null, ct,
+            request.Kind ?? RemediationTargetKinds.WindowsService);
 
     public async Task<RemediationPreflightResponse?> PreflightAsync(Guid id, CancellationToken ct = default)
     {
         var entity = await _db.RemediationTargets.AsNoTracking().SingleOrDefaultAsync(t => t.Id == id, ct);
         if (entity is null) return null;
         return await BuildPreflightAsync(entity.ProjectId, entity.Environment, entity.Service, entity.MachineId, entity.TelemetryCredentialId,
-            entity.ExpectedHostName, entity.WindowsServiceName, RemediationTargetOperations.Deserialize(entity.AllowedOperationsJson), entity, ct);
+            entity.ExpectedHostName, entity.WindowsServiceName, RemediationTargetOperations.Deserialize(entity.AllowedOperationsJson), entity, ct, entity.Kind);
+    }
+
+    public async Task<RemediationTargetOperationResult> EnableAppRestartForPairingAsync(Guid pairingId, string actor, CancellationToken ct = default)
+    {
+        var session = await _db.SdkPairingSessions.AsNoTracking().SingleOrDefaultAsync(s => s.Id == pairingId, ct);
+        if (session is null) return RemediationTargetOperationResult.NotFoundResult("Pairing session not found.", "pairing-not-found");
+        if (session.IssuedCredentialId is not Guid credentialId || session.ConfirmedAt is null || session.RevokedAt is not null)
+            return RemediationTargetOperationResult.Invalid("The application has not finished connecting yet. Start it and send it a request.", "app-not-connected");
+
+        var binding = await _db.SdkMachineBindings.AsNoTracking().SingleOrDefaultAsync(b => b.CredentialId == credentialId, ct);
+        var machine = binding is null ? null : await _db.Machines.AsNoTracking().SingleOrDefaultAsync(m => m.Id == binding.MachineId, ct);
+        if (binding is null || machine is null || binding.ProjectId != session.ProjectId)
+            return RemediationTargetOperationResult.Invalid(
+                "The KAIRON Agent has not confirmed this application on this machine yet. Keep the app running and send it a request.",
+                "awaiting-agent-confirmation");
+
+        // The pairing's chosen environment/service, else what the app itself reported since then.
+        var redeemedAt = session.RedeemedAt ?? session.CreatedAt;
+        var latest = await _db.TelemetryReceipts.AsNoTracking()
+            .Where(r => r.ProjectId == session.ProjectId && r.ReceivedAt >= redeemedAt &&
+                        (session.Service == null || r.Service == session.Service))
+            .OrderByDescending(r => r.ReceivedAt)
+            .Select(r => new { r.Service, r.Environment })
+            .FirstOrDefaultAsync(ct);
+        var service = session.Service ?? latest?.Service;
+        var reportedEnvironment = session.Environment ?? latest?.Environment;
+        var environment = ProductEnvironments.All.FirstOrDefault(e => string.Equals(e, reportedEnvironment, StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(service) || environment is null)
+            return RemediationTargetOperationResult.Invalid(
+                "KAIRON has not received this application's telemetry yet, so its service and environment are unknown.", "awaiting-telemetry");
+
+        var normalized = environment.ToLowerInvariant();
+        var existing = await _db.RemediationTargets.AsNoTracking().SingleOrDefaultAsync(t =>
+            t.Enabled && t.ProjectId == session.ProjectId && t.EnvironmentNormalized == normalized && t.Service == service, ct);
+        if (existing is not null)
+            return existing.Kind == RemediationTargetKinds.AppProcess && existing.TelemetryCredentialId == credentialId
+                ? RemediationTargetOperationResult.Ok((await ToResponsesAsync([existing], ct)).Single())
+                : RemediationTargetOperationResult.ConflictResult(
+                    "Another remediation target already covers this service. Manage it under Remediation Targets.", "duplicate-target");
+
+        return await CreateAsync(new CreateRemediationTargetRequest
+        {
+            ProjectId = session.ProjectId, Environment = environment, Service = service!, MachineId = machine.Id,
+            TelemetryCredentialId = credentialId, ExpectedHostName = machine.HostName, WindowsServiceName = "",
+            Kind = RemediationTargetKinds.AppProcess, AllowedOperations = [ServiceToolNames.RestartApplication], Enabled = true
+        }, actor, ct);
     }
 
     public async Task<IReadOnlyList<WindowsServiceListItem>?> ListWindowsServicesAsync(Guid machineId, CancellationToken ct = default)
@@ -401,7 +460,8 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
     }
 
     private async Task<RemediationPreflightResponse> BuildPreflightAsync(Guid projectId, string environment, string service, Guid machineId,
-        Guid credentialId, string expectedHostName, string windowsServiceName, IEnumerable<string> operationsIn, RemediationTarget? entity, CancellationToken ct)
+        Guid credentialId, string expectedHostName, string windowsServiceName, IEnumerable<string> operationsIn, RemediationTarget? entity, CancellationToken ct,
+        string kind = RemediationTargetKinds.WindowsService)
     {
         var operations = (operationsIn ?? []).Where(RemediationTargetOperations.IsKnown).Distinct().ToList();
         var checks = new List<RemediationPreflightCheck>();
@@ -409,7 +469,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             checks.Add(new RemediationPreflightCheck { Key = key, Label = label, Passed = passed, Blocking = blocking, Detail = detail,
                 Readiness = passed ? null : readiness.ToString() });
 
-        var shape = ValidateShape(environment, service, expectedHostName, windowsServiceName, operations);
+        var shape = ValidateShape(environment, service, expectedHostName, windowsServiceName, operations, kind);
         Add("shape", "Target details are complete", shape.Count == 0, true, TargetReadiness.InvalidTarget, shape.Count == 0 ? null : string.Join(" ", shape));
         Add("project", "Project is active", await _db.Projects.AnyAsync(p => p.Id == projectId && p.IsActive, ct), true, TargetReadiness.ProjectInactive);
         Add("credential", "App credential is valid for this project",
@@ -431,10 +491,14 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             machine.LastSeenAt <= now.AddSeconds(5), false, TargetReadiness.MachineOffline);
 
         WindowsServiceDetails? details = null;
-        var required = WindowsServiceProbe.RequiredRights(operations).ToList();
+        var isAppProcess = kind == RemediationTargetKinds.AppProcess;
+        var required = isAppProcess ? [] : WindowsServiceProbe.RequiredRights(operations).ToList();
         var missing = new List<string>();
-        Add("platform", "Backend can control Windows services", _inspector.IsSupported, true, TargetReadiness.UnsupportedPlatform);
-        if (_inspector.IsSupported && !string.IsNullOrWhiteSpace(windowsServiceName))
+        if (isAppProcess)
+            await AddAppProcessChecksAsync(projectId, environment, service, machineId, credentialId, expectedHostName, entity, Add, ct);
+        else
+            Add("platform", "Backend can control Windows services", _inspector.IsSupported, true, TargetReadiness.UnsupportedPlatform);
+        if (!isAppProcess && _inspector.IsSupported && !string.IsNullOrWhiteSpace(windowsServiceName))
         {
             var probe = _inspector.Probe(windowsServiceName.Trim());
             details = new WindowsServiceDetails
@@ -462,7 +526,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             }
         }
 
-        if (entity is { Enabled: true })
+        if (entity is { Enabled: true } && !isAppProcess)
         {
             var evaluation = await _resolver.EvaluateTargetAsync(entity, null, ct);
             Add("agent-proof", "App telemetry is confirmed by the Agent on this machine",
@@ -488,6 +552,47 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         };
     }
 
+    /// <summary>
+    /// What an application-process target needs instead of service permissions: the Agent has
+    /// identified which process sends the app's telemetry, the UserAgent in that user's session
+    /// reports it, and it is an ordinary application. None of these block saving or enabling - the
+    /// app simply has to be running - but each one is shown so the operator knows what is missing.
+    /// They are evaluated exactly as execution will evaluate them (the resolver), for a saved target
+    /// or for the prospective one being configured.
+    /// </summary>
+    private async Task AddAppProcessChecksAsync(Guid projectId, string environment, string service, Guid machineId, Guid credentialId,
+        string expectedHostName, RemediationTarget? entity, Action<string, string, bool, bool, TargetReadiness, string?> add, CancellationToken ct)
+    {
+        var probe = entity is { Enabled: true } ? entity : new RemediationTarget
+        {
+            ProjectId = projectId, Environment = environment, EnvironmentNormalized = (environment ?? "").ToLowerInvariant(),
+            Service = service ?? "", MachineId = machineId, TelemetryCredentialId = credentialId,
+            ExpectedHostName = (expectedHostName ?? "").Trim(), WindowsServiceName = "", Kind = RemediationTargetKinds.AppProcess,
+            AllowedOperationsJson = RemediationTargetOperations.Serialize([ServiceToolNames.RestartApplication]),
+            Enabled = true, UpdatedAt = DateTime.MinValue
+        };
+        var readiness = (await _resolver.EvaluateTargetAsync(probe, null, ct)).Readiness;
+        var binding = await _db.SdkMachineBindings.AsNoTracking().SingleOrDefaultAsync(b => b.CredentialId == credentialId, ct);
+        var reached = readiness is not (TargetReadiness.ProjectInactive or TargetReadiness.CredentialInvalid or TargetReadiness.InvalidTarget or
+            TargetReadiness.RemoteNotSupported or TargetReadiness.MachineMismatch or TargetReadiness.MachineOffline);
+
+        add("agent-proof", "App telemetry is confirmed by the Agent on this machine",
+            reached && readiness != TargetReadiness.AwaitingAgentConfirmation, false, TargetReadiness.AwaitingAgentConfirmation,
+            readiness == TargetReadiness.AwaitingAgentConfirmation
+                ? "Start the connected application on this machine; its telemetry is confirmed by the Agent within seconds." : null);
+        var processKnown = reached && readiness is not (TargetReadiness.AwaitingAgentConfirmation or TargetReadiness.ProcessUnknown);
+        add("process", "KAIRON knows which process is the application", processKnown, false, TargetReadiness.ProcessUnknown,
+            processKnown
+                ? $"{binding?.ProcessExecutable ?? "Process"} (process {binding?.ProcessId}) in {binding?.ProcessWorkingDirectory}"
+                : "Run the application with an up-to-date KAIRON SDK; the Agent identifies its process from the first confirmed telemetry.");
+        var userAgentSees = processKnown && readiness != TargetReadiness.UserAgentOffline;
+        add("useragent", "The KAIRON UserAgent in the app's user session can restart it", userAgentSees, false, TargetReadiness.UserAgentOffline,
+            userAgentSees ? null : "The user who runs the application must be signed in; the KAIRON UserAgent starts automatically at sign-in.");
+        add("eligible-process", "The process is an ordinary application (not Windows or KAIRON itself)",
+            readiness != TargetReadiness.Denylisted, true, TargetReadiness.Denylisted,
+            readiness == TargetReadiness.Denylisted ? "Windows components and KAIRON's own processes are never restarted." : null);
+    }
+
     /// <summary>The installer ships the helper at {app}\tools\remediation beside {app}\backend; a
     /// source checkout has it at the repository's tools\remediation.</summary>
     private static string PermissionHelperPath()
@@ -511,20 +616,28 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
     // --- Validation ---
 
     private static List<string> ValidateShape(CreateRemediationTargetRequest request) =>
-        ValidateShape(request.Environment, request.Service, request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations);
+        ValidateShape(request.Environment, request.Service, request.ExpectedHostName, request.WindowsServiceName, request.AllowedOperations, request.Kind);
 
     private static List<string> ValidateShape(string environment, string service, string expectedHostName,
-        string windowsServiceName, IEnumerable<string> allowedOperations)
+        string windowsServiceName, IEnumerable<string> allowedOperations, string? kind = RemediationTargetKinds.WindowsService)
     {
         var errors = new List<string>();
+        kind ??= RemediationTargetKinds.WindowsService;
 
+        if (!RemediationTargetKinds.IsKnown(kind))
+            errors.Add("Target kind must be WindowsService or AppProcess.");
         if (!ProductEnvironments.Contains(environment))
             errors.Add("Environment must be Development, Staging or Production.");
         if (string.IsNullOrWhiteSpace(service))
             errors.Add("Service is required.");
         if (string.IsNullOrWhiteSpace(expectedHostName) || !HostNamePattern.IsMatch(expectedHostName))
             errors.Add("Expected host name is not a valid host name.");
-        if (string.IsNullOrWhiteSpace(windowsServiceName) || !ServiceNamePattern.IsMatch(windowsServiceName))
+        if (kind == RemediationTargetKinds.AppProcess)
+        {
+            if (!string.IsNullOrWhiteSpace(windowsServiceName))
+                errors.Add("An application-process target does not name a Windows service.");
+        }
+        else if (string.IsNullOrWhiteSpace(windowsServiceName) || !ServiceNamePattern.IsMatch(windowsServiceName))
             errors.Add("Windows service name is not a valid Windows service name.");
 
         var requested = (allowedOperations ?? []).ToList();
@@ -533,8 +646,35 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             errors.Add($"Unknown operation(s): {string.Join(", ", unknown)}.");
         else if (requested.Count == 0)
             errors.Add("At least one allowed operation is required.");
+        else if (RemediationTargetKinds.IsKnown(kind))
+        {
+            var wrongKind = requested.Where(o => !RemediationTargetOperations.ForKind(kind).Contains(o)).Distinct().ToList();
+            if (wrongKind.Count > 0)
+                errors.Add($"Operation(s) {string.Join(", ", wrongKind)} do not apply to a {(kind == RemediationTargetKinds.AppProcess ? "application-process" : "Windows service")} target.");
+        }
 
         return errors;
+    }
+
+    /// <summary>Blocking gate for enabling an application-process target. There is no service and
+    /// no Windows permission to check: the restart is performed by the UserAgent as the app's own
+    /// user. What remains is that the machine is this KAIRON host.</summary>
+    private void ValidateAppProcessTarget(string expectedHostName, List<string> errors)
+    {
+        if (!_localMachine.IsLocal(expectedHostName.Trim()))
+            errors.Add("Remote remediation is not supported: the target must be the machine the KAIRON backend runs on.");
+    }
+
+    /// <summary>The kind-specific enable gate. Returns the Windows service identity to bind, or
+    /// null for an application-process target (which has none).</summary>
+    private string? ValidateKind(string kind, string expectedHostName, string windowsServiceName, IEnumerable<string> operations, List<string> errors)
+    {
+        if (kind == RemediationTargetKinds.AppProcess)
+        {
+            ValidateAppProcessTarget(expectedHostName, errors);
+            return null;
+        }
+        return ValidateWindowsService(expectedHostName, windowsServiceName, operations, errors);
     }
 
     /// <summary>Narrowly detects the one unique constraint a RemediationTarget write could
@@ -629,7 +769,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         var readiness = new Dictionary<Guid, RemediationPreflightResponse>();
         foreach (var e in entities)
             readiness[e.Id] = await BuildPreflightAsync(e.ProjectId, e.Environment, e.Service, e.MachineId, e.TelemetryCredentialId,
-                e.ExpectedHostName, e.WindowsServiceName, RemediationTargetOperations.Deserialize(e.AllowedOperationsJson), e, ct);
+                e.ExpectedHostName, e.WindowsServiceName, RemediationTargetOperations.Deserialize(e.AllowedOperationsJson), e, ct, e.Kind);
 
         return entities.Select(e => new RemediationTargetResponse
         {
@@ -646,6 +786,10 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             MachineBindingLastConfirmedAt = bindings.GetValueOrDefault(e.TelemetryCredentialId)?.LastConfirmedAt,
             ExpectedHostName = e.ExpectedHostName,
             WindowsServiceName = e.WindowsServiceName,
+            Kind = e.Kind,
+            ProcessId = e.Kind == RemediationTargetKinds.AppProcess ? bindings.GetValueOrDefault(e.TelemetryCredentialId)?.ProcessId : null,
+            ProcessExecutable = e.Kind == RemediationTargetKinds.AppProcess ? bindings.GetValueOrDefault(e.TelemetryCredentialId)?.ProcessExecutable : null,
+            ProcessWorkingDirectory = e.Kind == RemediationTargetKinds.AppProcess ? bindings.GetValueOrDefault(e.TelemetryCredentialId)?.ProcessWorkingDirectory : null,
             AllowedOperations = RemediationTargetOperations.Deserialize(e.AllowedOperationsJson),
             Enabled = e.Enabled,
             CreatedAt = e.CreatedAt,
@@ -662,6 +806,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         entity.ProjectId,
         entity.Environment,
         entity.Service,
+        entity.Kind,
         entity.MachineId,
         entity.TelemetryCredentialId,
         entity.ExpectedHostName,

@@ -71,3 +71,21 @@ public sealed class UserProcessSnapshotDto
     [Range(0, long.MaxValue)] public long MemoryBytes { get; set; }
     public int? ParentProcessId { get; set; }
 }
+
+/// <summary>The UserAgent asks for the approved restarts addressed to its own session.</summary>
+public sealed class ClaimProcessRestartsDto
+{
+    [Range(0, int.MaxValue)] public int SessionId { get; set; }
+}
+
+/// <summary>One approved restart for the UserAgent to verify and perform. Identifies a process;
+/// it is not a command to run - the UserAgent relaunches what Windows reports for that process.</summary>
+public sealed record ProcessRestartInstructionDto(Guid CommandId, int ProcessId, DateTime ProcessStartedAt,
+    string Executable, string WorkingDirectory);
+
+public sealed class ProcessRestartResultDto
+{
+    public bool Succeeded { get; set; }
+    [Range(1, int.MaxValue)] public int? NewProcessId { get; set; }
+    [MaxLength(1000)] public string? Error { get; set; }
+}

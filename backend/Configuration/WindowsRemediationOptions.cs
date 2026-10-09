@@ -36,4 +36,17 @@ public sealed class WindowsServiceTarget
     /// <summary>The operator-confirmed Windows service identity (RemediationTarget.ServiceIdentityHash);
     /// never set from configuration, so a legacy appsettings target always requires confirmation.</summary>
     public string ServiceIdentityHash { get; set; } = "";
+
+    /// <summary>RemediationTargetKinds; legacy configuration targets are always Windows services.</summary>
+    public string Kind { get; set; } = Kairon.Backend.Models.Platform.RemediationTargetKinds.WindowsService;
+
+    // Populated only for an AppProcess target, by RemediationTargetResolver, from operating-system
+    // observations: the process the Agent saw send the confirmed telemetry, and the UserAgent's
+    // report of that same process (start time, executable, session). The working directory is the
+    // SDK's report from that same process.
+    public int ProcessId { get; set; }
+    public DateTime ProcessStartedAt { get; set; }
+    public string ProcessExecutable { get; set; } = "";
+    public string ProcessWorkingDirectory { get; set; } = "";
+    public int SessionId { get; set; }
 }

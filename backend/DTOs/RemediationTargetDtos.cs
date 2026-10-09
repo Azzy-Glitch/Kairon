@@ -31,6 +31,13 @@ public sealed class RemediationTargetResponse
     public DateTime? MachineBindingLastConfirmedAt { get; set; }
     public string ExpectedHostName { get; set; } = string.Empty;
     public string WindowsServiceName { get; set; } = string.Empty;
+    /// <summary>"WindowsService" or "AppProcess" (Models.Platform.RemediationTargetKinds).</summary>
+    public string Kind { get; set; } = "WindowsService";
+    /// <summary>AppProcess only: the application process KAIRON would restart, as identified by the
+    /// Agent and reported by the SDK - shown to the operator; null until it is known.</summary>
+    public int? ProcessId { get; set; }
+    public string? ProcessExecutable { get; set; }
+    public string? ProcessWorkingDirectory { get; set; }
     public List<string> AllowedOperations { get; set; } = new();
     public bool Enabled { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -114,6 +121,9 @@ public class CreateRemediationTargetRequest
     public Guid TelemetryCredentialId { get; set; }
     public string ExpectedHostName { get; set; } = string.Empty;
     public string WindowsServiceName { get; set; } = string.Empty;
+    /// <summary>"WindowsService" (default) or "AppProcess". An AppProcess target names no Windows
+    /// service; its only operation is RestartApplication.</summary>
+    public string Kind { get; set; } = "WindowsService";
     public List<string> AllowedOperations { get; set; } = new();
 
     /// <summary>Defaults to true. A caller may stage a target disabled; a disabled target is exempt

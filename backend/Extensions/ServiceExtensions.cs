@@ -146,6 +146,10 @@ public static class ServiceExtensions
         services.AddScoped<IRemediationTool, StartServiceTool>();
         services.AddScoped<IRemediationTool, StopServiceTool>();
         services.AddScoped<IRemediationTool, ServiceHealthCheckTool>();
+        // Application-process restarts are performed by the UserAgent in the app owner's session;
+        // the backend only queues an approved, re-validated instruction for it.
+        services.AddScoped<IRemediationTool, RestartApplicationTool>();
+        services.AddScoped<IProcessRestartQueue, ProcessRestartQueue>();
         services.AddScoped<IRemediationToolRegistry, RemediationToolRegistry>();
         services.AddScoped<IRemediationToolRegistryAccessor, RemediationToolRegistryAccessor>();
         services.AddScoped<IRemediationPolicy, RemediationPolicy>();

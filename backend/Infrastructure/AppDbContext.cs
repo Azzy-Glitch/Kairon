@@ -49,6 +49,7 @@ public class AppDbContext : DbContext
     public DbSet<TelemetryReceipt> TelemetryReceipts { get; set; }
     public DbSet<SdkMachineBinding> SdkMachineBindings { get; set; }
     public DbSet<SdkMachineProofChallenge> SdkMachineProofChallenges { get; set; }
+    public DbSet<ProcessRestartCommand> ProcessRestartCommands { get; set; }
 
     // Database-backed replacement for WindowsRemediation:Targets (Configuration/
     // WindowsRemediationOptions.cs) - see Models/Platform/RemediationTarget.cs.
@@ -316,6 +317,21 @@ public class AppDbContext : DbContext
             entity.HasKey(e => e.CredentialId);
             entity.HasIndex(e => new { e.ProjectId, e.MachineId });
             entity.Property(e => e.AgentCredentialHash).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.ProcessWorkingDirectory).HasMaxLength(1024);
+            entity.Property(e => e.ProcessExecutable).HasMaxLength(1024);
+        });
+
+        modelBuilder.Entity<ProcessRestartCommand>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.MachineId, e.SessionId, e.Status });
+            entity.HasIndex(e => new { e.IncidentId, e.ActionKey });
+            entity.Property(e => e.ActionKey).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.Executable).HasMaxLength(1024).IsRequired();
+            entity.Property(e => e.WorkingDirectory).HasMaxLength(1024).IsRequired();
+            entity.Property(e => e.Status).HasMaxLength(20).IsRequired();
+            entity.Property(e => e.Error).HasMaxLength(1000);
+            entity.Property(e => e.RowVersion).IsConcurrencyToken();
         });
 
         modelBuilder.Entity<SdkMachineProofChallenge>(entity =>
@@ -353,6 +369,7 @@ public class AppDbContext : DbContext
                   .HasDatabaseName("IX_RemediationTargets_ProjectId_EnvironmentNormalized_Service");
             entity.Property(e => e.EnvironmentNormalized).HasMaxLength(50).IsRequired();
             entity.Property(e => e.ServiceIdentityHash).HasMaxLength(64);
+            entity.Property(e => e.Kind).HasMaxLength(30).IsRequired();
             // Machine and TelemetryCredentialId are loose Guid references (indexed, not a real
             // FK) - matching this codebase's dominant convention for cross-entity references
             // that are validated at the application layer (active/revoked/heartbeat checks)

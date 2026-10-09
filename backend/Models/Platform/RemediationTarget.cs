@@ -18,6 +18,14 @@ namespace Kairon.Backend.Models.Platform;
 /// Kairon.Backend.Services.Remediation.RemediationTargetOperations for the validated
 /// serialize/deserialize boundary. Runtime consumers never read this raw JSON column directly.
 /// </summary>
+public static class RemediationTargetKinds
+{
+    public const string WindowsService = "WindowsService";
+    public const string AppProcess = "AppProcess";
+
+    public static bool IsKnown(string? kind) => kind is WindowsService or AppProcess;
+}
+
 public sealed class RemediationTarget
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -36,6 +44,13 @@ public sealed class RemediationTarget
     public string EnvironmentNormalized { get; set; } = "production";
 
     public string Service { get; set; } = string.Empty;
+
+    /// <summary>What KAIRON acts on: <see cref="RemediationTargetKinds.WindowsService"/> (an
+    /// existing service, via the SCM) or <see cref="RemediationTargetKinds.AppProcess"/> (the
+    /// SDK-connected application's own process, restarted by the KAIRON UserAgent in the user's
+    /// session). An AppProcess target has no WindowsServiceName and no ServiceIdentityHash.</summary>
+    public string Kind { get; set; } = RemediationTargetKinds.WindowsService;
+
     public Guid MachineId { get; set; }
     public Guid TelemetryCredentialId { get; set; }
     public string ExpectedHostName { get; set; } = string.Empty;

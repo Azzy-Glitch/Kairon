@@ -36,13 +36,22 @@ public sealed class MachineProofController : ControllerBase
 
     [HttpPost("api/agent/machines/{machineId:guid}/telemetry-proofs/{proofId:guid}/confirm")]
     [EnableRateLimiting("machine-proof")]
-    public async Task<IActionResult> Confirm(Guid machineId, Guid proofId, CancellationToken ct)
+    public async Task<IActionResult> Confirm(Guid machineId, Guid proofId,
+        [FromBody(EmptyBodyBehavior = Microsoft.AspNetCore.Mvc.ModelBinding.EmptyBodyBehavior.Allow)] ConfirmMachineProofRequest? body,
+        CancellationToken ct)
     {
         var agentKey = Request.Headers["X-Kairon-Agent-Key"].ToString();
-        return await _bindings.ConfirmProofAsync(proofId, machineId, agentKey, ct)
+        // Older Agents send no body; the process is then simply unknown.
+        return await _bindings.ConfirmProofAsync(proofId, machineId, agentKey, ct, body?.ProcessId)
             ? Ok(new { confirmed = true })
             : Unauthorized(new { error = "Agent proof rejected or expired." });
     }
+}
+
+public sealed class ConfirmMachineProofRequest
+{
+    /// <summary>Owner of the loopback connection that carried the proof, from the Agent's OS TCP table.</summary>
+    [Range(1, int.MaxValue)] public int? ProcessId { get; set; }
 }
 
 public sealed class CreateMachineProofRequest

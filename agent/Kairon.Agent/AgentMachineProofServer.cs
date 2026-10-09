@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Net;
+using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
@@ -78,8 +79,14 @@ public sealed class AgentMachineProofServer : BackgroundService
                 }
                 else if (matchingBackend && Guid.TryParse(input!.ProofId, out var proofId) && proofId != Guid.Empty)
                 {
+                    // Which process sent this proof, according to Windows - not according to the
+                    // caller. Lets KAIRON restart exactly that application process when approved.
+                    var processId = LoopbackConnectionOwner.Find(client.Client.RemoteEndPoint as IPEndPoint, _port);
                     using var request = new HttpRequestMessage(HttpMethod.Post,
-                        $"api/agent/machines/{_registration.MachineId}/telemetry-proofs/{proofId}/confirm");
+                        $"api/agent/machines/{_registration.MachineId}/telemetry-proofs/{proofId}/confirm")
+                    {
+                        Content = JsonContent.Create(new { processId })
+                    };
                     request.Headers.TryAddWithoutValidation("X-Kairon-Agent-Key", _options.AgentKey);
                     using var response = await _http.SendAsync(request, deadline.Token);
                     accepted = response.IsSuccessStatusCode;

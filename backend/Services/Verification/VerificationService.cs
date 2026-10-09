@@ -24,6 +24,11 @@ public interface IVerificationService
 
 public class VerificationService : IVerificationService
 {
+    /// <summary>Bounded wait for a restarted application process to be reported (UserAgent samples
+    /// every ~10 s and reports a process from its second sample). Settable for tests.</summary>
+    public static int AppProcessRescopeAttempts { get; set; } = 31;
+    public static TimeSpan AppProcessRescopeDelay { get; set; } = TimeSpan.FromSeconds(1);
+
     private readonly AppDbContext _db;
     private readonly IAuditService _audit;
     private readonly IRemediationToolRegistryAccessor _tools;
@@ -73,6 +78,10 @@ public class VerificationService : IVerificationService
         var parameters = SreJson.Deserialize(action.ParametersJson, new Dictionary<string, string>());
         var bound = parameters.GetValueOrDefault("targetFingerprint");
         var machineId = scoped is null ? null : await scoped.TargetMachineIdAsync(incident, cancellationToken);
+        // The restarted process may not resolve yet (see the re-scope below); its telemetry is still
+        // sampled on the incident's own machine, which is what the binding requires anyway.
+        if (machineId is null && scoped is not null && action.ActionType == ServiceToolNames.RestartApplication)
+            machineId = IncidentMachineScope.GetMachineId(incident);
         var scopeValid = scoped is null || (machineId.HasValue && bound is not null && await scoped.TargetFingerprintAsync(incident, cancellationToken) == bound);
         var executedAt = action.CompletedAt ?? action.StartedAt ?? DateTime.UtcNow;
 
@@ -89,6 +98,25 @@ public class VerificationService : IVerificationService
         // has fully recovered. What matters is the state it settled at.
         var settleFrom = executedAt.AddSeconds(_options.SettleSeconds);
         var after = await WaitForSettledTelemetryAsync(incident, settleFrom, machineId, cancellationToken);
+
+        // A restarted application process is a new process: until the UserAgent has reported it
+        // (two samples), its target cannot resolve. Give the same approval binding a bounded second
+        // chance after the settle period rather than calling a working restart inconclusive. The
+        // binding, the desired-state probe and the metric comparison below are all still required.
+        if (scoped is not null && !scopeValid && action.ActionType == ServiceToolNames.RestartApplication && bound is not null)
+        {
+            var incidentMachine = IncidentMachineScope.GetMachineId(incident);
+            for (var attempt = 0; attempt < AppProcessRescopeAttempts && !scopeValid; attempt++)
+            {
+                if (attempt > 0) await Task.Delay(AppProcessRescopeDelay, cancellationToken);
+                scopeValid = incidentMachine.HasValue && await scoped.TargetFingerprintAsync(incident, cancellationToken) == bound;
+            }
+            if (scopeValid && machineId is null)
+            {
+                machineId = incidentMachine;
+                after = await WaitForSettledTelemetryAsync(incident, settleFrom, machineId, cancellationToken);
+            }
+        }
 
         if (scoped is not null && scopeValid) {
             try {

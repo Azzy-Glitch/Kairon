@@ -2,6 +2,7 @@ using System.Data;
 using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Kairon.Backend.Configuration;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Models.Platform;
@@ -17,7 +18,7 @@ public interface IMachineTelemetryBindingService
 {
     Task<Guid?> CreateProofAsync(Guid projectId, string environment, string service,
         string bodySha256, string sdkKey, CancellationToken ct);
-    Task<bool> ConfirmProofAsync(Guid proofId, Guid machineId, string agentKey, CancellationToken ct);
+    Task<bool> ConfirmProofAsync(Guid proofId, Guid machineId, string agentKey, CancellationToken ct, int? processId = null);
     Task<MachineTelemetryScope> ResolveAsync(HttpRequest request, Guid projectId, string environment,
         string? service, CancellationToken ct);
 }
@@ -64,7 +65,7 @@ public sealed class MachineTelemetryBindingService : IMachineTelemetryBindingSer
         return challenge.Id;
     }
 
-    public async Task<bool> ConfirmProofAsync(Guid proofId, Guid machineId, string agentKey, CancellationToken ct)
+    public async Task<bool> ConfirmProofAsync(Guid proofId, Guid machineId, string agentKey, CancellationToken ct, int? processId = null)
     {
         var now = DateTime.UtcNow;
         var machine = await _agents.AuthenticateMachineAsync(machineId, agentKey, ct);
@@ -84,6 +85,7 @@ public sealed class MachineTelemetryBindingService : IMachineTelemetryBindingSer
             challenge.MachineId = machineId;
             challenge.AgentCredentialHash = machine.AgentCredentialHash;
             challenge.ConfirmedAt = now;
+            challenge.ProcessId = processId is > 0 ? processId : null;
             challenge.RowVersion = Guid.NewGuid();
             await _db.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
@@ -149,16 +151,20 @@ public sealed class MachineTelemetryBindingService : IMachineTelemetryBindingSer
             challenge.ConsumedAt = now;
             challenge.RowVersion = Guid.NewGuid();
             if (binding is null)
-                _db.SdkMachineBindings.Add(new SdkMachineBinding
+            {
+                binding = new SdkMachineBinding
                 {
                     CredentialId = credential.Id, ProjectId = projectId, MachineId = machine.Id,
                     AgentCredentialHash = machine.AgentCredentialHash, LastConfirmedAt = now
-                });
+                };
+                _db.SdkMachineBindings.Add(binding);
+            }
             else
             {
                 binding.AgentCredentialHash = machine.AgentCredentialHash;
                 binding.LastConfirmedAt = now;
             }
+            RecordProcess(binding, challenge.ProcessId, body);
             await _db.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
 
@@ -171,6 +177,76 @@ public sealed class MachineTelemetryBindingService : IMachineTelemetryBindingSer
         catch (DbUpdateConcurrencyException) { return new MachineTelemetryScope(true, null); }
         catch (DbUpdateException) { return new MachineTelemetryScope(true, null); }
         catch (DbException) { return new MachineTelemetryScope(true, null); }
+    }
+
+    /// <summary>
+    /// The Agent-observed process id is the identity; the SDK's own report in this same body (its
+    /// process id, working directory and executable) is accepted only when it names that very
+    /// process. A different process, or a body without the report, never inherits another
+    /// process's folder - the stale values are cleared instead.
+    /// </summary>
+    public static void RecordProcess(SdkMachineBinding binding, int? agentObservedProcessId, byte[] body)
+    {
+        var changed = binding.ProcessId != agentObservedProcessId;
+        binding.ProcessId = agentObservedProcessId;
+        if (agentObservedProcessId is not int pid)
+        {
+            binding.ProcessWorkingDirectory = binding.ProcessExecutable = null;
+            return;
+        }
+        var (directory, executable) = SdkReportedProcess(body, pid);
+        if (directory is not null)
+        {
+            binding.ProcessWorkingDirectory = directory;
+            binding.ProcessExecutable = executable;
+        }
+        else if (changed)
+        {
+            binding.ProcessWorkingDirectory = binding.ProcessExecutable = null;
+        }
+    }
+
+    private static (string? Directory, string? Executable) SdkReportedProcess(byte[] body, int pid)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (!TryProperty(document.RootElement, "events", out var events) || events.ValueKind != JsonValueKind.Array)
+                return (null, null);
+            foreach (var item in events.EnumerateArray())
+            {
+                if (!TryProperty(item, "processId", out var id) || id.ValueKind != JsonValueKind.Number ||
+                    !id.TryGetInt32(out var reported) || reported != pid ||
+                    !TryProperty(item, "metadata", out var metadata) || metadata.ValueKind != JsonValueKind.Object)
+                    continue;
+                var directory = PathValue(metadata, "process.cwd");
+                if (directory is null) continue;
+                return (directory, PathValue(metadata, "process.executable"));
+            }
+        }
+        catch (JsonException) { }
+        return (null, null);
+    }
+
+    private static string? PathValue(JsonElement metadata, string name)
+    {
+        if (!TryProperty(metadata, name, out var value) || value.ValueKind != JsonValueKind.String) return null;
+        var text = value.GetString();
+        return !string.IsNullOrWhiteSpace(text) && text.Length <= 1024 && Path.IsPathFullyQualified(text) &&
+               !text.Any(char.IsControl) ? text : null;
+    }
+
+    private static bool TryProperty(JsonElement element, string name, out JsonElement value)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+            foreach (var property in element.EnumerateObject())
+                if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = property.Value;
+                    return true;
+                }
+        value = default;
+        return false;
     }
 
     private bool HeartbeatFresh(Machine machine, DateTime now) =>

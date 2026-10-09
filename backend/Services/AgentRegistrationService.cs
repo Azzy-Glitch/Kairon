@@ -19,6 +19,7 @@ public interface IAgentRegistrationService
         CancellationToken cancellationToken);
     Task<bool> RecordUserSessionHeartbeatAsync(Guid machineId, string agentKey, UserSessionHeartbeatDto heartbeat,
         CancellationToken cancellationToken);
+    Task<bool> AuthenticateUserAgentAsync(Guid machineId, string userAgentKey, CancellationToken cancellationToken);
 }
 
 public sealed class AgentRegistrationService : IAgentRegistrationService
@@ -202,6 +203,14 @@ public sealed class AgentRegistrationService : IAgentRegistrationService
 
         await _db.SaveChangesAsync(cancellationToken);
         return true;
+    }
+
+    /// <summary>The UserAgent's scoped key for this machine - never the Agent's machine key.</summary>
+    public async Task<bool> AuthenticateUserAgentAsync(Guid machineId, string userAgentKey, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(userAgentKey)) return false;
+        var machine = await _db.Machines.AsNoTracking().SingleOrDefaultAsync(x => x.Id == machineId, cancellationToken);
+        return machine is not null && FixedEquals(DecodeCredentials(machine.AgentCredentialHash).UserAgentHash, Hash(userAgentKey));
     }
 
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));

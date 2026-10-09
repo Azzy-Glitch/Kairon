@@ -19,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 12;
+    public const int CurrentVersion = 13;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -300,6 +300,38 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                 version = 12;
             }
 
+            // Version 13: application-process remediation. Targets gain a Kind (existing rows stay
+            // Windows-service targets); proofs and bindings record the Agent-observed process id;
+            // ProcessRestartCommands carries approved restarts to the UserAgent.
+            if (version == 12) {
+                var targetColumns = await ColumnsAsync(connection, transaction, "RemediationTargets", cancellationToken);
+                if (!targetColumns.Contains("Kind"))
+                    await ExecuteAsync(connection, transaction,
+                        "ALTER TABLE \"RemediationTargets\" ADD COLUMN \"Kind\" TEXT NOT NULL DEFAULT 'WindowsService';", cancellationToken);
+                var challengeColumns = await ColumnsAsync(connection, transaction, "SdkMachineProofChallenges", cancellationToken);
+                if (!challengeColumns.Contains("ProcessId"))
+                    await ExecuteAsync(connection, transaction,
+                        "ALTER TABLE \"SdkMachineProofChallenges\" ADD COLUMN \"ProcessId\" INTEGER NULL;", cancellationToken);
+                foreach (var (column, type) in new[] { ("ProcessId", "INTEGER"), ("ProcessWorkingDirectory", "TEXT"), ("ProcessExecutable", "TEXT") }) {
+                    var bindingColumns = await ColumnsAsync(connection, transaction, "SdkMachineBindings", cancellationToken);
+                    if (!bindingColumns.Contains(column))
+                        await ExecuteAsync(connection, transaction,
+                            $"ALTER TABLE \"SdkMachineBindings\" ADD COLUMN \"{column}\" {type} NULL;", cancellationToken);
+                }
+                await ExecuteAsync(connection, transaction, CreateProcessRestartCommandsTableSql, cancellationToken);
+                await ExecuteAsync(connection, transaction, """
+                    CREATE INDEX IF NOT EXISTS "IX_ProcessRestartCommands_MachineId_SessionId_Status"
+                    ON "ProcessRestartCommands" ("MachineId", "SessionId", "Status");
+                    """, cancellationToken);
+                await ExecuteAsync(connection, transaction, """
+                    CREATE INDEX IF NOT EXISTS "IX_ProcessRestartCommands_IncidentId_ActionKey"
+                    ON "ProcessRestartCommands" ("IncidentId", "ActionKey");
+                    """, cancellationToken);
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 13;", cancellationToken);
+                version = 13;
+                _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: application-process remediation", version);
+            }
+
             if (version != CurrentVersion)
                 throw new InvalidOperationException($"No SQLite migration path exists from version {version}.");
 
@@ -326,9 +358,33 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
     private IEnumerable<IEntityType> EntitiesAsOf(int version) => version switch
     {
         1 => _db.Model.GetEntityTypes().Where(e => e.ClrType != typeof(AiProviderConfig) && e.ClrType != typeof(RemediationTarget) &&
-            e.ClrType != typeof(SdkMachineBinding) && e.ClrType != typeof(SdkMachineProofChallenge)),
+            e.ClrType != typeof(SdkMachineBinding) && e.ClrType != typeof(SdkMachineProofChallenge) &&
+            e.ClrType != typeof(ProcessRestartCommand)),
         _ => _db.Model.GetEntityTypes(),
     };
+
+    private const string CreateProcessRestartCommandsTableSql = """
+        CREATE TABLE IF NOT EXISTS "ProcessRestartCommands" (
+            "Id" TEXT NOT NULL CONSTRAINT "PK_ProcessRestartCommands" PRIMARY KEY,
+            "IncidentId" TEXT NOT NULL,
+            "ActionKey" TEXT NOT NULL,
+            "ProjectId" TEXT NOT NULL,
+            "MachineId" TEXT NOT NULL,
+            "SessionId" INTEGER NOT NULL,
+            "ProcessId" INTEGER NOT NULL,
+            "ProcessStartedAt" TEXT NOT NULL,
+            "Executable" TEXT NOT NULL,
+            "WorkingDirectory" TEXT NOT NULL,
+            "Status" TEXT NOT NULL,
+            "CreatedAt" TEXT NOT NULL,
+            "ExpiresAt" TEXT NOT NULL,
+            "ClaimedAt" TEXT NULL,
+            "CompletedAt" TEXT NULL,
+            "NewProcessId" INTEGER NULL,
+            "Error" TEXT NULL,
+            "RowVersion" TEXT NOT NULL
+        );
+        """;
 
     private const string CreateAiProviderConfigsTableSql = """
         CREATE TABLE IF NOT EXISTS "AiProviderConfigs" (
