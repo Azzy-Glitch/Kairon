@@ -1502,6 +1502,8 @@
   border-radius: var(--radius-button);
 }
 
+.incident-close { margin-top: 16px; }
+
 /* --- Connect an App: automatic recovery offer ---------------------------- */
 
 .sdk-restart-offer {

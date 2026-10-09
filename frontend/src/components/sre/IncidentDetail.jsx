@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { SeverityBadge, StatusBadge } from './Badges';
 import { AiInvestigationPanel, PredictionPanel, RecommendationPanel } from './AiPanels';
 import ApprovalPanel from './ApprovalPanel';
+import CloseIncident from './CloseIncident';
 import { RemediationProgress, VerificationPanel } from './RemediationProgress';
 import { IncidentTimeline, LifecycleRail } from './IncidentTimeline';
 import { AsyncView } from './StateViews';
@@ -236,6 +237,14 @@ function DetailBody({ incident, actions }) {
           )}
 
           <VerificationPanel verification={verification} />
+
+          <CloseIncident
+            key={`close-${incident.id}`}
+            incident={incident}
+            busy={actions.busyActionId === 'cancel'}
+            error={actions.busyActionId === null ? actions.actionError : null}
+            onClose={(operator, reason) => actions.cancel(incident.id, operator, reason)}
+          />
         </div>
 
         <aside className="incident-detail-side">
