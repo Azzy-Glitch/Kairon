@@ -6,7 +6,9 @@ using Microsoft.Extensions.Options;
 namespace Kairon.Backend.Services;
 
 public sealed record DataExportResult(bool Created, string? FullPath, string? FileName, string? Error);
-public sealed record DataDeletionResult(int DeletedRecords, int DeletedBackups);
+/// <param name="AiProviderCleared">False when the running AI service could not be told to forget its
+/// provider key, so it may keep using it until KAIRON restarts.</param>
+public sealed record DataDeletionResult(int DeletedRecords, int DeletedBackups, bool AiProviderCleared = true);
 
 public interface IDataManagementService
 {
@@ -25,17 +27,20 @@ public sealed class DataManagementService : IDataManagementService
     private readonly ISqliteBackupService _backups;
     private readonly PersistenceOptions _options;
     private readonly ILogger<DataManagementService> _logger;
+    private readonly IAiMicroservice? _ai;
 
     public DataManagementService(
         AppDbContext db,
         ISqliteBackupService backups,
         IOptions<PersistenceOptions> options,
-        ILogger<DataManagementService> logger)
+        ILogger<DataManagementService> logger,
+        IAiMicroservice? ai = null)
     {
         _db = db;
         _backups = backups;
         _options = options.Value;
         _logger = logger;
+        _ai = ai;
     }
 
     public async Task<DataExportResult> CreateExportAsync(CancellationToken cancellationToken = default)
@@ -92,6 +97,11 @@ public sealed class DataManagementService : IDataManagementService
 
         var deletedBackups = DeleteManagedBackups();
 
+        // The saved AI configuration is gone, but the running AI service still holds the provider
+        // key it was given and would keep reporting - and answering - as live. Clear it the same way
+        // removing the AI configuration does, so "delete all data" really leaves nothing usable behind.
+        var aiCleared = await ClearAiProviderAsync(cancellationToken);
+
         if (_db.Database.IsSqlite())
         {
             await _db.Database.ExecuteSqlRawAsync("PRAGMA wal_checkpoint(TRUNCATE);", cancellationToken);
@@ -101,7 +111,24 @@ public sealed class DataManagementService : IDataManagementService
         _logger.LogWarning(
             "Operator deleted all Kairon database data records={DeletedRecords} backups={DeletedBackups}",
             deleted, deletedBackups);
-        return new(deleted, deletedBackups);
+        return new(deleted, deletedBackups, aiCleared);
+    }
+
+    private async Task<bool> ClearAiProviderAsync(CancellationToken cancellationToken)
+    {
+        if (_ai is null) return true;
+        try
+        {
+            await _ai.ClearProviderAsync(cancellationToken);
+            return true;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            // The data is deleted either way. The supervised AI service starts with no provider
+            // credential, so restarting KAIRON finishes the job.
+            _logger.LogWarning("Data deleted, but the AI service could not be told to forget its provider: {Error}", ex.Message);
+            return false;
+        }
     }
 
     private int DeleteManagedBackups()

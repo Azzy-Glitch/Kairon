@@ -542,7 +542,8 @@ function DataManagementSection({ databaseAvailable }) {
       {deletedResult && (
         <p className="settings-data-deleted" role="status">
           Deleted {deletedResult.deletedRecords} database records and {deletedResult.deletedBackups} stored backups.
-          Restart KAIRON to begin with a completely fresh session.
+          The AI configuration was removed too.
+          {deletedResult.warning ? ` ${deletedResult.warning}` : ''} Restart KAIRON to begin with a completely fresh session.
         </p>
       )}
     </section>

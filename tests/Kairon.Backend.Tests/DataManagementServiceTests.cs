@@ -67,11 +67,39 @@ public sealed class DataManagementServiceTests : IDisposable
         Assert.StartsWith("kairon-data-", result.FileName);
     }
 
-    private DataManagementService Service() => new(
+    [Fact]
+    public async Task DeleteAllAlsoMakesTheRunningAiServiceForgetItsProvider()
+    {
+        _h.Db.AiProviderConfigs.Add(new AiProviderConfig { Provider = "groq", Model = "m" });
+        _h.Db.SaveChanges();
+        var ai = new ScriptableAiMicroservice();
+
+        var result = await Service(ai).DeleteAllAsync();
+
+        Assert.Empty(_h.Db.AiProviderConfigs);
+        Assert.Equal(1, ai.ClearCalls);
+        Assert.True(result.AiProviderCleared);
+    }
+
+    [Fact]
+    public async Task DeleteAllStillSucceedsWhenTheAiServiceDoesNotRespond()
+    {
+        _h.Db.Projects.Add(new Project { Id = _h.ProjectId, Name = "Order API", Slug = "order-api" });
+        _h.Db.SaveChanges();
+        var ai = new ScriptableAiMicroservice { ThrowOnClear = new HttpRequestException("connection refused") };
+
+        var result = await Service(ai).DeleteAllAsync();
+
+        Assert.Empty(_h.Db.Projects);
+        Assert.False(result.AiProviderCleared);
+    }
+
+    private DataManagementService Service(IAiMicroservice? ai = null) => new(
         _h.Db,
         new StubBackupService(new BackupResult(false, null, null)),
         TestHarness.Opt(Options),
-        NullLogger<DataManagementService>.Instance);
+        NullLogger<DataManagementService>.Instance,
+        ai);
 
     public void Dispose()
     {

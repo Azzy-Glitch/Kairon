@@ -45,7 +45,11 @@ public sealed class DataManagementController : ControllerBase
         {
             result.DeletedRecords,
             result.DeletedBackups,
-            message = "All Kairon database data was deleted. The empty database schema remains ready for use."
+            result.AiProviderCleared,
+            message = "All Kairon database data was deleted. The empty database schema remains ready for use.",
+            warning = result.AiProviderCleared
+                ? null
+                : "The AI service did not respond, so it may keep using the old AI key until KAIRON restarts."
         });
     }
 }
