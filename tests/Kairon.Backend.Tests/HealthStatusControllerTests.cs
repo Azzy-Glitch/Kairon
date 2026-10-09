@@ -107,6 +107,8 @@ public sealed class HealthStatusControllerTests : IDisposable
             throw new NotImplementedException();
         public Task<AiConfigureResponseDto> ConfigureProviderAsync(AiConfigureRequestDto request, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
+        public Task<AiConfigureResponseDto> ClearProviderAsync(CancellationToken cancellationToken = default) =>
+            throw new NotImplementedException();
         public Task<AiTestConnectionResponseDto> TestProviderConnectionAsync(AiConfigureRequestDto request, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
         public Task<AiModelsResponseDto> ListProviderModelsAsync(AiConfigureRequestDto request, CancellationToken cancellationToken = default) =>

@@ -176,7 +176,10 @@ Every text field passes through the backend redaction first. Redaction masks:
 - **Logs:** `%ProgramData%\Kairon\backend\logs`. Service state: `Get-Service Kairon.Backend`.
 - **One executor per target.** Coordination between multiple backends is not implemented.
 - **AI provider:** configure it in *Settings → AI configuration*. The key is encrypted with the
-  backend service's data-protection key ring and never returned to the UI.
+  backend service's data-protection key ring and never returned to the UI. It lives in the data
+  root, so it survives an uninstall/reinstall like the rest of the data. *Remove AI configuration*
+  (same panel, operator-only, audited) deletes just the provider, model, endpoint and key, and the
+  running AI service forgets the key immediately; incidents, projects and other settings are kept.
 - **Upgrading from a desktop-hosted (pre-service) install:** the installer copies the existing
   `%LOCALAPPDATA%\Kairon` database into the service data root (the original is kept). Secrets that
   were encrypted for the user account cannot be decrypted by the service account, so **re-enter the

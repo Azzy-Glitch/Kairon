@@ -198,6 +198,24 @@ async def configure(request: ConfigureRequest) -> dict:
     return {"applied": True, **CONFIG.public_dict()}
 
 
+@app.post("/configure/clear")
+async def configure_clear() -> dict:
+    """Forgets every provider credential and endpoint override this process holds, immediately.
+
+    The backend calls this after an operator removes the AI configuration, so the key stops being
+    usable at once rather than lingering in memory until a restart. The provider selection is kept
+    only as a name; with no credential it resolves to UnconfiguredProvider, so the service reports
+    "unconfigured" and fails clearly instead of answering - it never falls back to mock output."""
+    global CONFIG, SERVICE
+
+    CONFIG = dataclasses.replace(CONFIG, qwen_api_key="", gemini_api_key="", groq_api_key="", endpoint="")
+    SERVICE.config = CONFIG
+    SERVICE.provider = create_provider(CONFIG)
+
+    logger.info("AI provider credentials cleared: provider=%s configured=%s", CONFIG.provider, CONFIG.is_configured)
+    return {"applied": True, **CONFIG.public_dict()}
+
+
 @app.post("/configure/test")
 async def configure_test(request: ConfigureRequest) -> dict:
     """Validates a provider/key/model combination with one real call, without touching the live

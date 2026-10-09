@@ -139,6 +139,8 @@ function AiConfigurationSection() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -252,7 +254,34 @@ function AiConfigurationSection() {
     }
   };
 
+  const handleRemove = async () => {
+    setRemoving(true);
+    try {
+      const result = await aiConfigApi.removeConfig();
+      setSaved({ provider: '', model: '', endpoint: '', hasApiKey: false, updatedAt: null });
+      setProvider('groq');
+      setApiKey('');
+      setModelChoice(AUTO_MODEL);
+      setCustomModel('');
+      setDiscoveredModels([]);
+      setEndpoint('');
+      setTestResult(null);
+      setConfirmingRemove(false);
+      toast.addToast(
+        result?.applied === false
+          ? result.warning || 'AI configuration removed. The AI service did not respond yet.'
+          : 'AI configuration removed',
+        result?.applied === false ? 'info' : 'success'
+      );
+    } catch (err) {
+      toast.addToast(err?.message || 'Could not remove AI configuration', 'error');
+    } finally {
+      setRemoving(false);
+    }
+  };
+
   const providerChanged = saved.provider && saved.provider !== provider;
+  const hasSavedConfig = loaded && (saved.hasApiKey || Boolean(saved.provider));
 
   return (
     <section className="settings-ai-config">
@@ -356,12 +385,18 @@ function AiConfigurationSection() {
       </div>
 
       <div className="settings-ai-config-actions">
-        <Button variant="secondary" onClick={handleTest} disabled={testing || saving}>
+        <Button variant="secondary" onClick={handleTest} disabled={testing || saving || removing}>
           {testing ? 'Testing...' : 'Test Connection'}
         </Button>
-        <Button variant="primary" onClick={handleSave} disabled={saving || testing}>
+        <Button variant="primary" onClick={handleSave} disabled={saving || testing || removing}>
           {saving ? 'Saving...' : 'Save Configuration'}
         </Button>
+        {hasSavedConfig && !confirmingRemove && (
+          <Button variant="danger" onClick={() => setConfirmingRemove(true)} disabled={saving || testing || removing}>
+            <IconTrash className="w-4 h-4 mr-1" />
+            Remove AI configuration
+          </Button>
+        )}
         {loaded && saved.hasApiKey && (
           <span className="settings-ai-config-saved-note">
             Currently configured: {saved.provider}{saved.model ? ` · ${saved.model}` : ' · Auto'}
@@ -369,6 +404,24 @@ function AiConfigurationSection() {
           </span>
         )}
       </div>
+
+      {hasSavedConfig && confirmingRemove && (
+        <div className="settings-delete-confirmation" role="group" aria-label="Confirm AI configuration removal">
+          <p className="panel-pending-text">
+            This removes the saved provider, model, endpoint and API key, and the AI service stops
+            using the key immediately. Incidents, projects and every other setting are kept. AI
+            investigations will not run until a new key is saved.
+          </p>
+          <div className="settings-delete-confirmation-actions">
+            <Button variant="ghost" onClick={() => setConfirmingRemove(false)} disabled={removing}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={handleRemove} disabled={removing}>
+              {removing ? 'Removing...' : 'Remove'}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {testResult && (
         <div className="settings-ai-config-result">

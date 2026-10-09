@@ -1,6 +1,7 @@
 using Kairon.Backend.DTOs.Sre;
 using Kairon.Backend.Infrastructure;
 using Kairon.Backend.Services;
+using Kairon.Backend.Services.Audit;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Kairon.Backend.Controllers;
@@ -25,11 +26,13 @@ public sealed class AiConfigController : ControllerBase
 
     private readonly IAiProviderConfigService _config;
     private readonly IAiMicroservice _ai;
+    private readonly IPlatformAuditService _audit;
 
-    public AiConfigController(IAiProviderConfigService config, IAiMicroservice ai)
+    public AiConfigController(IAiProviderConfigService config, IAiMicroservice ai, IPlatformAuditService audit)
     {
         _config = config;
         _ai = ai;
+        _audit = audit;
     }
 
     [HttpGet]
@@ -89,6 +92,50 @@ public sealed class AiConfigController : ControllerBase
 
         return Ok(new { r.provider, r.model, r.endpoint, r.hasApiKey, r.updatedAt, applied = true });
     }
+
+    /// <summary>
+    /// Removes the AI configuration - provider, model, endpoint and the encrypted key - and nothing
+    /// else: incidents, projects and every other setting stay. The stored row goes first, so the
+    /// startup sync can never re-apply the key; then the running AI service is told to forget the
+    /// key it holds in memory, so it stops being usable now rather than at the next restart.
+    /// </summary>
+    [HttpDelete]
+    [RequiresOperator]
+    public async Task<IActionResult> Remove(CancellationToken cancellationToken)
+    {
+        var existing = await _config.GetAsync(cancellationToken);
+        if (existing.Provider.Length > 0 || existing.HasApiKey)
+        {
+            // Committed by DeleteAsync's save, together with the removal itself. Never the key.
+            _audit.Record("ai-config.removed", Actor(), "ai-config", "ai-provider",
+                data: new { existing.Provider, existing.Model, HadApiKey = existing.HasApiKey });
+        }
+
+        var removed = await _config.DeleteAsync(cancellationToken);
+
+        try
+        {
+            await _ai.ClearProviderAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+        {
+            // Removed from storage either way; only the live process could not be reached. The
+            // supervised AI service starts with no provider credential, so a restart cannot
+            // bring the key back.
+            return Ok(new
+            {
+                removed,
+                applied = false,
+                warning = "Removed. The AI service did not respond, so it may keep using the old key until it restarts.",
+            });
+        }
+
+        return Ok(new { removed, applied = true });
+    }
+
+    private string Actor() => Request.Headers["X-Kairon-Operator"].ToString() is { Length: > 0 } value
+        ? value
+        : "local-operator";
 
     [HttpPost("test")]
     [RequiresOperator]

@@ -475,6 +475,9 @@ public class FakeAiService : IAiMicroservice
             Applied = true, Provider = request.Provider, EffectiveProvider = request.Provider, Model = request.Model ?? ""
         });
 
+    public Task<Kairon.Backend.DTOs.Sre.AiConfigureResponseDto> ClearProviderAsync(CancellationToken ct = default) =>
+        Task.FromResult(new Kairon.Backend.DTOs.Sre.AiConfigureResponseDto { Applied = true });
+
     public Task<Kairon.Backend.DTOs.Sre.AiTestConnectionResponseDto> TestProviderConnectionAsync(
         Kairon.Backend.DTOs.Sre.AiConfigureRequestDto request, CancellationToken cancellationToken = default)
         => Task.FromResult(new Kairon.Backend.DTOs.Sre.AiTestConnectionResponseDto

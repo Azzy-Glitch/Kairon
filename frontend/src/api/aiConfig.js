@@ -21,6 +21,13 @@ export function saveConfig({ provider, apiKey, model, endpoint }) {
   return request(client.post('/v1/ai-config', { provider, apiKey, model, endpoint }));
 }
 
+/** Removes the saved provider, model, endpoint and API key - nothing else (incidents, projects and
+ * every other setting stay) - and makes the running AI service forget the key at once.
+ * Resolves to { removed, applied, warning? }; never includes the key. */
+export function removeConfig() {
+  return request(client.delete('/v1/ai-config'));
+}
+
 /** apiKey/endpoint are optional - omit either to test the already-saved value for this provider. */
 export function testConnection({ provider, apiKey, model, endpoint }) {
   return request(client.post('/v1/ai-config/test', { provider, apiKey, model, endpoint }));

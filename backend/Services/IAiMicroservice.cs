@@ -41,6 +41,10 @@ public interface IAiMicroservice
     Task<AiConfigureResponseDto> ConfigureProviderAsync(
         AiConfigureRequestDto request, CancellationToken cancellationToken = default);
 
+    /// <summary>Makes the running AI service forget every provider credential it holds, at once.
+    /// Called only after the stored configuration has been removed, so nothing re-applies it.</summary>
+    Task<AiConfigureResponseDto> ClearProviderAsync(CancellationToken cancellationToken = default);
+
     /// <summary>Validates a provider/key/model combination with one real call, without touching
     /// whatever is currently configured and live.</summary>
     Task<AiTestConnectionResponseDto> TestProviderConnectionAsync(

@@ -21,7 +21,8 @@ vi.mock('../../api', () => ({
     getConfig: vi.fn(),
     saveConfig: vi.fn(),
     testConnection: vi.fn(),
-    listModels: vi.fn()
+    listModels: vi.fn(),
+    removeConfig: vi.fn()
   },
   databaseConfigApi: {
     getConfig: vi.fn().mockResolvedValue({ activeProvider: 'SQLite', selected: { provider: 'SQLite' }, requiresRestart: false }),
@@ -53,6 +54,7 @@ describe('SettingsPage > AI configuration', () => {
     aiConfigApi.saveConfig.mockReset();
     aiConfigApi.testConnection.mockReset();
     aiConfigApi.listModels.mockReset();
+    aiConfigApi.removeConfig.mockReset();
     dataManagementApi.downloadData.mockReset();
     dataManagementApi.deleteAllData.mockReset();
   });
@@ -74,6 +76,61 @@ describe('SettingsPage > AI configuration', () => {
 
     await waitFor(() => expect(screen.getByLabelText(/provider/i)).toHaveValue('gemini'));
     expect(screen.getByText(/currently configured: gemini/i)).toBeInTheDocument();
+  });
+
+  it('offers no Remove action when nothing is configured', async () => {
+    render(<SettingsPage />);
+
+    await waitFor(() => expect(aiConfigApi.getConfig).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: /remove ai configuration/i })).not.toBeInTheDocument();
+  });
+
+  it('removes the saved configuration only after an explicit confirmation, and resets the form', async () => {
+    const user = userEvent.setup();
+    aiConfigApi.getConfig.mockResolvedValue({
+      provider: 'gemini', model: 'gemini-2.5-flash-lite', endpoint: '', hasApiKey: true, updatedAt: new Date().toISOString()
+    });
+    aiConfigApi.removeConfig.mockResolvedValue({ removed: true, applied: true });
+
+    render(<SettingsPage />);
+    await user.click(await screen.findByRole('button', { name: /remove ai configuration/i }));
+
+    // The first click only asks; nothing is removed yet, and the consequences are spelled out.
+    expect(aiConfigApi.removeConfig).not.toHaveBeenCalled();
+    const confirmation = screen.getByRole('group', { name: /confirm ai configuration removal/i });
+    expect(confirmation).toHaveTextContent(/incidents, projects and every other setting are kept/i);
+
+    await user.click(screen.getByRole('button', { name: /^remove$/i }));
+
+    await waitFor(() => expect(aiConfigApi.removeConfig).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText(/currently configured/i)).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /remove ai configuration/i })).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/provider/i)).toHaveValue('groq');
+  });
+
+  it('cancelling the confirmation removes nothing', async () => {
+    const user = userEvent.setup();
+    aiConfigApi.getConfig.mockResolvedValue({ provider: 'groq', model: '', hasApiKey: true, updatedAt: new Date().toISOString() });
+
+    render(<SettingsPage />);
+    await user.click(await screen.findByRole('button', { name: /remove ai configuration/i }));
+    await user.click(screen.getByRole('button', { name: /cancel/i }));
+
+    expect(aiConfigApi.removeConfig).not.toHaveBeenCalled();
+    expect(screen.getByText(/currently configured: groq/i)).toBeInTheDocument();
+  });
+
+  it('a failed removal keeps showing the saved configuration', async () => {
+    const user = userEvent.setup();
+    aiConfigApi.getConfig.mockResolvedValue({ provider: 'groq', model: '', hasApiKey: true, updatedAt: new Date().toISOString() });
+    aiConfigApi.removeConfig.mockRejectedValue(new Error('An operator key is required for this action.'));
+
+    render(<SettingsPage />);
+    await user.click(await screen.findByRole('button', { name: /remove ai configuration/i }));
+    await user.click(screen.getByRole('button', { name: /^remove$/i }));
+
+    await waitFor(() => expect(aiConfigApi.removeConfig).toHaveBeenCalled());
+    expect(screen.getByText(/currently configured: groq/i)).toBeInTheDocument();
   });
 
   it('the API key field is masked', () => {

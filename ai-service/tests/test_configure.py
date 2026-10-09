@@ -475,3 +475,46 @@ class TestHealthNeverMasqueradesAsConfigured:
         client.post("/configure", json={"provider": "mock"})
 
         assert client.get("/health").json()["mode"] == "mock"
+
+
+class TestConfigureClear:
+    """POST /configure/clear: an operator removed the AI configuration, so the key must stop being
+    usable now - not after a restart - and the service must say so instead of answering."""
+
+    def test_clear_requires_the_shared_secret(self):
+        unauthenticated = TestClient(main.app)
+        assert unauthenticated.post("/configure/clear").status_code == 401
+
+    def test_clear_forgets_the_key_and_reports_unconfigured(self, client):
+        client.post("/configure", json={"provider": "groq", "api_key": "gsk_test_key_value"})
+        assert client.get("/health").json()["mode"] == "live"
+
+        response = client.post("/configure/clear")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["applied"] is True
+        assert "gsk_test_key_value" not in response.text
+        assert main.CONFIG.groq_api_key == ""
+        assert main.CONFIG.endpoint == ""
+        assert client.get("/health").json()["mode"] == "unconfigured"
+
+    def test_every_provider_key_is_cleared_not_only_the_selected_one(self, client):
+        main.CONFIG = dataclasses.replace(
+            main.CONFIG, qwen_api_key="sk-qwen-value-1234", gemini_api_key="AIza-gemini-value", groq_api_key="gsk_groq"
+        )
+        main.SERVICE.config = main.CONFIG
+
+        client.post("/configure/clear")
+
+        assert (main.CONFIG.qwen_api_key, main.CONFIG.gemini_api_key, main.CONFIG.groq_api_key) == ("", "", "")
+
+    def test_a_later_configure_without_a_key_does_not_resurrect_the_old_one(self, client):
+        client.post("/configure", json={"provider": "groq", "api_key": "gsk_test_key_value"})
+        client.post("/configure/clear")
+
+        # Changing only the model normally keeps the current key - after a clear there is none.
+        client.post("/configure", json={"provider": "groq", "model": "another-model"})
+
+        assert main.CONFIG.groq_api_key == ""
+        assert client.get("/health").json()["mode"] == "unconfigured"

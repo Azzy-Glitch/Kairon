@@ -49,6 +49,11 @@ public interface IAiProviderConfigService
     /// <summary>The full current selection (provider/model/endpoint), for internal use when only
     /// part of the configuration is changing and the rest still applies.</summary>
     Task<(string Provider, string Model, string Endpoint)?> GetSelectionAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Deletes the stored provider selection and its encrypted key; nothing else. Returns
+    /// false when there was nothing stored. Saves pending changes on the same context, so an audit
+    /// entry recorded just before commits together with the removal.</summary>
+    Task<bool> DeleteAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed class AiProviderConfigService : IAiProviderConfigService
@@ -136,6 +141,16 @@ public sealed class AiProviderConfigService : IAiProviderConfigService
     {
         var entity = await FindAsync(cancellationToken);
         return entity is null ? null : (entity.Provider, entity.Model, entity.Endpoint);
+    }
+
+    public async Task<bool> DeleteAsync(CancellationToken cancellationToken = default)
+    {
+        var entity = await FindAsync(cancellationToken);
+        if (entity is null) return false;
+
+        _db.AiProviderConfigs.Remove(entity);
+        await _db.SaveChangesAsync(cancellationToken);
+        return true;
     }
 
     private Task<AiProviderConfig?> FindAsync(CancellationToken cancellationToken) =>

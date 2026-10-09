@@ -291,6 +291,12 @@ public class AiMicroservice : IAiMicroservice
         return response ?? throw new InvalidOperationException("Empty response from AI service");
     }
 
+    public async Task<AiConfigureResponseDto> ClearProviderAsync(CancellationToken cancellationToken = default)
+    {
+        var response = await PostAsync<AiConfigureResponseDto>("/configure/clear", new { }, cancellationToken);
+        return response ?? throw new InvalidOperationException("Empty response from AI service");
+    }
+
     public async Task<AiTestConnectionResponseDto> TestProviderConnectionAsync(
         AiConfigureRequestDto request, CancellationToken cancellationToken = default)
     {
