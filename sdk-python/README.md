@@ -141,10 +141,20 @@ For the advanced/manual path, construct `Kairon(...)`, call `start()`/`stop()`, 
 `KaironMiddleware` exactly as before. Do not combine manual lifecycle management with
 `Kairon.attach()` for the same collector.
 
-Automatic metrics every five seconds sample real process CPU/memory and aggregate
+Automatic metrics every five seconds sample real **process** CPU/memory and aggregate
 middleware request/error counts and mean duration. Omitting service uses the application
 identity consistently for both requests and metrics. The SDK is collection-only;
 telemetry does not grant remediation authorization.
+
+CPU is this process's CPU time as a share of the CPUs it may run on (the same scale as the .NET
+SDK). It is never machine-wide CPU, and each metric event says so (`cpu.scope = process`).
+Metric events also carry this process's id, working directory and interpreter path. KAIRON uses
+these to offer *Restart the application* after an operator's approval. The backend trusts the
+folder only for the process the local Agent itself identified, and a restart is always performed
+by the KAIRON UserAgent, never by the SDK.
+
+Delivery retries transient failures (`delivery_attempts`, default 3) and honours `Retry-After`
+on a rate limit. A batch over the backend's 1 MiB limit is split rather than dropped.
 
 ### Reporting outside a web request
 

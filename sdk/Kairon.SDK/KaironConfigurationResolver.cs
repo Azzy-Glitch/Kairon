@@ -25,10 +25,11 @@ internal static class KaironConfigurationResolver
         string? configPath,
         CancellationToken cancellationToken,
         TimeSpan? pairingLockWait = null,
-        TimeSpan? pairingRaceWindow = null)
+        TimeSpan? pairingRaceWindow = null,
+        string? applicationName = null)
     {
-        var path = ResolveCredentialPath(configPath);
-        var legacyPath = configPath is null ? KaironCredentialStore.LegacyDefaultPath() : null;
+        var path = ResolveCredentialPath(configPath, applicationName);
+        var legacyPaths = LegacyPaths(configPath);
 
         // An explicit pairing code is an instruction to pair now. It wins over both an old stored
         // connection and ordinary configuration, exactly as it did in KaironClient before this
@@ -44,7 +45,7 @@ internal static class KaironConfigurationResolver
                 .ConfigureAwait(false);
             try
             {
-                if (KaironCredentialStore.LoadOrMigrate(path, legacyPath) is { } existing &&
+                if (KaironCredentialStore.LoadOrMigrate(path, legacyPaths) is { } existing &&
                     KaironCredentialStore.IssuedFor(existing, codeHash))
                     return await UseStoredAsync(path, existing, cancellationToken).ConfigureAwait(false);
 
@@ -87,7 +88,7 @@ internal static class KaironConfigurationResolver
             return Connection(paired.Endpoint!, paired.ProjectId, paired.ApiKey!, paired.Environment, paired.Service);
         }
 
-        if (KaironCredentialStore.LoadOrMigrate(path, legacyPath) is { } credential)
+        if (KaironCredentialStore.LoadOrMigrate(path, legacyPaths) is { } credential)
             return await UseStoredAsync(path, credential, cancellationToken).ConfigureAwait(false);
 
         return ResolveOrdinaryConfiguration(endpoint, projectId, apiKey);
@@ -147,9 +148,8 @@ internal static class KaironConfigurationResolver
             return configured;
         }
 
-        var path = ResolveCredentialPath(configured.CredentialPath);
-        var stored = KaironCredentialStore.LoadOrMigrate(path,
-            configured.CredentialPath is null ? KaironCredentialStore.LegacyDefaultPath() : null);
+        var path = ResolveCredentialPath(configured.CredentialPath, configured.ServiceName ?? configured.ApplicationName);
+        var stored = KaironCredentialStore.LoadOrMigrate(path, LegacyPaths(configured.CredentialPath));
         if (stored is { } credential)
         {
             if (credential.PendingConfirmationPairingId is not null)
@@ -212,8 +212,14 @@ internal static class KaironConfigurationResolver
             PairedEnvironment = pairedEnvironment, PairedService = pairedService
         };
 
-    private static string ResolveCredentialPath(string? configPath) =>
-        configPath ?? KaironCredentialStore.DefaultPath();
+    private static string ResolveCredentialPath(string? configPath, string? applicationName) =>
+        configPath ?? KaironCredentialStore.DefaultPath(KaironCredentialStore.ApplicationKey(applicationName));
+
+    /// <summary>Files adopted once when this application has no file of its own yet. An explicit
+    /// CredentialPath is authoritative and never migrates.</summary>
+    private static string?[] LegacyPaths(string? configPath) => configPath is null
+        ? [KaironCredentialStore.DefaultPath(), KaironCredentialStore.LegacyDefaultPath()]
+        : [];
 
     private static InvalidOperationException PairingFailure(KaironPairingResult paired) =>
         new(

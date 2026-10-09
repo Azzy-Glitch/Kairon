@@ -73,7 +73,8 @@ public static class KaironExtensions
                 options.ProjectId == Guid.Empty ? null : options.ProjectId,
                 options.ApiKey,
                 options.CredentialPath,
-                cancellationToken)
+                cancellationToken,
+                applicationName: options.ServiceName ?? options.ApplicationName)
             .ConfigureAwait(false);
 
         KaironConfigurationResolver.ApplyConnection(options, connection);
@@ -151,6 +152,8 @@ public static class KaironExtensions
         target.SuccessSampleRate = source.SuccessSampleRate;
         target.EnableMetrics = source.EnableMetrics;
         target.MetricsIntervalSeconds = source.MetricsIntervalSeconds;
+        target.DeliveryAttempts = source.DeliveryAttempts;
+        target.ShutdownTimeoutSeconds = source.ShutdownTimeoutSeconds;
         target.IgnoredPathPrefixes = new List<string>(source.IgnoredPathPrefixes);
     }
 

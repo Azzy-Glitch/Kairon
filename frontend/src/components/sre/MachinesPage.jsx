@@ -206,7 +206,7 @@ const APPLICATION_COLUMNS = [
   { key: 'runtime', label: 'Runtime', priority: 2 },
   {
     key: 'cpuPercent',
-    label: 'CPU',
+    label: 'Process CPU',
     align: 'right',
     mono: true,
     sortable: true,

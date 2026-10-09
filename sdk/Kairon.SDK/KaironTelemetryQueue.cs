@@ -151,7 +151,7 @@ public class KaironTelemetrySender : BackgroundService
         _stopping = true;
         _queue.Complete();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        deadline.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(_options.ShutdownTimeoutSeconds, 1, 60)));
         try {
             if (ExecuteTask is not null) await ExecuteTask.WaitAsync(deadline.Token);
         } catch (OperationCanceledException) { }

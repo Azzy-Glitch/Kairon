@@ -38,7 +38,9 @@ public class CpuThresholdRule : IDetectionRule
         signal.Threshold = threshold;
         signal.Unit = "%";
         signal.Severity = ctx.SeverityFor(peak, threshold);
-        signal.Symptom = $"CPU sustained at {Math.Round(avg, 1)}% (peak {Math.Round(peak, 1)}%), threshold {threshold}%";
+        // The SDKs measure the application's own process, as a share of the whole machine
+        // (metadata cpu.scope = "process"); never machine-wide CPU. Say so.
+        signal.Symptom = $"App process CPU sustained at {Math.Round(avg, 1)}% of the machine (peak {Math.Round(peak, 1)}%), threshold {threshold}%";
         return signal;
     }
 }

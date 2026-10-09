@@ -365,6 +365,39 @@ def _clamp_percent(value):
         return None
 
 
+def _retry_after_seconds(value) -> Optional[float]:
+    """Retry-After in seconds (the delta form), capped at 30 s; None when absent or unusable."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return min(30.0, seconds) if seconds >= 0 else None
+
+
+def _usable_cpu_count() -> int:
+    """Logical CPUs this process may run on (affinity/container aware where Python exposes it),
+    matching .NET's Environment.ProcessorCount so both SDKs scale process CPU the same way."""
+    counter = getattr(os, "process_cpu_count", None)  # Python 3.13+
+    if counter is not None:
+        return counter() or 1
+    affinity = getattr(os, "sched_getaffinity", None)
+    if affinity is not None:
+        try:
+            return len(affinity(0)) or 1
+        except OSError:
+            pass
+    return os.cpu_count() or 1
+
+
+def _process_metadata() -> dict:
+    metadata = {"cpu.scope": "process", "process.executable": sys.executable or ""}
+    try:
+        metadata["process.cwd"] = os.getcwd()
+    except OSError:
+        pass  # the folder was removed; without it KAIRON simply cannot offer a restart
+    return metadata
+
+
 def _non_negative_int(value) -> int:
     try:
         return max(0, int(value or 0))
@@ -956,6 +989,11 @@ class Kairon:
             "SourceVersion": "1.1.0", "RequestId": payload.get("RequestId"),
         }
         if metric:
+            # Which process this is, for KAIRON's application restart: the Agent independently
+            # identifies the process from the OS, and only then trusts this report of its folder.
+            # cpu.scope states what CpuPercent measures: this process, as a share of the machine.
+            event["ProcessId"] = os.getpid()
+            event["Metadata"] = _process_metadata()
             event["ResourceMetrics"] = {
                 "CpuPercent": _clamp_percent(payload.get("CpuPercent")),
                 "MemoryPercent": _clamp_percent(payload.get("MemoryPercent")),
@@ -989,7 +1027,16 @@ class Kairon:
         except (ValueError, TypeError, KeyError):
             return self._delivery_failure("Serialization failure")
         if len(body) > 1_048_576:
-            return self._delivery_failure("Telemetry batch exceeds backend size limit")
+            # Like the .NET SDK: split an oversized batch rather than dropping all of it. Only a
+            # single event that is itself over the limit is refused.
+            if len(items) == 1:
+                return self._delivery_failure("Telemetry event exceeds backend size limit")
+            middle = len(items) // 2
+            outcomes = []
+            for half in (items[:middle], items[middle:]):
+                result = self._send_normalized_batch(half)
+                outcomes.extend(result if isinstance(result, list) else [result is True] * len(half))
+            return True if all(outcomes) else outcomes
         homogeneous = bool(events) and all(
             e.get("Service") == events[0].get("Service")
             and str(e.get("Environment") or "").lower() == str(events[0].get("Environment") or "").lower()
@@ -1048,6 +1095,7 @@ class Kairon:
                 return self._delivery_failure("Endpoint rejected: HTTP " + str(exc.status) + " redirect not followed")
             except urllib.error.HTTPError as exc:
                 status = exc.code
+                retry_after = _retry_after_seconds(exc.headers.get("Retry-After") if exc.headers else None)
                 exc.close()
                 if status == 401 and proof:
                     # The Agent proof (not the API key) was refused - e.g. it expired in transit.
@@ -1057,6 +1105,11 @@ class Kairon:
                     continue
                 if status not in (429, 500, 502, 503, 504) or attempt == self.delivery_attempts:
                     return self._delivery_failure("HTTP " + str(status))
+                if status == 429 and retry_after is not None:
+                    # Honour the backend's rate limit, as the .NET SDK does (bounded; this is the
+                    # background sender thread, never a request thread).
+                    time.sleep(retry_after)
+                    continue
             except (urllib.error.URLError, TimeoutError, OSError):
                 if attempt == self.delivery_attempts:
                     return self._delivery_failure("Transport failure")
@@ -1076,7 +1129,7 @@ class Kairon:
                 elapsed = max(now_wall - last_wall, 0.001)
                 cpu_percent = min(
                     100.0,
-                    max(0.0, ((now_cpu - last_cpu) / elapsed) * 100 / (os.cpu_count() or 1)),
+                    max(0.0, ((now_cpu - last_cpu) / elapsed) * 100 / _usable_cpu_count()),
                 )
                 last_wall = now_wall
                 last_cpu = now_cpu

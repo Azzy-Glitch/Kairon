@@ -140,9 +140,27 @@ machine's own, set `KAIRON_ENDPOINT` (or pass `endpoint:`) to that backend's HTT
 `projectId`/`apiKey`/`endpoint` arguments (or `KAIRON_PROJECT_ID`/`KAIRON_API_KEY`/`KAIRON_ENDPOINT`)
 remain fully supported in place of a pairing code, for CI/CD or containers.
 
-`KaironClient.Start()` only switches on automatic process-metrics collection (CPU/memory on an
-interval) - it has no HTTP request to instrument on its own. Report anything else the host code
-itself observes directly:
+`KaironClient.Start()` only switches on automatic process-metrics collection (CPU/memory every five
+seconds by default) - it has no HTTP request to instrument on its own. Report anything else the
+host code itself observes directly.
+
+Behaviour shared with the Python SDK:
+
+- **CPU.** CPU is this process's CPU as a share of the CPUs it may use (`cpu.scope = process`),
+  never machine-wide CPU.
+- **Process identity.** Metric events carry this process's id, working directory and executable,
+  so KAIRON can offer *Restart the application* after approval. The restart is performed by the
+  KAIRON UserAgent, never the SDK.
+- **Credentials.** Each application keeps its own encrypted credential file, keyed by working
+  directory plus service/application name, so pairing one .NET app never replaces another's. An
+  existing shared `credential-dotnet.json` is adopted once and left in place. `CredentialPath`
+  still overrides this.
+- **Error text.** Exception messages, stack traces and endpoints are masked for bearer tokens,
+  key/secret/password values and KAIRON keys/pairing codes before they are queued.
+- **Delivery.** `DeliveryAttempts` (default 3) applies to transient failures; a rate limit honours
+  `Retry-After`. `ShutdownTimeoutSeconds` (default 5) bounds the shutdown drain.
+
+Report anything else the host code itself observes directly:
 
 ```csharp
 try { ProcessOrder(order); }

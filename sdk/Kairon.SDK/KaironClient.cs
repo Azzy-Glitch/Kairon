@@ -70,7 +70,8 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
         string? serviceName = null,
         string? environment = null,
         string? configPath = null)
-        : this(KaironConfigurationResolver.ResolveAsync(pairingCode, endpoint, projectId, apiKey, configPath, default).GetAwaiter().GetResult(),
+        : this(KaironConfigurationResolver.ResolveAsync(pairingCode, endpoint, projectId, apiKey, configPath, default,
+                  applicationName: serviceName ?? applicationName).GetAwaiter().GetResult(),
               applicationName, serviceName, environment)
     {
     }
@@ -93,7 +94,8 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         var options = await KaironConfigurationResolver.ResolveAsync(
-            pairingCode, endpoint, projectId, apiKey, configPath, cancellationToken).ConfigureAwait(false);
+            pairingCode, endpoint, projectId, apiKey, configPath, cancellationToken,
+            applicationName: serviceName ?? applicationName).ConfigureAwait(false);
         return new KaironClient(options, applicationName, serviceName, environment);
     }
 
@@ -178,13 +180,13 @@ public sealed class KaironClient : IDisposable, IAsyncDisposable
             ApplicationName = KaironIdentity.ResolveApplication(_options),
             Service = KaironIdentity.ResolveService(_options),
             Environment = KaironIdentity.ResolveEnvironment(_options),
-            Endpoint = endpoint,
+            Endpoint = KaironScrubber.Scrub(endpoint) ?? string.Empty,
             Method = method,
             StatusCode = statusCode,
             Duration = durationMs,
-            Error = exception.Message,
+            Error = KaironScrubber.Scrub(exception.Message),
             ExceptionType = exception.GetType().FullName,
-            StackTrace = exception.StackTrace,
+            StackTrace = KaironScrubber.Scrub(exception.StackTrace),
             Timestamp = DateTime.UtcNow
         });
     }

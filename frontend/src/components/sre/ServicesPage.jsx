@@ -148,7 +148,7 @@ function ServiceCard({ service, source, onOpen }) {
 
       {cpuTrend.length >= 2 && (
         <div className="service-card-trend">
-          <span className="service-card-trend-label">CPU trend</span>
+          <span className="service-card-trend-label">App CPU trend (process)</span>
           <Sparkline values={cpuTrend} width={220} height={26} color={healthy ? 'var(--series-1)' : 'var(--critical)'} />
         </div>
       )}

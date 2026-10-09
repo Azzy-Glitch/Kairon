@@ -26,6 +26,12 @@ internal sealed class NormalizedTelemetryEvent
     public NormalizedHttpContext? HttpContext { get; init; }
     public NormalizedResourceMetrics? ResourceMetrics { get; init; }
 
+    /// <summary>This process, on metric events: the Agent independently identifies the process from
+    /// the OS, and only then does the backend trust this report of its folder (for KAIRON's
+    /// application restart). Matches the Python SDK.</summary>
+    public int? ProcessId { get; init; }
+    public Dictionary<string, string>? Metadata { get; init; }
+
     internal static NormalizedTelemetryEvent From(TelemetryPayload payload, KaironOptions options)
     {
         var application = Bound(payload.ApplicationName, 200, KaironIdentity.ResolveApplication(options));
@@ -63,6 +69,8 @@ internal sealed class NormalizedTelemetryEvent
             Application = application,
             Service = Bound(payload.Service, 200, KaironIdentity.ResolveService(options)),
             Environment = Bound(payload.Environment, 100, KaironIdentity.ResolveEnvironment(options)),
+            ProcessId = System.Environment.ProcessId,
+            Metadata = ProcessMetadata(),
             ResourceMetrics = new NormalizedResourceMetrics
             {
                 CpuPercent = payload.CpuPercent,
@@ -74,6 +82,16 @@ internal sealed class NormalizedTelemetryEvent
                 QueueDepth = payload.QueueDepth
             }
         };
+    }
+
+    /// <summary>cpu.scope states what CpuPercent measures: this process, as a share of the machine.</summary>
+    internal static Dictionary<string, string> ProcessMetadata()
+    {
+        var metadata = new Dictionary<string, string> { ["cpu.scope"] = "process" };
+        if (System.Environment.ProcessPath is { Length: > 0 } executable) metadata["process.executable"] = executable;
+        try { metadata["process.cwd"] = System.Environment.CurrentDirectory; }
+        catch (IOException) { } // the folder was removed; KAIRON simply cannot offer a restart
+        return metadata;
     }
 
     private static string Bound(string? value, int limit, string fallback = "")

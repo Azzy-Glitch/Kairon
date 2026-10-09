@@ -65,11 +65,25 @@ internal static class KaironCredentialStore
         public string? PairingCodeSha256 { get; set; }
     }
 
-    /// <summary>The .NET SDK's own file. sdk-python writes a different encryption format, so the
-    /// two SDKs no longer share one file name in the same directory.</summary>
-    public static string DefaultPath() =>
+    /// <summary>
+    /// The .NET SDK's own per-application file, keyed exactly like the Python SDK's: the working
+    /// directory plus the application/service name. Two .NET applications run by the same Windows
+    /// user therefore keep separate connections - pairing one never replaces the other's. Without a
+    /// key this is the previous shared file, which is still adopted once (see LoadOrMigrate).
+    /// </summary>
+    public static string DefaultPath(string? applicationKey = null) =>
         Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
-            "Kairon", "sdk", "credential-dotnet.json");
+            "Kairon", "sdk", string.IsNullOrEmpty(applicationKey)
+                ? "credential-dotnet.json"
+                : "credential-dotnet-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(applicationKey)))[..16].ToLowerInvariant() + ".json");
+
+    /// <summary>The application identity a credential file is keyed by: working directory plus the
+    /// explicit service/application name, else the entry assembly's name.</summary>
+    public static string ApplicationKey(string? serviceOrApplicationName) =>
+        System.Environment.CurrentDirectory + "|" +
+        (string.IsNullOrWhiteSpace(serviceOrApplicationName)
+            ? System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name ?? ""
+            : serviceOrApplicationName.Trim());
 
     /// <summary>The previous shared default. Adopted only when it decrypts in this SDK's format.</summary>
     public static string LegacyDefaultPath() =>
@@ -90,23 +104,29 @@ internal static class KaironCredentialStore
     /// <paramref name="path"/>. The legacy file is left in place - another application on an older
     /// SDK version may still read it - and a foreign-format file (e.g. sdk-python's) is ignored.
     /// </summary>
-    public static StoredKaironCredential? LoadOrMigrate(string path, string? legacyPath)
+    public static StoredKaironCredential? LoadOrMigrate(string path, params string?[] legacyPaths)
     {
         var current = Load(path);
-        if (current is not null || legacyPath is null ||
-            string.Equals(Path.GetFullPath(path), Path.GetFullPath(legacyPath), StringComparison.OrdinalIgnoreCase))
-            return current;
+        if (current is not null) return current;
 
-        if (Load(legacyPath) is not { } legacy) return null;
-        try
+        // Newest first: the previous shared .NET file, then the oldest shared file.
+        foreach (var legacyPath in legacyPaths)
         {
-            Save(path, legacy);
+            if (legacyPath is null ||
+                string.Equals(Path.GetFullPath(path), Path.GetFullPath(legacyPath), StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (Load(legacyPath) is not { } legacy) continue;
+            try
+            {
+                Save(path, legacy);
+            }
+            catch
+            {
+                // Migration is an optimisation; the legacy credential is still valid for this run.
+            }
+            return legacy;
         }
-        catch
-        {
-            // Migration is an optimisation; the legacy credential is still valid for this run.
-        }
-        return legacy;
+        return null;
     }
 
     public static StoredKaironCredential? Load(string path)

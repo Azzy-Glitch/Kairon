@@ -31,7 +31,7 @@ export default function DualAxisLineChart({ data, height = 220 }) {
           contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-input)', fontSize: 12 }}
         />
         <Legend wrapperStyle={{ fontSize: 12, color: 'var(--text-muted)' }} />
-        <Line yAxisId="cpu" type="monotone" dataKey="cpu" name="CPU %" stroke="var(--series-1)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+        <Line yAxisId="cpu" type="monotone" dataKey="cpu" name="App CPU % (process)" stroke="var(--series-1)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
         <Line yAxisId="latency" type="monotone" dataKey="latency" name="Latency ms" stroke="var(--series-3)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
       </LineChart>
     </ResponsiveContainer>

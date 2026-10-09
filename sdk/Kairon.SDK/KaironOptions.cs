@@ -68,7 +68,14 @@ public class KaironOptions
     /// <summary>Emits process CPU/memory/throughput metrics on an interval.</summary>
     public bool EnableMetrics { get; set; } = true;
 
-    public int MetricsIntervalSeconds { get; set; } = 10;
+    public int MetricsIntervalSeconds { get; set; } = 5;
+
+    /// <summary>Attempts per telemetry batch for a transient failure (5xx, lost connection). Same
+    /// default as the Python SDK. A 429 is not retried here: the sender honours Retry-After.</summary>
+    public int DeliveryAttempts { get; set; } = 3;
+
+    /// <summary>How long shutdown waits to drain queued telemetry (Python: shutdown_timeout_seconds).</summary>
+    public int ShutdownTimeoutSeconds { get; set; } = 5;
 
     /// <summary>Paths that are never instrumented, e.g. health probes that would swamp telemetry.</summary>
     public List<string> IgnoredPathPrefixes { get; set; } = new() { "/health", "/healthz", "/metrics", "/favicon.ico" };

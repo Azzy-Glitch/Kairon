@@ -116,7 +116,8 @@ public class KaironTelemetryClient
         // treats a response lost after commit as a duplicate, never a second incident.
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.TimeoutSeconds)));
-        var transientRetryUsed = false;
+        // Same default as the Python SDK: up to three attempts for a transient failure.
+        var retriesLeft = Math.Clamp(_options.DeliveryAttempts, 1, 5) - 1;
         while (true)
         {
             var proofAttached = false;
@@ -159,9 +160,9 @@ public class KaironTelemetryClient
                     if (status == 429)
                         return new NormalizedBatchResult(0, events.Count,
                             "Kairon server returned 429. (rate limited; backing off)", RetryAfterOf(response));
-                    if (!transientRetryUsed && status is 500 or 502 or 503 or 504)
+                    if (retriesLeft > 0 && status is 500 or 502 or 503 or 504)
                     {
-                        transientRetryUsed = true;
+                        retriesLeft--;
                         continue;
                     }
                     var suffix = status is 401 or 403 ? " (project authentication rejected)" : "";
@@ -182,9 +183,9 @@ public class KaironTelemetryClient
                     delivered = Math.Min(delivered, Math.Max(0, events.Count - rejectedCount));
                     return new NormalizedBatchResult(delivered, events.Count - delivered, "Collector rejected telemetry.");
                 }
-                if (transientRetryUsed)
+                if (retriesLeft <= 0)
                     return new NormalizedBatchResult(0, events.Count, "Collector returned an invalid response.");
-                transientRetryUsed = true;
+                retriesLeft--;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -194,10 +195,10 @@ public class KaironTelemetryClient
             {
                 return new NormalizedBatchResult(0, events.Count, "Telemetry send timed out.");
             }
-            catch (Exception) when (!transientRetryUsed)
+            catch (Exception) when (retriesLeft > 0)
             {
                 // A lost response may follow a successful commit. Retry only the same EventIds.
-                transientRetryUsed = true;
+                retriesLeft--;
             }
             catch
             {
