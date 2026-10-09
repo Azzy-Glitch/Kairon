@@ -1,10 +1,17 @@
-# Windows service remediation
+# Windows remediation: applications and services
 
-KAIRON can remediate a Windows service when, and only when, an operator has explicitly authorized
-that exact service as a **remediation target**, the backend's Windows identity has been granted
-the minimum rights on that one service, the AI recommends one of the target's allowed operations
-for a real incident, and an operator approves it. Every one of those gates is re-checked
-immediately before the operation runs.
+KAIRON can fix two kinds of things on the machine it runs on, each only after an operator has
+authorized it as a **remediation target**, the AI recommends one of that target's allowed operations
+for a real incident, and an operator approves it. Every gate is re-checked immediately before
+anything runs.
+
+- **The connected application itself** (an *App process* target). This needs no Windows service,
+  wrapper or permission script: the KAIRON UserAgent restarts the app as the same user who runs it.
+  It is enabled in one click from Connect an App. See
+  [Restarting a connected application](#restarting-a-connected-application).
+- **A Windows service** (a *Windows service* target). The backend's Windows identity must hold the
+  minimum rights on that one service. This is the right choice for apps that must keep running
+  while nobody is signed in.
 
 ## Architecture
 
@@ -13,7 +20,7 @@ immediately before the operation runs.
 | **Kairon.Backend** Windows service | `NT SERVICE\Kairon.Backend` (virtual account, no password, not an administrator, SID unique to KAIRON) | Detection, AI orchestration, approval, **executes** the SCM operation (`sc.exe` query/start/stop) and verifies recovery. Supervises the AI service. |
 | Kairon AI service | Child of the backend service (same identity), loopback `127.0.0.1:8001` | Diagnosis and recommendations only. Never executes anything. |
 | **Kairon.Agent** Windows service | `NT AUTHORITY\LocalService` | Machine enrollment, heartbeat, and **machine proof** for application telemetry. It does not execute remediation and holds no service-control rights. |
-| Kairon.UserAgent | The interactive user (logon task) | Per-session process inventory. No remediation role. |
+| Kairon.UserAgent | The interactive user (logon task) | Per-session process inventory. **Performs approved application restarts** for processes in its own session (App process targets only); it never runs a command it was sent. |
 | Kairon.exe (desktop) | The interactive user | UI host only (WebView2). It reads the operator key the backend publishes and attaches it to UI requests. It does not start or stop the backend. |
 
 Data lives in `%ProgramData%\Kairon\backend` (`data`, `logs`, `config`, `cache`, `backups`,
@@ -26,7 +33,51 @@ Remediation is **local-only**: a target must be the machine the backend runs on.
 (`sc.exe \\host`) is refused as `RemoteNotSupported`, because nothing would bind that remote SCM
 endpoint to the enrolled Agent.
 
-## What can be targeted
+## Restarting a connected application
+
+The developer adds the SDK (`Kairon.attach(app, pairing_code=...)` or `AddKaironAsync(...)`) and
+runs the app as usual. After it connects, **Connect an App** offers
+*Let KAIRON restart this app when I approve*. One click creates an enabled App process target. The
+backend derives the project, environment, service, credential and machine from the pairing session
+and the Agent-confirmed machine binding; nothing is typed in or trusted from the browser. The same
+target can be created under *Remediation Targets → Configure Target → The application itself*.
+
+How KAIRON knows which process to restart, without trusting the app:
+
+1. The SDK sends its telemetry proof to the Agent over the loopback socket. The Agent asks Windows
+   which process owns that connection (the OS TCP table, which needs no administrator rights) and
+   reports that process id with the confirmation.
+2. The SDK reports its working directory and executable on the same telemetry. The backend keeps
+   them only when the SDK's process id equals the Agent-observed one.
+3. The UserAgent in that user's session reports the process's start time and executable from the OS.
+
+When the operator approves *Restart the application*:
+
+- The backend re-validates the target and the approval binding: same target, machine, credential,
+  Agent key and executable. It then queues one restart instruction for that machine and session.
+  The instruction names a process; it is not a command.
+- The UserAgent in that session claims it, which can happen only once. It re-verifies the process:
+  same session, same start time, same executable. It works out the command the developer actually
+  started; for a virtual environment that is the environment's own `python.exe`, and for a script
+  shim like `uvicorn.exe` it is the shim. It never climbs into a shell, terminal or IDE. The
+  UserAgent then stops that process tree and starts it again with exactly the command line Windows
+  reports for it, in the reported folder, in a new console.
+- It never restarts Windows components or KAIRON itself.
+- Verification requires a *different* process of the same application to send Agent-confirmed
+  telemetry after the restart, and the breached metrics to recover. Otherwise the result is
+  *Inconclusive* or *Failed*, never *Passed*.
+
+Readiness states specific to App process targets:
+
+- **Waiting for the app** (`ProcessUnknown`): the process has not been identified yet. This means
+  an old Agent or SDK, or the app has not sent telemetry since.
+- **User not signed in** (`UserAgentOffline`): no UserAgent in the app owner's session reports the
+  process. Restarts need that user to be signed in.
+
+If no UserAgent picks the restart up within about 15 seconds, the action fails as
+`UserAgentOffline` and nothing changes.
+
+## What can be targeted (Windows services)
 
 Only stand-alone application services (`SERVICE_WIN32_OWN_PROCESS`) whose executable is outside
 the Windows directory. KAIRON always refuses:

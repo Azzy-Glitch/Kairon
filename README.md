@@ -394,10 +394,16 @@ Four gates precede execution:
    is an audit label entered by the operator, not a separate login.
 4. Policy and target revalidation immediately before execution.
 
-Windows service remediation additionally requires an enabled remediation target for the exact
-project, environment, service and machine, Agent-confirmed telemetry from that machine, and Windows
-rights granted to the backend service account for that one service. See
-[Windows service remediation](docs/WINDOWS_PRODUCTION_REMEDIATION.md).
+Remediation additionally requires an enabled remediation target for the exact project,
+environment, service and machine, and Agent-confirmed telemetry from that machine. A target is one
+of two kinds:
+
+- **The connected application itself.** Enabled in one click from Connect an App, with no Windows
+  service or permission script. The KAIRON UserAgent restarts the app as the same user, exactly as
+  it was started.
+- **A Windows service.** The backend service account needs rights on that one service.
+
+See [Windows remediation](docs/WINDOWS_PRODUCTION_REMEDIATION.md).
 
 `Remediation:AllowedEnvironments` defaults to `Development`, `Staging` and `Production` (the only
 valid KAIRON environments; `Demo` is retired). `Remediation:RequireApprovalForEveryAction` is

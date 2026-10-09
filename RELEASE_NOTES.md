@@ -20,9 +20,27 @@ before and after.
 
 ## What changed since 1.0.0
 
+- **Restart the connected application, with no setup**: a plain SDK-connected app (FastAPI, Flask,
+  Django, ASP.NET Core, ...) can now be remediated without becoming a Windows service. Connect an
+  App offers *Let KAIRON restart this app when I approve*; the Remediation Targets wizard offers
+  *The application itself*.
+  - The Agent identifies the app's process from the OS (the owner of the proof's loopback
+    connection).
+  - After approval, the KAIRON UserAgent in the app owner's session restarts exactly the command
+    that was started, re-verifying the process first.
+  - Verification requires a new process of the same app to report recovered telemetry.
+  - There is no permission script, no wrapper, and no Windows service.
+  - New readiness states: *Waiting for the app* and *User not signed in*.
+- **CPU scope is explicit**: both SDKs report the app's *process* CPU as a share of the CPUs it may
+  use, and label it `cpu.scope = process`. Incidents and charts now say "App process CPU".
+- **SDK parity**: the .NET SDK now keeps one credential file per application (pairing a second
+  app no longer replaces the first's), masks credentials in exception text, samples every 5 s, and
+  has configurable delivery attempts and shutdown drain. The Python SDK honours `Retry-After` and
+  splits oversized batches. Both SDKs report the process identity used for application restart.
+
 - **Backend runs as a Windows service**: the installer registers `Kairon.Backend` under its own
   virtual account `NT SERVICE\Kairon.Backend` (no administrator rights). It hosts the API and
-  dashboard, supervises the AI service, and stores data in `%ProgramData%\Kaironackend` with a
+  dashboard, supervises the AI service, and stores data in `%ProgramData%\Kairon\backend` with a
   closed ACL. `Kairon.exe` is now only the UI host, so detection and approved remediation continue
   when the window is closed. The operator key is generated per service start and readable only by
   SYSTEM, Administrators, the service account and interactively logged-on users.
@@ -153,7 +171,7 @@ dashboard genuinely authenticated.
 ## Upgrade notes (desktop-hosted install to the backend service)
 
 - The installer copies the existing `%LOCALAPPDATA%\Kairon\data\kairon.db` into
-  `%ProgramData%\Kaironackend\data` once, when the service has no database yet. The original is
+  `%ProgramData%\Kairon\backend\data` once, when the service has no database yet. The original is
   left in place as a rollback copy. The copy uses the profile of the account that runs Setup.
 - Secrets encrypted for the user account (the AI provider key, a saved SQL Server connection) cannot
   be decrypted by the service account. **Re-enter the AI provider key in Settings → AI

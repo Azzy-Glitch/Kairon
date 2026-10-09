@@ -18,8 +18,8 @@ The backend is no longer a child of the desktop shell. The installer registers i
 **`Kairon.Backend` Windows service** under its own virtual account `NT SERVICE\Kairon.Backend`
 (auto start, recovery restarts, not an administrator). The service hosts the API and dashboard on
 `127.0.0.1:8000`, supervises the packaged AI service as a kill-on-close child with a per-start
-transport secret, keeps its data in `%ProgramData%\Kaironackend`, and publishes a fresh operator
-key to `%ProgramData%\Kaironackend\operator\operator.key` on every start (readable only by
+transport secret, keeps its data in `%ProgramData%\Kairon\backend`, and publishes a fresh operator
+key to `%ProgramData%\Kairon\backend\operator\operator.key` on every start (readable only by
 SYSTEM, Administrators, the service account and interactively logged-on users). Remediation runs
 under that service identity, so it continues when the window is closed and never runs as the
 signed-in user. When the service is installed, `Kairon.exe` is only the UI host: it waits for the
