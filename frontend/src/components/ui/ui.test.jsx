@@ -149,3 +149,23 @@ describe('Tabs', () => {
     expect(onChange).toHaveBeenCalledWith('active');
   });
 });
+
+describe('MetricTile with a metric the app never reports', () => {
+  it('shows the empty text instead of a blank chart when every sample lacks the value', () => {
+    render(
+      <MetricTile
+        label="Queue depth"
+        value={null}
+        data={[{ t: '10:00', v: null }, { t: '10:01', v: null }]}
+        threshold={50}
+        emptyText="Not reported by your app"
+      />
+    );
+    expect(screen.getByText('Not reported by your app')).toBeInTheDocument();
+  });
+
+  it('still draws a series of zeros, which is a real reading', () => {
+    render(<MetricTile label="Error rate" value={0} unit="%" data={[{ t: '10:00', v: 0 }, { t: '10:01', v: 0 }]} />);
+    expect(screen.queryByText('No data yet')).not.toBeInTheDocument();
+  });
+});

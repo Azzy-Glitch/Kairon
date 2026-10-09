@@ -45,12 +45,15 @@ function MetricTile({
   domain,
   deltaPercent,
   breachedForLabel,
+  emptyText = 'No data yet',
   className = ''
 }) {
   const gradientId = `metric-fill-${useId().replace(/:/g, '')}`;
   const isBreached = typeof threshold === 'number' && typeof value === 'number' && value > threshold;
   const delta = formatDelta(deltaPercent);
-  const hasSamples = data.length > 0;
+  // A series of samples that all lack this metric is still "no data": draw nothing rather than
+  // an empty chart frame that looks like it is waiting for a reading.
+  const hasSamples = data.some((point) => point?.[dataKey] !== null && point?.[dataKey] !== undefined);
 
   return (
     <div className={`ui-metric-tile ${isBreached ? 'ui-metric-tile-breached' : ''} ${className}`}>
@@ -104,7 +107,7 @@ function MetricTile({
             </AreaChart>
           </ResponsiveContainer>
         ) : (
-          <div className="ui-metric-tile-empty">No data yet</div>
+          <div className="ui-metric-tile-empty">{emptyText}</div>
         )}
       </div>
 
@@ -133,7 +136,7 @@ function sameSeries(left = [], right = [], dataKey = 'v', timeKey = 't') {
 export function metricTilePropsEqual(previous, next) {
   const scalarKeys = [
     'label', 'value', 'unit', 'dataKey', 'timeKey', 'seriesColor', 'threshold',
-    'thresholdLabel', 'deltaPercent', 'breachedForLabel', 'className'
+    'thresholdLabel', 'deltaPercent', 'breachedForLabel', 'emptyText', 'className'
   ];
   if (scalarKeys.some((key) => previous[key] !== next[key])) return false;
   if (!sameArray(previous.domain, next.domain)) return false;

@@ -1503,6 +1503,7 @@
 }
 
 .incident-close { margin: 12px 0; }
+.telemetry-snapshot-note { margin: 10px 2px 0; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 .incident-close-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
   padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface);

@@ -47,6 +47,12 @@ function DetailBody({ incident, actions }) {
   const verification = latestVerification(incident);
 
   const resolved = isResolvedByBackend(incident);
+  // The AI finished its analysis but proposed nothing KAIRON could run. The backend still moves the
+  // incident to RecommendationReady, which on its own reads as "an action is waiting for you".
+  const noRecommendation =
+    Boolean(incident.diagnosis) && !(incident.recommendations?.length) && !awaiting &&
+    !FAILURE_BANNER_STATUSES.includes(incident.status) &&
+    ![IncidentStatus.Remediating, IncidentStatus.Verifying].includes(incident.status);
   const failedVerification = verificationFailed(incident);
 
   // SDK-source chip (redesign brief section 6): which SDK/agent this incident's telemetry
@@ -85,7 +91,10 @@ function DetailBody({ incident, actions }) {
 
           <div className="incident-detail-badges">
             <SeverityBadge severity={incident.severity} />
-            <StatusBadge status={incident.status} />
+            <StatusBadge
+              status={incident.status}
+              label={noRecommendation && incident.status === IncidentStatus.RecommendationReady ? 'No action available' : undefined}
+            />
             <span
               className="status-badge"
               style={{
@@ -219,7 +228,9 @@ function DetailBody({ incident, actions }) {
           {/* With a diagnosis present the AI panel does not show failureReason, so an incident
               that ended up with nothing approvable (for example, no ready remediation target)
               would otherwise give no explanation at all. */}
-          {!awaiting && incident.diagnosis && incident.failureReason && !FAILURE_BANNER_STATUSES.includes(incident.status) && (
+          {noRecommendation && <NoRecommendationPanel reason={incident.failureReason} />}
+
+          {!noRecommendation && !awaiting && incident.diagnosis && incident.failureReason && !FAILURE_BANNER_STATUSES.includes(incident.status) && (
             <div className="resolution-banner resolution-neutral" role="status">
               <strong>No action can be approved</strong>
               <span>{incident.failureReason}</span>
@@ -254,6 +265,38 @@ function DetailBody({ incident, actions }) {
         </aside>
       </div>
     </div>
+  );
+}
+
+/**
+ * Shown when the AI explained the incident but recommended nothing. The AI may only choose from
+ * actions KAIRON can really run for this app, so the usual reason is that no remediation target was
+ * turned on for it when the incident was analysed. The diagnosis text may still talk about a fix in
+ * general terms; this says plainly that nothing here can be approved, and what to do about it.
+ */
+function NoRecommendationPanel({ reason }) {
+  return (
+    <section className="panel ai-panel recommendation-panel" role="status">
+      <div className="panel-header">
+        <h4>No recommended action</h4>
+      </div>
+      <p className="recommendation-line">
+        The AI explained what went wrong, but had no action it could recommend. It may only choose from
+        actions KAIRON can actually run for this app, such as <strong>Restart the application</strong>,
+        and none was available when this incident was analysed. Any fix mentioned in the investigation
+        above is advice only.
+      </p>
+      {reason && (
+        <p className="recommendation-line">
+          <span className="ai-field-label">Reason</span> {reason}
+        </p>
+      )}
+      <p className="recommendation-line">
+        <span className="ai-field-label">What to do</span> Make sure this app has a remediation target that is
+        turned on (Remediation Targets), then close this incident. If the problem continues, KAIRON opens a
+        new incident that can offer the action for you to approve.
+      </p>
+    </section>
   );
 }
 

@@ -9,8 +9,8 @@ export function SeverityBadge({ severity, size = 'md' }) {
 }
 
 /** Lifecycle status, colour-coded by what the operator has to do about it. */
-export function StatusBadge({ status }) {
-  return <span className={`status-badge status-${statusTone(status)}`}>{humanize(status)}</span>;
+export function StatusBadge({ status, label }) {
+  return <span className={`status-badge status-${statusTone(status)}`}>{label || humanize(status)}</span>;
 }
 
 export function RiskBadge({ risk }) {

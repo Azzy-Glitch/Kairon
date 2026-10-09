@@ -241,6 +241,7 @@ const TelemetrySnapshot = React.memo(function TelemetrySnapshot({ metrics }) {
           seriesColor="var(--series-5)"
           threshold={30}
           domain={domainForMetric('unbounded', { threshold: 30, peak: metrics?.retriesPerMinute })}
+          emptyText={metrics?.sampledAt ? 'Not reported by your app' : 'No data yet'}
         />
         <MetricTile
           label="Queue depth"
@@ -249,8 +250,15 @@ const TelemetrySnapshot = React.memo(function TelemetrySnapshot({ metrics }) {
           seriesColor="var(--series-4)"
           threshold={50}
           domain={domainForMetric('unbounded', { threshold: 50, peak: metrics?.queueDepth })}
+          emptyText={metrics?.sampledAt ? 'Not reported by your app' : 'No data yet'}
         />
       </div>
+
+      <p className="telemetry-snapshot-note">
+        CPU, latency and error rate are measured automatically for every request. An error rate of 0%
+        means no request failed. Retry rate and queue depth are optional: they only appear if your app
+        reports them through the SDK (for example a background job queue), so most web apps leave them empty.
+      </p>
     </div>
   );
 }, (previous, next) => previous.metrics?.sampledAt === next.metrics?.sampledAt);
