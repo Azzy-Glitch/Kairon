@@ -9,7 +9,7 @@ import StatusTimeline from '../ui/StatusTimeline';
 import { RiskBadge } from './Badges';
 import { CodeBlock } from './CopyableCode';
 import { IconZap, IconAlertTriangle } from '../Icons';
-import { OPERATIONS, describeReadiness, operationLabel } from '../../lib/remediation';
+import { OPERATIONS, APP_OPERATIONS, TARGET_KINDS, describeReadiness, operationLabel } from '../../lib/remediation';
 
 const ENVIRONMENTS = ['Development', 'Staging', 'Production'];
 
@@ -22,10 +22,35 @@ const WIZARD_STEPS = [
   { key: 'review', label: 'Review & enable' }
 ];
 
+/** Restarting the connected app itself needs no Windows service and no permission grant: the
+ * KAIRON UserAgent restarts it as its own user. Its check step confirms the app is identified. */
+const APP_WIZARD_STEPS = [
+  { key: 'app', label: 'Project & service' },
+  { key: 'machine', label: 'Machine' },
+  { key: 'operations', label: 'Operations' },
+  { key: 'permission', label: 'Readiness check' },
+  { key: 'review', label: 'Review & enable' }
+];
+
+export function wizardSteps(kind) {
+  return kind === 'AppProcess' ? APP_WIZARD_STEPS : WIZARD_STEPS;
+}
+
+function defaultOperations(kind) {
+  return kind === 'AppProcess' ? ['RestartApplication'] : ['RunHealthCheck'];
+}
+
+function programName(path) {
+  return path ? path.split(/[\\/]/).pop() : null;
+}
+
 // Pre-flight check keys -> plain wording, used only when the backend sends no label of its own.
 const CHECK_FALLBACK_LABELS = {
   'agent-proof': 'App telemetry confirmed by the Agent',
-  identity: 'Windows service is the same one that was confirmed'
+  identity: 'Windows service is the same one that was confirmed',
+  process: 'KAIRON knows which process is the application',
+  useragent: "The KAIRON UserAgent in the app's user session can restart it",
+  'eligible-process': 'The process is an ordinary application'
 };
 
 /** Safe defaults: Development, the only enrolled machine if there is exactly one, and the least
@@ -40,8 +65,9 @@ function emptyForm(machines = []) {
     telemetryCredentialId: '',
     machineId: onlyMachine?.id || '',
     expectedHostName: onlyMachine?.hostName || '',
+    kind: 'AppProcess',
     windowsServiceName: '',
-    allowedOperations: ['RunHealthCheck'],
+    allowedOperations: defaultOperations('AppProcess'),
     updatedAt: null
   };
 }
@@ -55,7 +81,8 @@ function formFromTarget(target) {
     telemetryCredentialId: target.telemetryCredentialId,
     machineId: target.machineId,
     expectedHostName: target.expectedHostName,
-    windowsServiceName: target.windowsServiceName,
+    kind: target.kind || 'WindowsService',
+    windowsServiceName: target.windowsServiceName || '',
     allowedOperations: target.allowedOperations || [],
     updatedAt: target.updatedAt
   };
@@ -65,7 +92,8 @@ function formFromTarget(target) {
  * form must never reach the API as empty GUIDs. */
 export function isPayloadComplete(form) {
   return Boolean(form && form.projectId && form.environment && form.service?.trim() && form.machineId &&
-    form.telemetryCredentialId && form.windowsServiceName?.trim() && form.allowedOperations?.length > 0);
+    form.telemetryCredentialId && (form.kind === 'AppProcess' || form.windowsServiceName?.trim()) &&
+    form.allowedOperations?.length > 0);
 }
 
 function buildPayload(form, enabled) {
@@ -76,7 +104,8 @@ function buildPayload(form, enabled) {
     machineId: form.machineId,
     telemetryCredentialId: form.telemetryCredentialId,
     expectedHostName: form.expectedHostName,
-    windowsServiceName: form.windowsServiceName.trim(),
+    kind: form.kind || 'WindowsService',
+    windowsServiceName: form.kind === 'AppProcess' ? '' : form.windowsServiceName.trim(),
     allowedOperations: form.allowedOperations,
     enabled
   };
@@ -193,16 +222,22 @@ export default function RemediationTargetsPage({ preselectMachineId }) {
   const columns = [
     {
       key: 'windowsServiceName',
-      label: 'Windows service',
+      label: 'Restarts',
       sortable: true,
-      render: (t) => (
+      render: (t) => (t.kind === 'AppProcess' ? (
+        <span className="remediation-target-service">
+          <strong>The app itself</strong>
+          <span className="remediation-target-subtle">{programName(t.processExecutable) || 'process not identified yet'}</span>
+        </span>
+      ) : (
         <span className="remediation-target-service">
           <strong>{t.serviceDisplayName || t.windowsServiceName}</strong>
           {t.serviceDisplayName && t.serviceDisplayName !== t.windowsServiceName && (
             <span className="remediation-target-subtle">{t.windowsServiceName}</span>
           )}
+          <span className="remediation-target-subtle">Windows service</span>
         </span>
-      )
+      ))
     },
     { key: 'machineHostName', label: 'Machine', sortable: true, render: (t) => t.machineHostName || t.expectedHostName || 'Unknown machine' },
     { key: 'environment', label: 'Environment', sortable: true, priority: 1 },
@@ -262,8 +297,8 @@ export default function RemediationTargetsPage({ preselectMachineId }) {
             <div>
               <h3>Remediation Targets</h3>
               <p className="section-desc">
-                The Windows services KAIRON is allowed to act on, on which machine, and which operations it may run.
-                Every action still needs an operator's approval.
+                What KAIRON may restart for each application - the app itself, or a Windows service - on which machine,
+                and which operations it may run. Every action still needs an operator's approval.
               </p>
             </div>
           </div>
@@ -281,7 +316,7 @@ export default function RemediationTargetsPage({ preselectMachineId }) {
           <EmptyState
             icon={<IconZap className="w-10 h-10" />}
             title="No remediation targets yet"
-            description="Configure one to let KAIRON health-check, start, restart or stop a specific Windows service on a specific machine."
+            description="Configure one to let KAIRON restart a connected application (no setup needed), or health-check, start, restart or stop a specific Windows service."
             action={!wizard && <Button variant="primary" onClick={openCreate}>+ Configure Target</Button>}
           />
         ) : (
@@ -342,7 +377,9 @@ function TargetDetail({ target, onClose, onEdit }) {
       <div className="section-header">
         <div className="section-title-group">
           <div>
-            <h3 id="remediation-target-detail-title">{target.serviceDisplayName || target.windowsServiceName}</h3>
+            <h3 id="remediation-target-detail-title">
+              {target.kind === 'AppProcess' ? `${target.service} (the app itself)` : target.serviceDisplayName || target.windowsServiceName}
+            </h3>
             <p className="section-desc">
               on {target.machineHostName || target.expectedHostName || 'an unknown machine'} · {target.environment}
             </p>
@@ -357,7 +394,19 @@ function TargetDetail({ target, onClose, onEdit }) {
       <dl className="remediation-target-summary">
         <div><dt>Status</dt><dd><Badge tone={info.tone}>{info.label}</Badge> <span className="remediation-target-subtle">{info.explanation}</span></dd></div>
         {target.readinessDetail && <div><dt>Why</dt><dd>{target.readinessDetail}</dd></div>}
-        <div><dt>Windows service</dt><dd>{target.serviceDisplayName ? `${target.serviceDisplayName} (${target.windowsServiceName})` : target.windowsServiceName}</dd></div>
+        <div><dt>Restarts</dt><dd>{TARGET_KINDS[target.kind || 'WindowsService']?.label}</dd></div>
+        {target.kind === 'AppProcess' ? (
+          <div>
+            <dt>Application</dt>
+            <dd>
+              {target.processExecutable
+                ? <>{target.processExecutable}{target.processWorkingDirectory ? <> in <code className="path-code">{target.processWorkingDirectory}</code></> : null}</>
+                : 'Not identified yet - run the app and send it a request.'}
+            </dd>
+          </div>
+        ) : (
+          <div><dt>Windows service</dt><dd>{target.serviceDisplayName ? `${target.serviceDisplayName} (${target.windowsServiceName})` : target.windowsServiceName}</dd></div>
+        )}
         <div><dt>Project</dt><dd>{target.projectName || 'Unknown project'}</dd></div>
         <div><dt>Logical service</dt><dd>{target.service}</dd></div>
         <div><dt>App credential</dt><dd>{target.telemetryCredentialName || 'Unknown credential'}</dd></div>
@@ -474,8 +523,11 @@ export function PreflightResult({ result, serviceName }) {
 
 function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
   const isEditing = Boolean(initialForm.id);
-  const [form, setForm] = useState(initialForm);
+  const [form, setForm] = useState({ kind: 'WindowsService', ...initialForm });
   const [step, setStep] = useState(0);
+  const isApp = form.kind === 'AppProcess';
+  const steps = wizardSteps(form.kind);
+  const stepKey = steps[Math.min(step, steps.length - 1)].key;
   const [credentials, setCredentials] = useState([]);
   const [applications, setApplications] = useState([]);
   const [services, setServices] = useState({ loading: false, list: null, error: null });
@@ -535,7 +587,8 @@ function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
     return () => { stale = true; };
   };
 
-  useEffect(() => loadServices(form.machineId), [form.machineId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Only a Windows-service target needs the machine's service list.
+  useEffect(() => (isApp ? undefined : loadServices(form.machineId)), [form.machineId, isApp]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const payloadKey = isPayloadComplete(form)
     ? JSON.stringify(buildPayload(form, true))
@@ -560,21 +613,24 @@ function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
   };
 
   useEffect(() => {
-    if (step >= 4 && payloadKey && preflight.key !== payloadKey && inflightKey.current !== payloadKey) runPreflight();
+    if ((stepKey === 'permission' || stepKey === 'review') && payloadKey && preflight.key !== payloadKey && inflightKey.current !== payloadKey) runPreflight();
   }, [step, payloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { headingRef.current?.focus?.(); }, [step]);
 
   const update = (patch) => setForm((prev) => ({ ...prev, ...patch }));
 
-  const stepValid = [
-    Boolean(form.projectId && form.environment && form.service.trim() && form.telemetryCredentialId),
-    Boolean(form.machineId),
-    Boolean(form.windowsServiceName.trim()),
-    form.allowedOperations.length > 0,
-    true,
-    true
-  ];
+  const stepValid = {
+    app: Boolean(form.projectId && form.environment && form.service.trim() && form.telemetryCredentialId),
+    machine: Boolean(form.machineId),
+    service: Boolean(form.windowsServiceName.trim()),
+    operations: form.allowedOperations.length > 0,
+    permission: true,
+    review: true
+  };
+
+  const chooseKind = (kind) => setForm((prev) => (prev.kind === kind ? prev
+    : { ...prev, kind, windowsServiceName: '', allowedOperations: defaultOperations(kind) }));
 
   const save = async (enabled) => {
     if (!isPayloadComplete(form)) {
@@ -614,13 +670,13 @@ function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
           <div>
             <h3 id="remediation-wizard-title">{isEditing ? 'Edit remediation target' : 'Configure a remediation target'}</h3>
             <p className="section-desc">
-              Step {step + 1} of {WIZARD_STEPS.length}: {WIZARD_STEPS[step].label}
+              Step {step + 1} of {steps.length}: {steps[step].label}
             </p>
           </div>
         </div>
       </div>
 
-      <StatusTimeline steps={WIZARD_STEPS} currentKey={WIZARD_STEPS[step].key} className="remediation-wizard-progress" />
+      <StatusTimeline steps={steps} currentKey={stepKey} className="remediation-wizard-progress" />
 
       {errors.length > 0 && (
         <div className="remediation-target-form-errors" role="alert">
@@ -630,9 +686,24 @@ function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
       )}
 
       <div className="remediation-wizard-body">
-        <h4 tabIndex={-1} ref={headingRef} className="remediation-target-subheading">{WIZARD_STEPS[step].label}</h4>
+        <h4 tabIndex={-1} ref={headingRef} className="remediation-target-subheading">{steps[step].label}</h4>
 
-        {step === 0 && (
+        {stepKey === 'app' && !isEditing && (
+          <fieldset className="remediation-target-operations remediation-choice-list">
+            <legend>What should KAIRON restart when you approve a fix?</legend>
+            {['AppProcess', 'WindowsService'].map((kind) => (
+              <label key={kind} className="remediation-target-operation-checkbox">
+                <input type="radio" name="remediation-kind" checked={form.kind === kind} onChange={() => chooseKind(kind)} />
+                <span>
+                  <strong>{kind === 'AppProcess' ? 'The application itself (recommended - no setup)' : 'A Windows service'}</strong>
+                  <span className="remediation-preflight-detail">{TARGET_KINDS[kind].description}</span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+        )}
+
+        {stepKey === 'app' && (
           <div className="remediation-target-form">
             <label>
               Project
@@ -690,7 +761,7 @@ function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
           </div>
         )}
 
-        {step === 1 && (
+        {stepKey === 'machine' && (
           <fieldset className="remediation-target-operations remediation-choice-list">
             <legend>Machine</legend>
             {machines.length === 0 && <p className="panel-pending-text">No enrolled machines. Install and run the KAIRON Agent first.</p>}
@@ -709,12 +780,14 @@ function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
               </label>
             ))}
             <p className="remediation-target-derived-field">
-              Only services on the machine running KAIRON itself can be remediated.
+              {isApp
+                ? 'The machine the application runs on. Only applications on the machine running KAIRON can be restarted.'
+                : 'Only services on the machine running KAIRON itself can be remediated.'}
             </p>
           </fieldset>
         )}
 
-        {step === 2 && (
+        {stepKey === 'service' && (
           <ServicePicker
             services={services}
             search={serviceSearch}
@@ -725,7 +798,26 @@ function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
           />
         )}
 
-        {step === 3 && (
+        {stepKey === 'operations' && isApp && (
+          <fieldset className="remediation-target-operations remediation-choice-list">
+            <legend>Allowed operations</legend>
+            {APP_OPERATIONS.map((op) => (
+              <label key={op.id} className="remediation-target-operation-checkbox">
+                <input type="checkbox" checked readOnly disabled />
+                <span>
+                  <strong>{op.label}</strong> <RiskBadge risk={op.risk} />
+                  <span className="remediation-preflight-detail">{op.description}</span>
+                </span>
+              </label>
+            ))}
+            <p className="remediation-target-derived-field">
+              The KAIRON UserAgent restarts the app as the same Windows user, with the same program, arguments and folder.
+              It only ever happens after you approve it on an incident.
+            </p>
+          </fieldset>
+        )}
+
+        {stepKey === 'operations' && !isApp && (
           <fieldset className="remediation-target-operations remediation-choice-list">
             <legend>Allowed operations</legend>
             {OPERATIONS.map((op) => (
@@ -749,12 +841,12 @@ function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
           </fieldset>
         )}
 
-        {step === 4 && (
+        {stepKey === 'permission' && (
           <div>
             {!payloadKey ? (
-              <p className="panel-pending-text">Complete the previous steps to run the permission check.</p>
+              <p className="panel-pending-text">Complete the previous steps to run the {isApp ? 'readiness' : 'permission'} check.</p>
             ) : preflight.loading && !preflightCurrent ? (
-              <p className="panel-pending-text">Checking Windows permissions...</p>
+              <p className="panel-pending-text">{isApp ? 'Checking the application...' : 'Checking Windows permissions...'}</p>
             ) : preflight.error && preflight.key === payloadKey ? (
               <p className="panel-pending-text">{errorMessages(preflight.error, 'Could not run the permission check.').join(' ')}</p>
             ) : (
@@ -775,7 +867,7 @@ function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
           </div>
         )}
 
-        {step === 5 && (
+        {stepKey === 'review' && (
           <div>
             <dl className="remediation-target-summary">
               <div><dt>Project</dt><dd>{project?.name || 'Not selected'}</dd></div>
@@ -783,10 +875,12 @@ function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
               <div><dt>Logical service</dt><dd>{form.service || 'Not set'}</dd></div>
               <div><dt>App credential</dt><dd>{credential?.name || 'Not selected'}</dd></div>
               <div><dt>Machine</dt><dd>{machine?.hostName || form.expectedHostName || 'Not selected'}</dd></div>
-              <div><dt>Windows service</dt><dd>{selectedService?.displayName ? `${selectedService.displayName} (${form.windowsServiceName})` : form.windowsServiceName || 'Not selected'}</dd></div>
+              {isApp
+                ? <div><dt>Restarts</dt><dd>The application itself</dd></div>
+                : <div><dt>Windows service</dt><dd>{selectedService?.displayName ? `${selectedService.displayName} (${form.windowsServiceName})` : form.windowsServiceName || 'Not selected'}</dd></div>}
               <div><dt>Operations</dt><dd>{form.allowedOperations.map(operationLabel).join(', ') || 'None'}</dd></div>
               <div>
-                <dt>Permission check</dt>
+                <dt>{isApp ? 'Readiness check' : 'Permission check'}</dt>
                 <dd>
                   {!preflightCurrent
                     ? (preflight.loading ? 'Checking...' : 'Not run yet')
@@ -796,7 +890,7 @@ function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
             </dl>
             {!canEnable && (
               <p className="remediation-target-derived-field">
-                Enable becomes available once the permission check passes. You can save the target disabled now and enable it later.
+                Enable becomes available once the {isApp ? 'readiness' : 'permission'} check passes. You can save the target disabled now and enable it later.
               </p>
             )}
           </div>
@@ -807,10 +901,10 @@ function TargetWizard({ initialForm, projects, machines, onCancel, onSaved }) {
         {step > 0 && (
           <Button variant="secondary" onClick={() => setStep((s) => s - 1)} disabled={saving}>Back</Button>
         )}
-        {step < WIZARD_STEPS.length - 1 && (
-          <Button variant="primary" onClick={() => setStep((s) => s + 1)} disabled={!stepValid[step]}>Next</Button>
+        {step < steps.length - 1 && (
+          <Button variant="primary" onClick={() => setStep((s) => s + 1)} disabled={!stepValid[stepKey]}>Next</Button>
         )}
-        {step === WIZARD_STEPS.length - 1 && (
+        {step === steps.length - 1 && (
           <>
             <Button variant="primary" onClick={() => save(true)} disabled={saving || !canEnable}>
               {saving ? 'Saving...' : isEditing ? 'Save and enable' : 'Enable'}

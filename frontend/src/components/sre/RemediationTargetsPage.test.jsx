@@ -85,7 +85,7 @@ const missingRightsPreflight = {
   ],
   requiredRights: ['Query', 'Start', 'Stop'],
   missingRights: ['Start', 'Stop'],
-  fixCommand: '.\\tools\\remediation\\Grant-KaironServiceRights.ps1 -ServiceName ScopedService -Rights Start,Stop'
+  fixCommand: ".\\tools\\remediation\\Set-KaironServicePermission.ps1 -ServiceName 'ScopedService' -Sid 'S-1-5-80-1' -Rights Query,Start,Stop"
 };
 
 function renderPage(props = {}) {
@@ -111,6 +111,7 @@ beforeEach(() => {
  * preselected), Windows service picked from the real list. */
 async function fillWizardToOperations(user) {
   await user.click(screen.getAllByRole('button', { name: '+ Configure Target' })[0]);
+  await user.click(screen.getByRole('radio', { name: /A Windows service/ }));
   await user.selectOptions(await screen.findByLabelText('Project'), 'proj-1');
   await waitFor(() => expect(screen.getByLabelText('App credential')).toHaveValue('cred-1'));
   await user.type(screen.getByLabelText('Logical service'), 'OrderProcessingService');
@@ -271,6 +272,7 @@ describe('Configure Target wizard', () => {
     renderPage();
     await screen.findByText('No remediation targets yet');
     await user.click(screen.getAllByRole('button', { name: '+ Configure Target' })[0]);
+    await user.click(screen.getByRole('radio', { name: /A Windows service/ }));
     await user.selectOptions(screen.getByLabelText('Project'), 'proj-1');
     await waitFor(() => expect(screen.getByLabelText('App credential')).toHaveValue('cred-1'));
     await user.type(screen.getByLabelText('Logical service'), 'OrderProcessingService');
@@ -291,6 +293,7 @@ describe('Configure Target wizard', () => {
     remediationTargetsApi.list.mockResolvedValue([]);
     remediationTargetsApi.machineServices.mockRejectedValue({ status: 422, code: 'remote-not-supported', message: 'remote' });
     renderPage({ preselectMachineId: 'machine-1' });
+    await user.click(await screen.findByRole('radio', { name: /A Windows service/ }));
     await user.selectOptions(await screen.findByLabelText('Project'), 'proj-1');
     await waitFor(() => expect(screen.getByLabelText('App credential')).toHaveValue('cred-1'));
     await user.type(screen.getByLabelText('Logical service'), 'Svc');
@@ -322,6 +325,7 @@ describe('Configure Target wizard', () => {
       machineId: 'machine-1',
       telemetryCredentialId: 'cred-1',
       expectedHostName: 'enrolled-host',
+      kind: 'WindowsService',
       windowsServiceName: 'ScopedService',
       allowedOperations: ['RunHealthCheck', 'RestartService']
     };

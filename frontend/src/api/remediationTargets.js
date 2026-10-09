@@ -34,6 +34,13 @@ export function enable(id) {
   return request(client.post(`/v1/remediation-targets/${id}/enable`));
 }
 
+/** One click from Connect an App: let KAIRON restart this connected application when an operator
+ * approves a fix. The backend derives everything from the pairing session and the Agent-confirmed
+ * machine - nothing is chosen in the browser. Idempotent. */
+export function enableAppRestartFromPairing(pairingId) {
+  return request(client.post(`/v1/remediation-targets/app-process/from-pairing/${pairingId}`));
+}
+
 /** Preflight-only - validates without persisting. Returns { valid, errors }. */
 export function validate(payload) {
   return request(client.post('/v1/remediation-targets/validate', payload));

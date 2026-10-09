@@ -1502,6 +1502,18 @@
   border-radius: var(--radius-button);
 }
 
+/* --- Connect an App: automatic recovery offer ---------------------------- */
+
+.sdk-restart-offer {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.sdk-restart-offer p { margin: 0; }
+
 /* --- User-controlled database export and deletion ------------------------ */
 
 .settings-data-management {

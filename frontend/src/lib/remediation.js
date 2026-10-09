@@ -9,7 +9,7 @@
 
 /** TargetReadiness -> { label, tone, explanation }. tone matches ui/Badge tones. */
 export const READINESS = {
-  Ready: { label: 'Ready', tone: 'healthy', explanation: 'KAIRON can run the allowed operations on this service.' },
+  Ready: { label: 'Ready', tone: 'healthy', explanation: 'KAIRON can run the allowed operations on this target once you approve them.' },
   Disabled: { label: 'Disabled', tone: 'neutral', explanation: 'This target is switched off. Nothing will run against it.' },
   PermissionMissing: {
     label: 'Needs Permission',
@@ -56,6 +56,16 @@ export const READINESS = {
     label: 'Operation not allowed',
     tone: 'medium',
     explanation: 'This target does not allow that operation.'
+  },
+  ProcessUnknown: {
+    label: 'Waiting for the app',
+    tone: 'medium',
+    explanation: 'KAIRON has not yet identified which process is the application. Run it (with an up-to-date SDK) and send it a request.'
+  },
+  UserAgentOffline: {
+    label: 'User not signed in',
+    tone: 'medium',
+    explanation: 'The application can only be restarted while the Windows user who runs it is signed in (the KAIRON UserAgent starts at sign-in).'
   }
 };
 
@@ -73,8 +83,24 @@ export const OPERATIONS = [
   { id: 'StopService', label: 'Stop the service', description: 'Stops the service and leaves it stopped. Causes an outage until started again.', risk: 'High' }
 ];
 
+/** The only operation an application-process target carries: the UserAgent restarts the app's
+ * own process (same program, arguments and folder) after approval. */
+export const APP_OPERATIONS = [
+  {
+    id: 'RestartApplication',
+    label: 'Restart the application',
+    description: 'Stops the app and starts it again exactly as it was started. Brief downtime.',
+    risk: 'Medium'
+  }
+];
+
+export const TARGET_KINDS = {
+  AppProcess: { label: 'App process', description: 'The connected application itself, restarted by KAIRON as its own user.' },
+  WindowsService: { label: 'Windows service', description: 'An existing Windows service, controlled through the Service Control Manager.' }
+};
+
 export function operationLabel(id) {
-  return OPERATIONS.find((o) => o.id === id)?.label || humanizeIdentifier(id);
+  return [...OPERATIONS, ...APP_OPERATIONS].find((o) => o.id === id)?.label || humanizeIdentifier(id);
 }
 
 /** Windows rights (as the pre-flight reports them) -> what they let KAIRON do. */
@@ -100,7 +126,10 @@ export const EXECUTION_FAILURE = {
   Timeout: 'The service did not respond in time',
   InvalidTarget: 'The remediation target is not valid',
   CredentialInvalid: 'The application credential is no longer valid',
-  MachineMismatch: 'The application is running on a different machine'
+  MachineMismatch: 'The application is running on a different machine',
+  ProcessRestartFailed: 'The application could not be restarted',
+  ProcessRestartUnconfirmed: 'The restart was started but its outcome was not confirmed',
+  UserAgentOffline: 'The app owner is not signed in, so nothing was restarted'
 };
 
 /**

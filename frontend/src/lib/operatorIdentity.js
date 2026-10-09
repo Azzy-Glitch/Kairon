@@ -30,6 +30,11 @@ export function saveLastOperator(name) {
  * `on ScmTestDependency (DESKTOP-ABC, Development)`. Empty string when nothing is known.
  */
 export function describeActionTarget(action, environment) {
+  if (action?.targetKind === 'AppProcess') {
+    const program = action.targetProcessExecutable ? action.targetProcessExecutable.split(/[\\/]/).pop() : 'the application';
+    const where = [action.targetHostName, environment].filter(Boolean).join(', ');
+    return ` (restarts ${program}${action.targetProcessWorkingDirectory ? ` in ${action.targetProcessWorkingDirectory}` : ''}${where ? `, ${where}` : ''})`;
+  }
   const service = action?.targetWindowsServiceName;
   const where = [action?.targetHostName, environment].filter(Boolean).join(', ');
   if (service) return ` on ${service}${where ? ` (${where})` : ''}`;

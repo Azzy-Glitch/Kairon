@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { sdkApi } from '../../api';
+import { sdkApi, remediationTargetsApi } from '../../api';
 import { useToast } from '../Toast';
 import { IconCheck, IconAlertTriangle, IconLink } from '../Icons';
 
@@ -461,6 +461,61 @@ function ConnectionStatus({ pairing, onTelemetry }) {
       )}
       {fullyConnected && onTelemetry && (
         <button type="button" className="small-btn sdk-primary-action" onClick={onTelemetry}>View Live Telemetry</button>
+      )}
+      {fullyConnected && (
+        <AppRestartOffer pairingId={pairing.pairingId} enabledTargetId={connection?.appRestartTargetId} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The one remaining choice after connecting: whether KAIRON may restart this application when an
+ * operator approves a fix. Nothing else to configure - no Windows service, no permission script:
+ * the KAIRON UserAgent restarts the app as the same user, exactly as it was started. Every restart
+ * still needs an explicit approval on the incident.
+ */
+export function AppRestartOffer({ pairingId, enabledTargetId }) {
+  const toast = useToast();
+  const [enabling, setEnabling] = useState(false);
+  const [enabled, setEnabled] = useState(Boolean(enabledTargetId));
+  const [problem, setProblem] = useState(null);
+
+  useEffect(() => { if (enabledTargetId) setEnabled(true); }, [enabledTargetId]);
+
+  const enable = async () => {
+    setEnabling(true);
+    setProblem(null);
+    try {
+      await remediationTargetsApi.enableAppRestartFromPairing(pairingId);
+      setEnabled(true);
+      toast.addToast('KAIRON can now restart this app when you approve a fix', 'success');
+    } catch (err) {
+      setProblem(err?.message || 'Could not enable automatic recovery.');
+    } finally {
+      setEnabling(false);
+    }
+  };
+
+  return (
+    <div className="sdk-restart-offer" role="group" aria-label="Automatic recovery">
+      <span className="sdk-verify-title">Automatic recovery</span>
+      {enabled ? (
+        <p>
+          <IconCheck className="w-4 h-4" aria-hidden="true" /> When this app has an incident, KAIRON can propose
+          restarting it. Nothing runs until you approve it on the incident.
+        </p>
+      ) : (
+        <>
+          <p>
+            Let KAIRON restart this app when you approve a fix. It is restarted exactly as you started it (same program,
+            arguments and folder) by KAIRON running as you - no Windows service or extra setup.
+          </p>
+          <button type="button" className="small-btn sdk-primary-action" onClick={enable} disabled={enabling}>
+            {enabling ? 'Enabling...' : 'Let KAIRON restart this app when I approve'}
+          </button>
+          {problem && <p className="sdk-hint" role="alert">{problem}</p>}
+        </>
       )}
     </div>
   );
