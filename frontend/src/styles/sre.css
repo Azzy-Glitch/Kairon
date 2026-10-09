@@ -1502,7 +1502,12 @@
   border-radius: var(--radius-button);
 }
 
-.incident-close { margin-top: 16px; }
+.incident-close { margin: 12px 0; }
+.incident-close-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+  color: var(--text-muted); font-size: 13px;
+}
 
 /* --- Connect an App: automatic recovery offer ---------------------------- */
 

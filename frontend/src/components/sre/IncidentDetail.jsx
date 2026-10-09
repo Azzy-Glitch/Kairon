@@ -144,6 +144,16 @@ function DetailBody({ incident, actions }) {
         </dl>
       </header>
 
+      {/* At the top, not after the panels: an operator looking for a way out of an incident
+          should not have to scroll past the whole investigation to find it. */}
+      <CloseIncident
+        key={`close-${incident.id}`}
+        incident={incident}
+        busy={actions.busyActionId === 'cancel'}
+        error={actions.busyActionId === null ? actions.actionError : null}
+        onClose={(operator, reason) => actions.cancel(incident.id, operator, reason)}
+      />
+
       <LifecycleRail stages={lifecycle} />
 
       {/* Only the backend can declare an incident resolved (frontend PRD section 13). This banner
@@ -237,14 +247,6 @@ function DetailBody({ incident, actions }) {
           )}
 
           <VerificationPanel verification={verification} />
-
-          <CloseIncident
-            key={`close-${incident.id}`}
-            incident={incident}
-            busy={actions.busyActionId === 'cancel'}
-            error={actions.busyActionId === null ? actions.actionError : null}
-            onClose={(operator, reason) => actions.cancel(incident.id, operator, reason)}
-          />
         </div>
 
         <aside className="incident-detail-side">

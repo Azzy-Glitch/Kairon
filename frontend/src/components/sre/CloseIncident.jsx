@@ -38,8 +38,9 @@ export default function CloseIncident({ incident, onClose, busy, error }) {
 
   if (!open) {
     return (
-      <div className="incident-close">
-        <Button variant="ghost" size="compact" onClick={() => setOpen(true)}>Close incident</Button>
+      <div className="incident-close incident-close-bar">
+        <span>Nothing more to do here? Close this incident; KAIRON opens a new one if the problem returns.</span>
+        <Button variant="secondary" onClick={() => setOpen(true)}>Close incident</Button>
       </div>
     );
   }
