@@ -44,6 +44,7 @@ public class KaironMiddleware
 
         var stopwatch = Stopwatch.StartNew();
         Exception? exception = null;
+        _metrics.BeginRequest();
 
         string? requestBody = null;
         if (_options.CaptureRequestBody)
@@ -70,6 +71,7 @@ public class KaironMiddleware
         finally
         {
             stopwatch.Stop();
+            _metrics.EndRequest();
 
             string? responseBody = null;
 

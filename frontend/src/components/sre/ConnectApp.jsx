@@ -465,6 +465,9 @@ function ConnectionStatus({ pairing, onTelemetry }) {
       {fullyConnected && (
         <AppRestartOffer pairingId={pairing.pairingId} enabledTargetId={connection?.appRestartTargetId} />
       )}
+      {fullyConnected && connection?.credentialId && status?.projectId && (
+        <AutoSignalSettings projectId={status.projectId} credentialId={connection.credentialId} />
+      )}
     </div>
   );
 }
@@ -517,6 +520,78 @@ export function AppRestartOffer({ pairingId, enabledTargetId }) {
           {problem && <p className="sdk-hint" role="alert">{problem}</p>}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * What KAIRON measures in this app automatically - with no code in the app. CPU, latency and errors
+ * are always measured; queue depth (requests in progress) and retries of failed outgoing calls can be
+ * switched off or tuned here, and the app's SDK picks the change up by itself within a minute.
+ */
+export function AutoSignalSettings({ projectId, credentialId }) {
+  const toast = useToast();
+  const [settings, setSettings] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    sdkApi.getAutoSignals(projectId, credentialId)
+      .then((value) => { if (!cancelled) setSettings(value); })
+      .catch(() => { if (!cancelled) setProblem('Could not load the automatic signal settings.'); });
+    return () => { cancelled = true; };
+  }, [projectId, credentialId]);
+
+  const save = async (next) => {
+    const previous = settings;
+    setSettings(next);
+    setSaving(true);
+    setProblem(null);
+    try {
+      setSettings(await sdkApi.updateAutoSignals(projectId, credentialId, next));
+      toast.addToast('Saved - the app picks this up within a minute', 'success');
+    } catch (err) {
+      setSettings(previous);
+      setProblem(err?.message || 'Could not save the automatic signal settings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!settings) {
+    return problem ? <p className="sdk-hint" role="alert">{problem}</p> : null;
+  }
+
+  const retryWindow = settings.retryWindowSeconds;
+  return (
+    <div className="sdk-restart-offer sdk-auto-signals" role="group" aria-label="Automatic signals">
+      <span className="sdk-verify-title">Measured automatically - no code in your app</span>
+      <p>CPU, latency and errors are always measured for every request.</p>
+      <label className="sdk-auto-signal">
+        <input type="checkbox" checked={settings.autoQueueDepth} disabled={saving}
+          onChange={(e) => save({ ...settings, autoQueueDepth: e.target.checked })} />
+        <span><strong>Queue depth</strong> - how many requests are waiting or in progress (the peak of each sample).</span>
+      </label>
+      <label className="sdk-auto-signal">
+        <input type="checkbox" checked={settings.autoRetries} disabled={saving}
+          onChange={(e) => save({ ...settings, autoRetries: e.target.checked })} />
+        <span><strong>Retries</strong> - when your app repeats an outgoing HTTP call that just failed.</span>
+      </label>
+      {settings.autoRetries && (
+        <label className="sdk-auto-signal sdk-auto-signal-window">
+          <span>Count a repeat as a retry within</span>
+          <input type="number" min={1} max={300} value={retryWindow} disabled={saving} aria-label="Retry window in seconds"
+            onChange={(e) => setSettings({ ...settings, retryWindowSeconds: Number(e.target.value) })}
+            onBlur={(e) => {
+              const seconds = Math.round(Number(e.target.value));
+              if (seconds >= 1 && seconds <= 300) save({ ...settings, retryWindowSeconds: seconds });
+              else setProblem('Choose between 1 and 300 seconds.');
+            }} />
+          <span>seconds of a failure</span>
+        </label>
+      )}
+      {problem && <p className="sdk-hint" role="alert">{problem}</p>}
     </div>
   );
 }

@@ -156,6 +156,20 @@ by the KAIRON UserAgent, never by the SDK.
 Delivery retries transient failures (`delivery_attempts`, default 3) and honours `Retry-After`
 on a rate limit. A batch over the backend's 1 MiB limit is split rather than dropped.
 
+### Measured automatically
+
+With `Kairon.attach(app, ...)` alone, every sample carries CPU, memory, latency and errors, plus:
+
+- **Queue depth** - the most requests waiting or in progress at once since the last sample.
+- **Retries** - outgoing HTTP calls your app repeats within a few seconds of that call failing
+  (connection error, timeout, HTTP 429 or 5xx), observed for `urllib`, `requests`/`urllib3` and
+  `httpx`. KAIRON's own calls are never counted.
+
+Both are switched on or off, and the retry window tuned, per app in the KAIRON desktop
+(**Connect an App**); the SDK picks the change up within a minute. No code or configuration in
+the app. If your app tracks its own backlog or retries, `kairon.report_queue_depth(n)` and
+`kairon.record_retries(n)` report them instead.
+
 ### Reporting outside a web request
 
 For a worker, scheduled job, or anywhere there is no HTTP request to instrument,

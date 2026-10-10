@@ -110,10 +110,36 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
 
         await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
 
-        Assert.Equal(14, await UserVersionAsync(db));
+        Assert.Equal(SqliteSchemaMigrator.CurrentVersion, await UserVersionAsync(db));
         var columns = await db.Database.SqlQueryRaw<string>(
             "SELECT name AS Value FROM pragma_table_info('SreIncidents')").ToListAsync();
         Assert.Contains("AssessmentJson", columns);
+    }
+
+    [Fact]
+    public async Task VersionFourteenUpgradeAddsAutomaticSignalSettingsWithEverythingOn()
+    {
+        await using var db = CreateContext();
+        await db.Database.EnsureCreatedAsync();
+        foreach (var column in new[] { "AutoQueueDepth", "AutoRetries", "RetryWindowSeconds" })
+            await db.Database.ExecuteSqlRawAsync($"ALTER TABLE \"ProjectApiCredentials\" DROP COLUMN \"{column}\";");
+        var projectId = Guid.NewGuid();
+        await db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO \"Projects\" (\"Id\", \"Name\", \"Slug\", \"IsActive\", \"CreatedAt\") VALUES ({0}, 'Orders', 'orders', 1, '2026-01-01');",
+            projectId.ToString().ToUpperInvariant());
+        await db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO \"ProjectApiCredentials\" (\"Id\", \"ProjectId\", \"Name\", \"KeyPrefix\", \"KeyHash\", \"CreatedAt\", \"RowVersion\") " +
+            "VALUES ({0}, {1}, 'python-sdk', 'krn_abc', 'hash', '2026-01-01', {2});",
+            Guid.NewGuid().ToString().ToUpperInvariant(), projectId.ToString().ToUpperInvariant(), Guid.NewGuid().ToString().ToUpperInvariant());
+        await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 14;");
+
+        await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
+
+        Assert.Equal(15, await UserVersionAsync(db));
+        var credential = await db.ProjectApiCredentials.AsNoTracking().SingleAsync();
+        Assert.True(credential.AutoQueueDepth);
+        Assert.True(credential.AutoRetries);
+        Assert.Equal(10, credential.RetryWindowSeconds);
     }
 
     [Fact]

@@ -105,10 +105,23 @@ The most commonly set fields on `KaironOptions`:
 See `KaironOptions.cs` for the complete list, including queue capacity, timeouts, and body
 capture limits.
 
+### Measured automatically
+
+With `AddKairon` alone, every sample carries CPU, memory, latency and errors, plus:
+
+- **Queue depth** - the most requests waiting or in progress at once since the last sample.
+- **Retries** - outgoing `HttpClient` calls your app repeats within a few seconds of that call
+  failing (an exception, HTTP 429 or 5xx), observed through HttpClient's built-in diagnostics -
+  hand-written loops and Polly policies alike. KAIRON's own calls are never counted.
+
+Both are switched on or off, and the retry window tuned, per app in the KAIRON desktop
+(**Connect an App**); the SDK picks the change up within a minute. No code or configuration in
+the app. Same behaviour as the Python SDK.
+
 ### Reporting application-known signals
 
-Two signals only the host application can know are reported through `IKaironMetrics`, resolved
-from DI:
+If your app tracks its own backlog or retries, report them through `IKaironMetrics`, resolved from
+DI; a reported value takes precedence over the automatic one:
 
 ```csharp
 public class OrderWorker(IKaironMetrics metrics)

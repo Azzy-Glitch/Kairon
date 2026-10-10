@@ -307,6 +307,9 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Name).HasMaxLength(200);
             entity.Property(e => e.KeyPrefix).HasMaxLength(20).IsRequired();
             entity.Property(e => e.KeyHash).HasMaxLength(200).IsRequired();
+            entity.Property(e => e.AutoQueueDepth).HasDefaultValue(true);
+            entity.Property(e => e.AutoRetries).HasDefaultValue(true);
+            entity.Property(e => e.RetryWindowSeconds).HasDefaultValue(SdkAutoSignalDefaults.RetryWindowSeconds);
             // See ProjectApiCredential.RowVersion's remarks: a genuine, database-enforced
             // optimistic-concurrency guard against two confirmed re-pair sessions both completing
             // against the same old credential.

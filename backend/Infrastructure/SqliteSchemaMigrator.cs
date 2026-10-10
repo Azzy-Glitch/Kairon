@@ -19,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 14;
+    public const int CurrentVersion = 15;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -342,6 +342,23 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                 await ExecuteAsync(connection, transaction, "PRAGMA user_version = 14;", cancellationToken);
                 version = 14;
                 _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: incident AI assessment", version);
+            }
+
+            // Version 15: automatic SDK signal settings per paired app (credential), set from the
+            // desktop. Existing credentials get the defaults: both signals on, 10 s retry window.
+            if (version == 14) {
+                var credentialColumns = await ColumnsAsync(connection, transaction, "ProjectApiCredentials", cancellationToken);
+                foreach (var (column, definition) in new[] {
+                    ("AutoQueueDepth", "INTEGER NOT NULL DEFAULT 1"),
+                    ("AutoRetries", "INTEGER NOT NULL DEFAULT 1"),
+                    ("RetryWindowSeconds", "INTEGER NOT NULL DEFAULT 10") }) {
+                    if (!credentialColumns.Contains(column))
+                        await ExecuteAsync(connection, transaction,
+                            $"ALTER TABLE \"ProjectApiCredentials\" ADD COLUMN \"{column}\" {definition};", cancellationToken);
+                }
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 15;", cancellationToken);
+                version = 15;
+                _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: automatic SDK signal settings", version);
             }
 
             if (version != CurrentVersion)

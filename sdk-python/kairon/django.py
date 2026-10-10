@@ -40,6 +40,7 @@ class KaironMiddleware(MiddlewareMixin):
     def process_request(self, request):
         request._kairon_started = time.monotonic()
         request._kairon_exception = None
+        self.kairon._begin_request()
 
     def process_exception(self, request, exception):
         request._kairon_exception = exception
@@ -57,6 +58,7 @@ class KaironMiddleware(MiddlewareMixin):
             if reported:
                 return
             reported = True
+            self.kairon._end_request()
             self.kairon.record_http_request(
                 request.method, request.path_info, response.status_code,
                 int((time.monotonic() - start) * 1000),

@@ -36,6 +36,7 @@ from uuid import UUID, uuid4
 
 from . import _credential_store
 from . import _machine_proof
+from . import _outgoing
 from ._endpoint_security import is_endpoint_allowed
 
 _logger = logging.getLogger("kairon")
@@ -109,8 +110,13 @@ _opener = urllib.request.build_opener(_RefuseRedirects)
 
 def _open(request: urllib.request.Request, timeout: float):
     """The single network entry point for this module. Goes through the private, non-redirecting
-    opener above - never urllib.request.urlopen, which follows redirects by default."""
-    return _opener.open(request, timeout=timeout)
+    opener above - never urllib.request.urlopen, which follows redirects by default. Marked as the
+    SDK's own traffic so automatic retry counting never mistakes it for the application's."""
+    _outgoing._internal.active = True
+    try:
+        return _opener.open(request, timeout=timeout)
+    finally:
+        _outgoing._internal.active = False
 
 DEFAULT_IGNORED_PATH_PREFIXES = ("/health", "/healthz", "/metrics", "/favicon.ico")
 
@@ -515,6 +521,19 @@ class Kairon:
         self._metric_requests = 0
         self._metric_errors = 0
         self._metric_duration_ms = 0
+        # Signals only the application can know (parity with the .NET SDK's IKaironMetrics). They
+        # ride on the automatic metric sample rather than a separate one, so every sample carries
+        # CPU, latency, errors, retries and queue depth together.
+        self._metric_retries = 0
+        self._retries_tracked = False
+        self._queue_depth: Optional[int] = None
+        # Measured automatically (no application code). Whether each is collected is set per app in
+        # the KAIRON desktop and fetched by the SDK itself (_refresh_settings); both default on.
+        self._inflight = 0
+        self._inflight_peak = 0
+        self.auto_queue_depth = True
+        self.auto_retries = True
+        self._settings_refreshed_at: Optional[float] = None
         self.last_shutdown_drained: Optional[bool] = None
         # Existing direct Kairon(...) callers keep the legacy wire contract. The one-call web
         # integrations opt into the backend's idempotent normalized batch contract below.
@@ -678,6 +697,11 @@ class Kairon:
                 self._stop_event.clear()
                 self._thread = threading.Thread(target=self._run, name="kairon-sender", daemon=True)
                 self._thread.start()
+            if self.enabled and self.auto_retries:
+                try:
+                    _outgoing.install()
+                except Exception:
+                    _logger.debug("kairon: outgoing call observation unavailable", exc_info=True)
             if self.enabled and self.enable_metrics and self._metrics_thread is None:
                 self._metrics_thread = threading.Thread(
                     target=self._run_metrics, name="kairon-metrics", daemon=True
@@ -875,6 +899,35 @@ class Kairon:
             if is_error:
                 self._metric_errors += 1
 
+    def record_retries(self, count: int = 1) -> None:
+        """Report retries your code performed (e.g. re-calling a failing dependency).
+
+        Added to the next automatic metric sample; KAIRON's retry-storm detection uses it. Once
+        reported, later samples carry 0 instead of nothing, so "stopped retrying" is visible.
+        """
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            return
+        if count <= 0:
+            return
+        with self._metrics_lock:
+            self._metric_retries += count
+            self._retries_tracked = True
+
+    def report_queue_depth(self, depth: int) -> None:
+        """Report how much work is currently waiting in your app's queue (a gauge, not a counter).
+
+        Sent with every automatic metric sample until you report a new value; KAIRON's backlog
+        detection uses it.
+        """
+        try:
+            depth = int(depth)
+        except (TypeError, ValueError):
+            return
+        with self._metrics_lock:
+            self._queue_depth = max(0, depth)
+
     def _drain_request_metrics(self) -> tuple[int, int, Optional[float]]:
         with self._metrics_lock:
             requests = self._metric_requests
@@ -885,6 +938,74 @@ class Kairon:
             self._metric_duration_ms = 0
         latency = round(duration / requests, 1) if requests else None
         return requests, errors, latency
+
+    def _begin_request(self) -> None:
+        """Called by the framework middleware when a request starts (requests in progress)."""
+        with self._metrics_lock:
+            self._inflight += 1
+            if self._inflight > self._inflight_peak:
+                self._inflight_peak = self._inflight
+
+    def _end_request(self) -> None:
+        with self._metrics_lock:
+            self._inflight = max(0, self._inflight - 1)
+
+    def _drain_app_metrics(self) -> tuple[Optional[int], Optional[int]]:
+        """Retries and queue depth for the next sample. A value the application reported itself wins;
+        otherwise the automatically measured one is used when that signal is switched on."""
+        auto_retries = self.auto_retries and _outgoing.calls.installed
+        observed = _outgoing.calls.drain() if auto_retries else 0
+        with self._metrics_lock:
+            app_retries = self._metric_retries
+            self._metric_retries = 0
+            if auto_retries:
+                retries: Optional[int] = app_retries + observed
+            else:
+                retries = app_retries if self._retries_tracked else None
+            # The peak since the last sample, so a burst that clears between samples still shows.
+            peak = self._inflight_peak
+            self._inflight_peak = self._inflight
+            if self._queue_depth is not None:
+                queue: Optional[int] = self._queue_depth
+            else:
+                queue = peak if self.auto_queue_depth else None
+            return retries, queue
+
+    _SETTINGS_REFRESH_SECONDS = 60.0
+
+    def _refresh_settings(self, force: bool = False) -> None:
+        """Fetches this app's automatic-signal settings from KAIRON (set in the desktop). Best effort:
+        without an answer the current settings - by default, everything on - stay in force."""
+        now = time.monotonic()
+        if not force and self._settings_refreshed_at is not None and now - self._settings_refreshed_at < self._SETTINGS_REFRESH_SECONDS:
+            return
+        self._settings_refreshed_at = now
+        if not self.enabled or not self.api_key or not self.project_id or not is_endpoint_allowed(self.endpoint):
+            return
+        try:
+            request = urllib.request.Request(
+                f"{self.endpoint}/api/v1/sdk/settings",
+                data=json.dumps({"projectId": str(self.project_id)}).encode("utf-8"),
+                method="POST", headers={"Content-Type": "application/json", "X-Kairon-API-Key": self.api_key})
+            with _open(request, timeout=self.timeout_seconds) as response:
+                if not 200 <= response.status < 300:
+                    return
+                settings = json.loads(response.read(64 * 1024) or b"{}")
+        except Exception:
+            return
+        if not isinstance(settings, dict):
+            return
+        self.auto_queue_depth = bool(settings.get("autoQueueDepth", True))
+        self.auto_retries = bool(settings.get("autoRetries", True))
+        window = settings.get("retryWindowSeconds")
+        if isinstance(window, (int, float)) and 1 <= window <= 300:
+            _outgoing.calls.window_seconds = float(window)
+        _outgoing.calls.enabled = self.auto_retries
+        if self.auto_retries:
+            try:
+                _outgoing.install()
+            except Exception:
+                pass
 
     # --- internal enqueue (also used by kairon.middleware) -----------------------------
 
@@ -1124,6 +1245,10 @@ class Kairon:
 
         while not self._stop_event.wait(self.metrics_interval_seconds):
             try:
+                self._refresh_settings()
+            except Exception:
+                pass
+            try:
                 now_wall = time.perf_counter()
                 now_cpu = time.process_time()
                 elapsed = max(now_wall - last_wall, 0.001)
@@ -1135,12 +1260,15 @@ class Kairon:
                 last_cpu = now_cpu
 
                 requests, errors, latency = self._drain_request_metrics()
+                retries, queue_depth = self._drain_app_metrics()
                 self.record_metric(
                     cpu_percent=round(cpu_percent, 1),
                     memory_percent=_process_memory_percent(),
                     response_time_ms=latency,
                     request_count=requests,
                     error_count=errors,
+                    retry_count=retries,
+                    queue_depth=queue_depth,
                     component=self.service,
                 )
             except Exception:

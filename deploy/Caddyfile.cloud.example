@@ -52,7 +52,7 @@
 		path /api/v1/telemetry/events
 		path /api/v1/telemetry/machine-proofs
 		path /api/agent/machines/*/telemetry-proofs/*/confirm
-		path /api/v1/sdk/pair /api/v1/sdk/pair/*/confirm
+		path /api/v1/sdk/pair /api/v1/sdk/pair/*/confirm /api/v1/sdk/settings
 		path /api/agent/register
 		path /api/agent/machines/*/heartbeat /api/agent/machines/*/user-session/heartbeat
 	}

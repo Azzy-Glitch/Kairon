@@ -85,7 +85,9 @@ public static class KaironExtensions
     private static IServiceCollection AddKaironServices(IServiceCollection services)
     {
         services.AddSingleton<IKaironTelemetryQueue, KaironTelemetryQueue>();
-        services.AddSingleton<IKaironMetrics, KaironMetrics>();
+        services.AddSingleton<KaironAutoSignals>();
+        services.AddSingleton<IKaironMetrics>(serviceProvider =>
+            new KaironMetrics(serviceProvider.GetRequiredService<KaironAutoSignals>()));
 
         // A NAMED client rather than services.AddHttpClient<KaironTelemetryClient>(): the typed-
         // client form constructs KaironTelemetryClient via ActivatorUtilities, which only ever

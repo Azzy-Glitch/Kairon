@@ -81,12 +81,16 @@ public sealed class ProjectsController : ControllerBase
         var credentials = await _db.ProjectApiCredentials.AsNoTracking()
             .Where(x => x.ProjectId == projectId)
             .OrderByDescending(x => x.CreatedAt)
-            .Select(x => new { x.Id, x.Name, x.KeyPrefix, x.CreatedAt, x.RevokedAt })
+            .Select(x => new { x.Id, x.Name, x.KeyPrefix, x.CreatedAt, x.RevokedAt, x.AutoQueueDepth, x.AutoRetries, x.RetryWindowSeconds })
             .ToListAsync(cancellationToken);
         // SdkPairingService names every paired credential "{sdkType}-sdk"; surfacing that lets a
         // re-pair mint a code the same SDK can redeem (redeem refuses a mismatched SDK type). Null
         // for manually issued credentials, whose SDK is unknown.
-        return Ok(credentials.Select(x => new { x.Id, x.Name, x.KeyPrefix, x.CreatedAt, x.RevokedAt, SdkType = SdkTypeFromName(x.Name) }));
+        return Ok(credentials.Select(x => new
+        {
+            x.Id, x.Name, x.KeyPrefix, x.CreatedAt, x.RevokedAt, SdkType = SdkTypeFromName(x.Name),
+            AutoSignals = new SdkAutoSignalSettings(x.AutoQueueDepth, x.AutoRetries, x.RetryWindowSeconds)
+        }));
     }
 
     private static string? SdkTypeFromName(string name) => name switch

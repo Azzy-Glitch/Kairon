@@ -223,6 +223,40 @@ public class KaironTelemetryClient
         return delay > MaxRetryAfter ? MaxRetryAfter : delay;
     }
 
+    /// <summary>
+    /// Fetches this app's automatic-signal settings (set in the KAIRON desktop) and applies them.
+    /// Never throws; returns false when KAIRON could not answer, leaving the current settings.
+    /// </summary>
+    public async Task<bool> RefreshAutoSignalsAsync(KaironAutoSignals signals, CancellationToken cancellationToken = default)
+    {
+        if (_options.ProjectId == Guid.Empty || string.IsNullOrWhiteSpace(_options.ApiKey)) return false;
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.TimeoutSeconds)));
+            using var request = new HttpRequestMessage(HttpMethod.Post, "api/v1/sdk/settings")
+            {
+                Content = JsonContent.Create(new { projectId = _options.ProjectId })
+            };
+            request.Headers.TryAddWithoutValidation("X-Kairon-API-Key", _options.ApiKey);
+            using var response = await _http.SendAsync(request, timeout.Token);
+            if (!response.IsSuccessStatusCode) return false;
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(timeout.Token));
+            var root = document.RootElement;
+            if (root.TryGetProperty("autoQueueDepth", out var queue) && queue.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                signals.AutoQueueDepth = queue.GetBoolean();
+            if (root.TryGetProperty("autoRetries", out var retries) && retries.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                signals.AutoRetries = retries.GetBoolean();
+            if (root.TryGetProperty("retryWindowSeconds", out var window) && window.TryGetInt32(out var seconds))
+                signals.RetryWindow = TimeSpan.FromSeconds(seconds);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+    }
+
     public Task<TelemetryResponse?> SendAsync(
         TelemetryPayload payload,
         CancellationToken cancellationToken = default)

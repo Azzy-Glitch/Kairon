@@ -107,6 +107,7 @@ class ASGIAdapter:
         start = time.monotonic()
         status = 500
         exception = None
+        self.kairon._begin_request()
 
         async def observed_send(message):
             nonlocal status
@@ -120,6 +121,7 @@ class ASGIAdapter:
             exception = exc
             raise
         finally:
+            self.kairon._end_request()
             self.kairon.record_http_request(
                 scope.get("method", ""), path, status,
                 int((time.monotonic() - start) * 1000), exception,
@@ -185,6 +187,8 @@ class WSGIAdapter:
             return self.app(environ, start_response)
         start = time.monotonic()
         status = 500
+        self.kairon._begin_request()
+        ended = False
 
         def observed_start_response(status_line, headers, exc_info=None):
             nonlocal status
@@ -195,6 +199,10 @@ class WSGIAdapter:
             return start_response(status_line, headers, exc_info)
 
         def report(exception=None):
+            nonlocal ended
+            if not ended:
+                ended = True
+                self.kairon._end_request()
             if exception is None and status >= 500:
                 exception = getattr(self._handled, "exception", None)
             self.kairon.record_http_request(

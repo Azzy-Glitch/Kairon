@@ -57,6 +57,7 @@ public static class ServiceExtensions
         services.AddSingleton(TimeProvider.System);
         services.AddScoped<IPlatformAuditService, PlatformAuditService>();
         services.AddScoped<IProjectCredentialService, ProjectCredentialService>();
+        services.AddScoped<ISdkSettingsService, SdkSettingsService>();
         services.AddScoped<ISdkPairingService, SdkPairingService>();
         services.AddScoped<IAgentRegistrationService, AgentRegistrationService>();
         services.AddScoped<IMachineTelemetryBindingService, MachineTelemetryBindingService>();

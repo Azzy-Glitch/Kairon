@@ -19,6 +19,13 @@ public interface IKaironMetrics
 
     /// <summary>Reports the current depth of the application's pending work queue.</summary>
     void ReportQueueDepth(long depth);
+
+    /// <summary>Called by the SDK middleware when a request starts; requests in progress are the
+    /// automatic queue depth. No application needs to call this.</summary>
+    void BeginRequest() { }
+
+    /// <summary>Called by the SDK middleware when a request finishes.</summary>
+    void EndRequest() { }
 }
 
 public class KaironMetrics : IKaironMetrics
@@ -34,6 +41,42 @@ public class KaironMetrics : IKaironMetrics
     // identical to "this application does not track retries", which is exactly the distinction
     // post-remediation verification needs.
     private long _retriesEverReported;
+
+    // Measured automatically (KaironAutoSignals): requests in progress and retries of failed
+    // outgoing calls. A value the application reports itself always wins.
+    private readonly KaironAutoSignals? _signals;
+    private long _inflight;
+    private long _inflightPeak;
+    private long _observedRetries;
+    private int _outgoingObserved;
+
+    public KaironMetrics() : this(null) { }
+
+    public KaironMetrics(KaironAutoSignals? signals) => _signals = signals;
+
+    /// <summary>True while <see cref="KaironOutgoingCallObserver"/> is watching outgoing calls.</summary>
+    internal bool OutgoingCallsObserved
+    {
+        get => Volatile.Read(ref _outgoingObserved) == 1;
+        set => Volatile.Write(ref _outgoingObserved, value ? 1 : 0);
+    }
+
+    public void BeginRequest()
+    {
+        var current = Interlocked.Increment(ref _inflight);
+        long peak;
+        while (current > (peak = Interlocked.Read(ref _inflightPeak)) &&
+               Interlocked.CompareExchange(ref _inflightPeak, current, peak) != peak) { }
+    }
+
+    public void EndRequest()
+    {
+        long current;
+        do current = Interlocked.Read(ref _inflight);
+        while (current > 0 && Interlocked.CompareExchange(ref _inflight, current - 1, current) != current);
+    }
+
+    internal void RecordObservedRetry() => Interlocked.Increment(ref _observedRetries);
 
     public void RecordRequest(long durationMs, bool isError)
     {
@@ -62,18 +105,24 @@ public class KaironMetrics : IKaironMetrics
         var errors = Interlocked.Exchange(ref _errors, 0);
         var duration = Interlocked.Exchange(ref _totalDurationMs, 0);
         var retries = Interlocked.Exchange(ref _retries, 0);
+        var observed = Interlocked.Exchange(ref _observedRetries, 0);
+        var autoRetries = _signals?.AutoRetries == true && OutgoingCallsObserved;
+        if (autoRetries) retries += observed;
 
         // Queue depth is a gauge, not a counter: it is read, not reset, because the application's
-        // current backlog is still whatever it was after the interval ends.
+        // current backlog is still whatever it was after the interval ends. Without an application
+        // value, the peak of requests in progress since the last sample is the automatic one.
         var queue = Interlocked.Read(ref _queueDepth);
+        var peak = Interlocked.Exchange(ref _inflightPeak, Interlocked.Read(ref _inflight));
+        long? queueDepth = queue >= 0 ? queue : _signals?.AutoQueueDepth == true ? peak : null;
 
         return new MetricsSnapshot(
             requests,
             errors,
             requests > 0 ? (double)duration / requests : 0,
             retries,
-            queue >= 0 ? queue : null,
-            RetriesTracked: Interlocked.Read(ref _retriesEverReported) == 1);
+            queueDepth,
+            RetriesTracked: autoRetries || Interlocked.Read(ref _retriesEverReported) == 1);
     }
 }
 
@@ -97,6 +146,11 @@ public class KaironMetricsCollector : BackgroundService
     private readonly IKaironTelemetryQueue _queue;
     private readonly IKaironMetrics _metrics;
     private readonly KaironOptions _options;
+    private readonly KaironAutoSignals? _signals;
+    private readonly KaironTelemetryClient? _client;
+    private static readonly TimeSpan SettingsRefreshInterval = TimeSpan.FromSeconds(60);
+    private DateTime _settingsRefreshedAt = DateTime.MinValue;
+    private KaironOutgoingCallObserver? _outgoing;
 
     private TimeSpan _lastCpuTime;
     private DateTime _lastSampleAt;
@@ -109,6 +163,54 @@ public class KaironMetricsCollector : BackgroundService
         _queue = queue;
         _metrics = metrics;
         _options = options.Value;
+    }
+
+    public KaironMetricsCollector(
+        IKaironTelemetryQueue queue,
+        IKaironMetrics metrics,
+        IOptions<KaironOptions> options,
+        KaironAutoSignals signals,
+        KaironTelemetryClient client) : this(queue, metrics, options)
+    {
+        _signals = signals;
+        _client = client;
+    }
+
+    /// <summary>Fetches this app's automatic-signal settings (every minute) and starts or stops
+    /// watching outgoing calls to match. Best effort: never throws.</summary>
+    private async Task RefreshAutoSignalsAsync(CancellationToken stoppingToken)
+    {
+        if (_signals is null) return;
+        try
+        {
+            if (_client is not null && DateTime.UtcNow - _settingsRefreshedAt >= SettingsRefreshInterval)
+            {
+                _settingsRefreshedAt = DateTime.UtcNow;
+                await _client.RefreshAutoSignalsAsync(_signals, stoppingToken);
+            }
+
+            if (_signals.AutoRetries && _outgoing is null && _metrics is KaironMetrics metrics)
+            {
+                _outgoing = new KaironOutgoingCallObserver(metrics, _signals, _options.Endpoint);
+                _outgoing.Start();
+            }
+            else if (!_signals.AutoRetries && _outgoing is not null)
+            {
+                _outgoing.Dispose();
+                _outgoing = null;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !stoppingToken.IsCancellationRequested)
+        {
+            // Settings are best-effort; the current ones stay in force.
+        }
+    }
+
+    public override void Dispose()
+    {
+        _outgoing?.Dispose();
+        _outgoing = null;
+        base.Dispose();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -126,8 +228,10 @@ public class KaironMetricsCollector : BackgroundService
 
         try
         {
+            await RefreshAutoSignalsAsync(stoppingToken);
             while (await timer.WaitForNextTickAsync(stoppingToken))
             {
+                await RefreshAutoSignalsAsync(stoppingToken);
                 try
                 {
                     Emit();

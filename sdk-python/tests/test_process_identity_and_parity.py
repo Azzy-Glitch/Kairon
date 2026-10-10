@@ -117,3 +117,55 @@ def test_an_oversized_batch_is_split_instead_of_dropped(tmp_path, monkeypatch):
     assert len(calls) >= 2
     assert sum(len(batch) for batch in calls) == len(items)
     assert all(len(json.dumps({"events": batch})) <= 1_048_576 for batch in calls)
+
+
+def test_with_automatic_signals_switched_off_only_app_reported_values_are_sent(tmp_path):
+    collector = _collector(tmp_path)
+    collector.auto_queue_depth = False
+    collector.auto_retries = False
+
+    # Nothing reported: absent, not zero.
+    assert collector._drain_app_metrics() == (None, None)
+
+    collector.record_retries(3)
+    collector.record_retries(2)
+    collector.record_retries(0)        # ignored
+    collector.record_retries("bad")    # ignored
+    collector.report_queue_depth(17)
+    assert collector._drain_app_metrics() == (5, 17)
+
+    # Retries are a counter (reset per sample, then a meaningful 0); queue depth is a gauge (kept).
+    assert collector._drain_app_metrics() == (0, 17)
+    collector.report_queue_depth(-4)
+    assert collector._drain_app_metrics() == (0, 0)
+
+
+def test_queue_depth_is_the_peak_of_requests_in_progress_without_any_app_code(tmp_path):
+    collector = _collector(tmp_path)
+    collector.auto_retries = False
+
+    for _ in range(3):
+        collector._begin_request()
+    collector._end_request()
+    collector._end_request()                  # one still in progress
+    assert collector._drain_app_metrics()[1] == 3   # the peak since the last sample
+    assert collector._drain_app_metrics()[1] == 1   # then what is still in progress
+    collector._end_request()
+    collector._end_request()                  # never below zero
+    assert collector._drain_app_metrics()[1] == 1   # it was still in progress during this sample
+    assert collector._drain_app_metrics()[1] == 0
+
+
+def test_the_metrics_loop_sends_one_sample_carrying_cpu_retries_and_queue_depth(tmp_path, monkeypatch):
+    collector = _collector(tmp_path)
+    sent = []
+    monkeypatch.setattr(collector, "record_metric", lambda **kwargs: (sent.append(kwargs), collector._stop_event.set()))
+    collector.metrics_interval_seconds = 0.01
+    collector.record_retries(4)
+    collector.report_queue_depth(9)
+
+    collector._run_metrics()
+
+    sample = sent[0]
+    assert sample["retry_count"] == 4 and sample["queue_depth"] == 9
+    assert sample["cpu_percent"] is not None

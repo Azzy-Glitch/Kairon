@@ -20,6 +20,14 @@ before and after.
 
 ## What changed since 1.0.0
 
+- **Queue depth and retries measured automatically**: both SDKs now report the peak number of
+  requests in progress as queue depth and count retries of the app's failed outgoing HTTP calls
+  (Python: `urllib`, `requests`, `httpx`; .NET: `HttpClient` diagnostics), with no code in the app.
+  Each paired app has *Measured automatically* switches and a retry window in Connect an App; the
+  SDK fetches them with its own key (`POST /api/v1/sdk/settings`, added to the cloud gateway's SDK
+  routes). Apps that track these themselves can still report them (`record_retries` /
+  `report_queue_depth`, now also in the Python SDK). Local schema version 15 (SQLite) / migration
+  `20261011110000_AddSdkAutoSignalSettings` (SQL Server); existing apps get both signals on.
 - **Evidence-based mitigation, prediction and next steps**: every incident now carries KAIRON's own
   deterministic trend forecast (risk level, failure mode, supporting trends, horizon and data
   confidence, or an explicit "inconclusive"), recorded even when the AI is unavailable. The AI is

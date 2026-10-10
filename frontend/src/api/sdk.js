@@ -20,6 +20,15 @@ export function listCredentials(projectId) {
   return request(client.get(`/v1/projects/${projectId}/credentials`));
 }
 
+/** Automatic signals for one paired app: { autoQueueDepth, autoRetries, retryWindowSeconds }. */
+export function getAutoSignals(projectId, credentialId) {
+  return request(client.get(`/v1/projects/${projectId}/credentials/${credentialId}/settings`));
+}
+
+export function updateAutoSignals(projectId, credentialId, settings) {
+  return request(client.put(`/v1/projects/${projectId}/credentials/${credentialId}/settings`, settings));
+}
+
 export function revokeCredential(projectId, credentialId) {
   return request(client.delete(`/v1/projects/${projectId}/credentials/${credentialId}`));
 }

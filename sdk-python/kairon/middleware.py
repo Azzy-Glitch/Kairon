@@ -58,6 +58,10 @@ class KaironMiddleware:
         start = time.monotonic()
         status_code = 500
         exception = None
+        try:
+            kairon._begin_request()
+        except Exception:
+            pass
 
         async def observed_send(message):
             nonlocal status_code
@@ -74,6 +78,10 @@ class KaironMiddleware:
             self._report(kairon, scope, status_code, exception, start)
 
     def _report(self, kairon: Kairon, scope: Scope, status_code: int, exception, start: float) -> None:
+        try:
+            kairon._end_request()
+        except Exception:
+            pass
         try:
             duration_ms = int((time.monotonic() - start) * 1000)
             kairon.record_http_request(
