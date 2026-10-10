@@ -199,6 +199,20 @@ public class IncidentQueryService : IIncidentQueryService
             };
         }
 
+        detail.Forecast = await ForecastAsync(incident.Id, cancellationToken);
+        if (SreJson.Deserialize<AiAssessment?>(incident.AssessmentJson, null) is { } assessment)
+        {
+            detail.Assessment = new AiAssessmentViewDto
+            {
+                RootCauseCertainty = assessment.RootCauseCertainty,
+                NextSteps = assessment.NextSteps,
+                OfferedActions = assessment.OfferedActions,
+                ConsideredActions = assessment.ConsideredActions
+                    .Select(c => new ConsideredActionViewDto { Action = c.Action, Verdict = c.Verdict, Reason = c.Reason })
+                    .ToList()
+            };
+        }
+
         if (!string.IsNullOrWhiteSpace(incident.PredictedImpact))
         {
             detail.Prediction = new PredictionDto
@@ -210,6 +224,35 @@ public class IncidentQueryService : IIncidentQueryService
         }
 
         return detail;
+    }
+
+    /// <summary>The most recent trend forecast recorded for this incident's evidence.</summary>
+    private async Task<RiskForecastViewDto?> ForecastAsync(Guid incidentId, CancellationToken cancellationToken)
+    {
+        var row = await _db.IncidentEvidence.AsNoTracking()
+            .Where(e => e.IncidentId == incidentId && e.Kind == EvidenceKinds.RiskForecast)
+            .OrderByDescending(e => e.CollectedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        var forecast = row is null ? null : SreJson.Deserialize<RiskForecastDto?>(row.PayloadJson, null);
+        if (forecast is null) return null;
+        return new RiskForecastViewDto
+        {
+            Outcome = forecast.Outcome,
+            RiskLevel = forecast.RiskLevel,
+            FailureMode = forecast.FailureMode,
+            Evidence = forecast.Evidence,
+            HorizonMinutes = forecast.HorizonMinutes,
+            Confidence = forecast.Confidence,
+            ExpectedImpact = forecast.ExpectedImpact,
+            PreventiveAction = forecast.PreventiveAction,
+            Method = forecast.Method,
+            CollectedAt = row!.CollectedAt,
+            Trends = forecast.Trends.Select(t => new MetricTrendViewDto
+            {
+                Metric = t.Metric, Label = t.Label, Unit = t.Unit, Earlier = t.Earlier,
+                Recent = t.Recent, Threshold = t.Threshold, Direction = t.Direction, Persistence = t.Persistence
+            }).ToList()
+        };
     }
 
     public async Task<List<IncidentEventDto>> GetTimelineAsync(Guid id, CancellationToken cancellationToken = default)

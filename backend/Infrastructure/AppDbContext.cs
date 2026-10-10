@@ -133,6 +133,7 @@ public class AppDbContext : DbContext
             entity.Property(e => e.CorrelatedMetricsJson).HasMaxLength(16000);
             entity.Property(e => e.ContributingFactorsJson).HasMaxLength(8000);
             entity.Property(e => e.RecommendationsJson).HasMaxLength(16000);
+            entity.Property(e => e.AssessmentJson).HasMaxLength(16000);
 
             // Enums are stored as strings: an incident's status is read by humans in the database
             // as often as by the application, and a renumbered enum must never silently reinterpret

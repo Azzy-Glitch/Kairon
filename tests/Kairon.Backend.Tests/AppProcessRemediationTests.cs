@@ -162,6 +162,121 @@ public sealed class AppProcessRemediationTests : IDisposable
         Assert.Equal(ProcessRestartStatus.Succeeded, h.Db.ProcessRestartCommands.AsNoTracking().Single().Status);
     }
 
+    /// <summary>
+    /// A sudden HTTP 500 spike in a connected app, decided on the real evidence by the same rules the
+    /// AI is instructed to follow (DeterministicInvestigation): the restart is offered and recommended
+    /// as a temporary mitigation (cause "possible", never confirmed), runs only after approval, and the
+    /// incident resolves only on verified recovery. When the errors come back after that restart, the
+    /// next incident knows it - and is sent for investigation instead of being restarted again.
+    /// </summary>
+    [Fact]
+    public async Task AServerErrorSpikeIsMitigatedByRestartAndARecurrenceAfterTheRestartIsInvestigatedInstead()
+    {
+        var h = _h;
+        h.EnsureProject();
+        const string agentKey = "app-process-agent-proof-key-123456789012345";
+        const string userAgentKey = "app-process-user-agent-key-1234567890123456";
+        var agents = new AgentRegistrationService(h.Db, TimeProvider.System);
+        var machineId = Guid.NewGuid();
+        await agents.RegisterAsync(new AgentRegistrationDto
+        {
+            MachineId = machineId, HostName = "dev-laptop", OperatingSystem = "Windows", Architecture = "x64",
+            AgentVersion = "1.1", AgentKey = agentKey, UserAgentKey = userAgentKey
+        }, default);
+        var platformAudit = new PlatformAuditService(h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance);
+        var credentials = new ProjectCredentialService(h.Db, Options.Create(new PlatformSecurityOptions()), TimeProvider.System, platformAudit);
+        var pairing = new SdkPairingService(h.Db, credentials, TimeProvider.System, Options.Create(new ProductOptions()),
+            platformAudit, NullLogger<SdkPairingService>.Instance);
+        var created = (await pairing.CreateAsync(h.ProjectId, "python", default))!;
+        var paired = (await pairing.RedeemAsync(created.Code, "python", "1.1.0", default))!;
+        Assert.True(await pairing.ConfirmAsync(created.PairingId, paired.ApiKey, default));
+        var bindings = new MachineTelemetryBindingService(h.Db, agents, h.Targets, Options.Create(new WindowsRemediationOptions()));
+        var telemetry = new PlatformTelemetryService(h.Db, h.Queue, TimeProvider.System);
+        Task Send(DateTime at, long errors, int pid) =>
+            SendMetricAsync(h, bindings, telemetry, credentials, paired.ApiKey, agentKey, machineId, at, cpu: 12, "python", pid, errors);
+
+        // Healthy app (pid 4242), then the restart target is enabled with one click.
+        await Send(DateTime.UtcNow.AddSeconds(-60), errors: 0, pid: 4242);
+        await agents.RecordUserSessionHeartbeatAsync(machineId, userAgentKey, UserSession(4242, DateTime.UtcNow.AddMinutes(-3)), default);
+        var management = new RemediationTargetManagementService(h.Db, platformAudit, TimeProvider.System,
+            Options.Create(h.WindowsRemediation), h.WindowsServices, h.WindowsServices, h.Targets);
+        Assert.Equal(RemediationTargetOperationOutcome.Success,
+            (await management.EnableAppRestartForPairingAsync(created.PairingId, "operator-test")).Outcome);
+
+        // Healthy samples, then a sudden spike: 6 of every 10 requests fail with HTTP 500.
+        for (var i = 0; i < 3; i++) await Send(DateTime.UtcNow.AddSeconds(-50 + i * 5), errors: 0, pid: 4242);
+        for (var i = 0; i < 4; i++) await Send(DateTime.UtcNow.AddSeconds(-30 + i * 5), errors: 6, pid: 4242);
+        var incident = (await h.CreateCorrelationEngine().CorrelateAsync(
+                await h.CreateDetectionEngine().EvaluateAsync(h.ProjectId, h.Environment, h.Service)))
+            .Single(i => IncidentMachineScope.GetMachineId(i) == machineId);
+
+        var queue = new ProcessRestartQueue(h.Db, TimeProvider.System);
+        var restart = new RestartApplicationTool(h.Db, h.Targets, afterQueued: async (commandId, ct) =>
+        {
+            Assert.Single(await queue.ClaimAsync(machineId, SessionId, ct));
+            Assert.True(await queue.CompleteAsync(machineId, commandId, succeeded: true, newProcessId: 5151, error: null, ct));
+        });
+        var registry = new RemediationToolRegistry([restart]);
+        var policy = new RemediationPolicy(registry, Options.Create(h.Remediation), NullLogger<RemediationPolicy>.Instance);
+        var executor = new RemediationExecutor(registry, policy, h.Audit, h.Db, Options.Create(h.Remediation),
+            NullLogger<RemediationExecutor>.Instance);
+        var verifier = new VerificationService(h.Db, h.Audit, new RemediationToolRegistryAccessor(registry),
+            Options.Create(h.Verification), Options.Create(h.Detection), NullLogger<VerificationService>.Instance);
+        var recovery = new AsyncBeforeVerification(verifier, async () =>
+        {
+            await agents.RecordUserSessionHeartbeatAsync(machineId, userAgentKey, UserSession(5151, DateTime.UtcNow.AddSeconds(-2)), default);
+            await Send(DateTime.UtcNow, errors: 0, pid: 5151);
+        });
+        IncidentOrchestrator Orchestrator() => new(h.Db, h.CreateDetectionEngine(), h.CreateCorrelationEngine(),
+            new EvidenceCollector(h.Db, registry, Options.Create(h.AiOptions), Options.Create(h.Detection),
+                NullLogger<EvidenceCollector>.Instance), h.Ai, policy, registry, executor, recovery, h.Audit,
+            new IncidentKeyGenerator(h.Db), h.Queue, Options.Create(h.AiOptions), Options.Create(h.Remediation),
+            NullLogger<IncidentOrchestrator>.Instance);
+        h.Ai.Responder = DeterministicInvestigation.Investigate;
+
+        await Orchestrator().InvestigateAsync(incident.Id);
+
+        // KAIRON's own forecast saw the rising error rate; the AI was offered the restart and
+        // recommended it as a mitigation without claiming to know the cause.
+        var evidence = h.Ai.LastEvidence!;
+        Assert.Equal(RiskForecastOutcomes.Elevated, evidence.RiskForecast!.Outcome);
+        Assert.Contains(evidence.RiskForecast.Trends, t => t.Metric == "errorRate" && t.Direction == "rising");
+        Assert.False(evidence.Recurrence!.RecurredAfterRestart);
+        Assert.Equal(RemediationTargetKinds.AppProcess, evidence.RemediationTarget!.Kind);
+        Assert.Equal(IncidentStatus.AwaitingApproval, incident.Status);
+        var assessment = SreJson.Deserialize<AiAssessment?>(incident.AssessmentJson, null)!;
+        Assert.Equal("possible", assessment.RootCauseCertainty);
+        Assert.Contains(assessment.ConsideredActions, c => c.Action == ServiceToolNames.RestartApplication && c.Verdict == "recommended");
+        var action = Assert.Single(h.Db.RemediationActions.Where(a => a.IncidentId == incident.Id));
+        Assert.Equal(ServiceToolNames.RestartApplication, action.ActionType);
+        Assert.Contains("temporary mitigation", action.Reason);
+        Assert.Empty(h.Db.ProcessRestartCommands); // nothing runs before approval
+
+        await Orchestrator().ApproveAsync(incident.Id, action.Id, "operator-test", null);
+        await Orchestrator().ExecuteAndVerifyAsync(incident.Id, action.Id);
+        Assert.Equal(IncidentStatus.Resolved, incident.Status);
+        Assert.Equal(VerificationStatus.Passed, incident.VerificationState);
+
+        // The errors come back on the restarted process.
+        h.Detection.CooldownSeconds = 0;
+        for (var i = 0; i < 4; i++) await Send(DateTime.UtcNow, errors: 7, pid: 5151);
+        var recurrence = (await h.CreateCorrelationEngine().CorrelateAsync(
+                await h.CreateDetectionEngine().EvaluateAsync(h.ProjectId, h.Environment, h.Service)))
+            .Single(i => i.Id != incident.Id && IncidentMachineScope.GetMachineId(i) == machineId);
+
+        await Orchestrator().InvestigateAsync(recurrence.Id);
+
+        Assert.Equal(2, h.Ai.InvestigateCalls);
+        Assert.True(h.Ai.LastEvidence!.Recurrence!.RecurredAfterRestart);
+        Assert.Contains(h.Ai.LastEvidence.AvailableActions, a => a.Action == ServiceToolNames.RestartApplication);
+        Assert.Empty(h.Db.RemediationActions.Where(a => a.IncidentId == recurrence.Id));
+        var second = SreJson.Deserialize<AiAssessment?>(recurrence.AssessmentJson, null)!;
+        Assert.Contains(second.ConsideredActions, c => c.Action == ServiceToolNames.RestartApplication && c.Verdict == "not_recommended");
+        Assert.NotEmpty(second.NextSteps);
+        Assert.StartsWith("The AI considered RestartApplication and did not recommend it", recurrence.FailureReason);
+        Assert.Single(h.Db.ProcessRestartCommands); // still only the one approved restart
+    }
+
     // --- 2. Which process: only the one Windows names -------------------------------------------
 
     [Fact]
@@ -639,7 +754,7 @@ public sealed class AppProcessRemediationTests : IDisposable
 
     private static async Task SendMetricAsync(TestHarness h, MachineTelemetryBindingService bindings, PlatformTelemetryService telemetry,
         ProjectCredentialService credentials, string sdkKey, string agentKey, Guid machineId, DateTime timestamp, double cpu,
-        string sdkType, int processId)
+        string sdkType, int processId, long errors = 0)
     {
         var web = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         var metadata = new Dictionary<string, string> { ["process.cwd"] = AppFolder, ["process.executable"] = AppExecutable, ["cpu.scope"] = "process" };
@@ -650,7 +765,7 @@ public sealed class AppProcessRemediationTests : IDisposable
             var item = NormalizedTelemetryEvent.From(new MetricPayload
             {
                 ProjectId = h.ProjectId, Timestamp = timestamp, Application = "Checkout", Service = h.Service,
-                Environment = h.Environment, CpuPercent = cpu, RequestCount = 10
+                Environment = h.Environment, CpuPercent = cpu, RequestCount = 10, ErrorCount = errors
             }, new KaironOptions { ProjectId = h.ProjectId });
             Assert.Equal(Environment.ProcessId, item.ProcessId);
             Assert.Equal("process", item.Metadata!["cpu.scope"]);
@@ -671,7 +786,7 @@ public sealed class AppProcessRemediationTests : IDisposable
                     EventId = Guid.NewGuid(), ProjectId = h.ProjectId, Timestamp = timestamp, EventType = "metric", Severity = "Information",
                     Source = "python-sdk", Application = "Checkout", Service = h.Service, Environment = h.Environment, Runtime = "Python 3.14",
                     ProcessId = processId, Metadata = metadata,
-                    ResourceMetrics = new ResourceTelemetryMetricsDto { CpuPercent = cpu, RequestCount = 10 }
+                    ResourceMetrics = new ResourceTelemetryMetricsDto { CpuPercent = cpu, RequestCount = 10, ErrorCount = errors }
                 }]
             }, web);
         }

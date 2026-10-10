@@ -33,6 +33,14 @@ public class SreIncidentDetailDto : SreIncidentSummaryDto
 {
     public AiDiagnosisDto? Diagnosis { get; set; }
     public PredictionDto? Prediction { get; set; }
+
+    /// <summary>KAIRON's deterministic trend forecast (RiskForecaster), recorded when evidence was
+    /// collected - present even when the AI was unavailable.</summary>
+    public RiskForecastViewDto? Forecast { get; set; }
+
+    /// <summary>The AI's structured assessment: root-cause certainty, next steps, actions weighed.</summary>
+    public AiAssessmentViewDto? Assessment { get; set; }
+
     public List<RecommendationDto> Recommendations { get; set; } = new();
     public List<RemediationActionDto> Actions { get; set; } = new();
     public List<VerificationResultDto> Verifications { get; set; } = new();
@@ -74,6 +82,48 @@ public class AiDiagnosisDto
     public string? Provider { get; set; }
     public string? Model { get; set; }
     public DateTime? GeneratedAt { get; set; }
+}
+
+public class RiskForecastViewDto
+{
+    public string Outcome { get; set; } = string.Empty;
+    public string RiskLevel { get; set; } = string.Empty;
+    public string FailureMode { get; set; } = string.Empty;
+    public List<string> Evidence { get; set; } = new();
+    public int HorizonMinutes { get; set; }
+    public double Confidence { get; set; }
+    public string ExpectedImpact { get; set; } = string.Empty;
+    public string PreventiveAction { get; set; } = string.Empty;
+    public string Method { get; set; } = string.Empty;
+    public DateTime CollectedAt { get; set; }
+    public List<MetricTrendViewDto> Trends { get; set; } = new();
+}
+
+public class MetricTrendViewDto
+{
+    public string Metric { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public string Unit { get; set; } = string.Empty;
+    public double Earlier { get; set; }
+    public double Recent { get; set; }
+    public double Threshold { get; set; }
+    public string Direction { get; set; } = string.Empty;
+    public double Persistence { get; set; }
+}
+
+public class AiAssessmentViewDto
+{
+    public string RootCauseCertainty { get; set; } = "unknown";
+    public List<string> NextSteps { get; set; } = new();
+    public List<ConsideredActionViewDto> ConsideredActions { get; set; } = new();
+    public List<string> OfferedActions { get; set; } = new();
+}
+
+public class ConsideredActionViewDto
+{
+    public string Action { get; set; } = string.Empty;
+    public string Verdict { get; set; } = string.Empty;
+    public string Reason { get; set; } = string.Empty;
 }
 
 public class PredictionDto

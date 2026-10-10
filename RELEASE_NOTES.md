@@ -20,6 +20,17 @@ before and after.
 
 ## What changed since 1.0.0
 
+- **Evidence-based mitigation, prediction and next steps**: every incident now carries KAIRON's own
+  deterministic trend forecast (risk level, failure mode, supporting trends, horizon and data
+  confidence, or an explicit "inconclusive"), recorded even when the AI is unavailable. The AI is
+  told what each action really does, that an HTTP 500 alone neither proves the cause nor rules a
+  restart out, and to separate temporary mitigation from root-cause correction: a sudden fault in a
+  previously healthy app can get the offered restart as a mitigation, a failing dependency does not,
+  and a problem that returns after a restart is sent for investigation instead of another restart.
+  The incident page shows how certain the root cause is, what to check next, every action the AI
+  weighed and why, and - when nothing is recommended - which of those actually happened. Offline/test
+  mode applies the same rules. Local schema version 14 (SQLite) / migration
+  `20261011100000_AddIncidentAssessment` (SQL Server) adds the stored assessment.
 - **Restart the connected application, with no setup**: a plain SDK-connected app (FastAPI, Flask,
   Django, ASP.NET Core, ...) can now be remediated without becoming a Windows service. Connect an
   App offers *Let KAIRON restart this app when I approve*; the Remediation Targets wizard offers

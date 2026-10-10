@@ -439,55 +439,10 @@ public class AiMicroservice : IAiMicroservice
     };
 
     /// <summary>
-    /// Deterministic mock investigation (AI PRD section 13). It reads the actual evidence so the
-    /// demo shows real numbers, but it never calls a provider and needs no credentials.
+    /// Deterministic mock investigation (AI PRD section 13): reads the actual evidence and applies the
+    /// same decision rules a real model is instructed to follow (DeterministicInvestigation), but
+    /// never calls a provider and needs no credentials.
     /// </summary>
-    private static InvestigationResultDto GetMockInvestigation(EvidencePackageDto evidence)
-    {
-        var signals = evidence.CorrelatedSignals;
-        var hasRetryStorm = signals.Any(s => s.Metric == "retries");
-        var hasCpu = signals.Any(s => s.Metric == "cpu");
-        var hasLatency = signals.Any(s => s.Metric == "latency");
-        var hasErrors = signals.Any(s => s.Metric is "errorRate" or "errors");
-
-        var rootCause = hasRetryStorm
-            ? "Controlled retry loop causing repeated downstream requests, saturating worker threads."
-            : hasCpu && hasLatency
-                ? "CPU saturation is driving request latency above the configured threshold."
-                : hasErrors
-                    ? "A repeating downstream failure is driving the error rate above threshold."
-                    : "Resource pressure on the affected service.";
-
-        var recommendation = new AiRecommendationDto {
-            Action = ServiceToolNames.RunHealthCheck,
-            Reason = "Inspect the configured service before proposing a change.",
-            ExpectedOutcome = "Current service state; this read-only check does not repair application faults.",
-            RiskLevel = "low"
-        };
-
-        return new InvestigationResultDto
-        {
-            Summary = $"{evidence.Incident.Service} is degraded: {string.Join("; ", evidence.Incident.Symptoms.Take(3))}",
-            RootCause = rootCause,
-            ContributingFactors = signals.Select(s => s.Symptom).Take(5).ToList(),
-            Evidence = signals
-                .Select(s => $"{s.Metric} {s.Observed}{s.Unit} vs threshold {s.Threshold}{s.Unit}")
-                .Take(6)
-                .ToList(),
-            Confidence = hasRetryStorm ? 0.92 : 0.74,
-            Severity = evidence.Incident.Severity.ToLowerInvariant(),
-            AffectedComponents = new List<string>
-            {
-                evidence.Incident.AffectedComponent,
-                evidence.Incident.Service
-            }.Where(c => !string.IsNullOrWhiteSpace(c)).Distinct().ToList(),
-            PredictedFailure = hasRetryStorm
-                ? "Request backlog will continue growing and order processing latency will keep increasing."
-                : "Degradation will continue and begin affecting dependent endpoints.",
-            EstimatedRisk = evidence.Incident.Severity.ToLowerInvariant() is "critical" or "high" ? "high" : "medium",
-            Recommendations = evidence.AvailableActions.Any(a => a.Action == recommendation.Action) ? new List<AiRecommendationDto> { recommendation } : new(),
-            Provider = "mock",
-            Model = "deterministic-mock"
-        };
-    }
+    private static InvestigationResultDto GetMockInvestigation(EvidencePackageDto evidence) =>
+        DeterministicInvestigation.Investigate(evidence);
 }

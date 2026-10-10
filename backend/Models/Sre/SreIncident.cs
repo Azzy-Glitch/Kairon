@@ -52,6 +52,11 @@ public class SreIncident
     public string? PredictedRisk { get; set; }
     public string? RecommendationsJson { get; set; }
 
+    /// <summary>The AI's structured assessment beyond the diagnosis (AiAssessment): how certain the
+    /// root cause is, next steps for a person, every action it weighed and why, and which actions
+    /// KAIRON offered it. Null for incidents investigated before this existed.</summary>
+    public string? AssessmentJson { get; set; }
+
     public RemediationStatus RemediationState { get; set; } = RemediationStatus.None;
     public VerificationStatus VerificationState { get; set; } = VerificationStatus.NotStarted;
 

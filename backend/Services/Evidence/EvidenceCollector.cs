@@ -2,6 +2,7 @@ using Kairon.Backend.Configuration;
 using Kairon.Backend.Services.Remediation.Tools;
 using Kairon.Backend.DTOs.Sre;
 using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models.Platform;
 using Kairon.Backend.Models.Sre;
 using Kairon.Backend.Services.Remediation;
 using Microsoft.EntityFrameworkCore;
@@ -107,6 +108,7 @@ public class EvidenceCollector : IEvidenceCollector
         // machine - so another environment's or machine's history never reaches the model.
         var history = (await _db.SreIncidents
             .AsNoTracking()
+            .Include(i => i.Actions)
             .Where(i => i.Id != incident.Id
                         && i.ProjectId == incident.ProjectId
                         && i.Environment == incident.Environment
@@ -189,6 +191,7 @@ public class EvidenceCollector : IEvidenceCollector
         }
 
         var remediationTarget = await RemediationTargetContextAsync(incident, machineId, cancellationToken);
+        var recurrence = await RecurrenceAsync(incident, machineId, cancellationToken);
 
         var package = new EvidencePackageDto
         {
@@ -289,6 +292,11 @@ public class EvidenceCollector : IEvidenceCollector
                 .ToList()
         };
 
+        package.Recurrence = recurrence;
+        // Computed from the full sample set, before the payload budget may trim it, so the forecast
+        // reflects everything KAIRON measured.
+        package.RiskForecast = RiskForecaster.Forecast(package.RecentMetrics, recurrence, _detection);
+
         EnforcePayloadBudget(package);
 
         _logger.LogInformation(
@@ -317,6 +325,12 @@ public class EvidenceCollector : IEvidenceCollector
         {
             AddEvidence(incident, EvidenceKinds.AgentEvents,
                 $"{package.LogEvents.Count} Agent event(s)", package.LogEvents, package.LogEvents.Count);
+        }
+
+        if (package.RiskForecast is { } forecast)
+        {
+            AddEvidence(incident, EvidenceKinds.RiskForecast,
+                $"Trend forecast: {forecast.Outcome} ({forecast.RiskLevel})", forecast, forecast.Evidence.Count);
         }
 
         if (package.HistoricalIncidents.Count > 0)
@@ -362,6 +376,18 @@ public class EvidenceCollector : IEvidenceCollector
         if (targets.Count != 1 || !machineId.HasValue || targets[0].MachineId != machineId) return null;
 
         var target = targets[0];
+        if (target.Kind == RemediationTargetKinds.AppProcess)
+        {
+            // An application-process target restarts the app's own process; there is no Windows
+            // service to name or probe.
+            return new RemediationTargetContextDto
+            {
+                Kind = RemediationTargetKinds.AppProcess,
+                ServiceState = "Unknown",
+                TelemetryMachineScoped = true
+            };
+        }
+
         var state = "Unknown";
         try
         {
@@ -381,9 +407,52 @@ public class EvidenceCollector : IEvidenceCollector
 
         return new RemediationTargetContextDto
         {
+            Kind = RemediationTargetKinds.WindowsService,
             WindowsService = Safe(target.WindowsServiceName, 256) ?? string.Empty,
             ServiceState = state,
             TelemetryMachineScoped = true
+        };
+    }
+
+    /// <summary>Restart tools whose success means "the process was restarted" - if the same problem
+    /// is back soon after one of them, the restart was a temporary mitigation, not a fix.</summary>
+    private static readonly string[] RestartActions =
+        [ServiceToolNames.RestartApplication, ServiceToolNames.RestartService];
+
+    /// <summary>A restart this recent counts as "the problem came back after a restart".</summary>
+    internal static readonly TimeSpan RecurrenceAfterRestartWindow = TimeSpan.FromHours(1);
+
+    private async Task<RecurrenceContextDto> RecurrenceAsync(SreIncident incident, Guid? machineId, CancellationToken cancellationToken)
+    {
+        var since = incident.Timestamp.AddHours(-24);
+        var recent = (await _db.SreIncidents
+            .AsNoTracking()
+            .Include(i => i.Actions)
+            .Where(i => i.Id != incident.Id
+                        && i.ProjectId == incident.ProjectId
+                        && i.Environment == incident.Environment
+                        && i.Service == incident.Service
+                        && i.Timestamp >= since
+                        && i.Timestamp <= incident.Timestamp)
+            .ToListAsync(cancellationToken))
+            .Where(h => !machineId.HasValue || IncidentMachineScope.GetMachineId(h) == machineId)
+            .ToList();
+
+        var lastRestart = recent
+            .SelectMany(h => h.Actions)
+            .Where(a => a.Status == RemediationStatus.Executed && a.CompletedAt.HasValue
+                        && RestartActions.Contains(a.ActionType, StringComparer.Ordinal)
+                        && a.CompletedAt <= incident.Timestamp
+                        && incident.Timestamp - a.CompletedAt.Value <= RecurrenceAfterRestartWindow)
+            .OrderByDescending(a => a.CompletedAt)
+            .FirstOrDefault();
+
+        return new RecurrenceContextDto
+        {
+            IncidentsLast24h = recent.Count,
+            RecurredAfterRestart = lastRestart is not null,
+            MinutesSinceRestart = lastRestart is null ? null : Math.Round((incident.Timestamp - lastRestart.CompletedAt!.Value).TotalMinutes, 1),
+            PreviousRemediation = lastRestart?.ActionType
         };
     }
 

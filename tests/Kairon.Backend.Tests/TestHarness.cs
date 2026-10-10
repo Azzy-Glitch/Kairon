@@ -398,6 +398,8 @@ public sealed class TestHarness : IDisposable
 public class FakeAiService : IAiMicroservice
 {
     public InvestigationResultDto? NextResult { get; set; }
+    /// <summary>When set, answers from the actual evidence (e.g. DeterministicInvestigation) instead of NextResult.</summary>
+    public Func<EvidencePackageDto, InvestigationResultDto>? Responder { get; set; }
     public Exception? NextException { get; set; }
     public int InvestigateCalls { get; private set; }
     public EvidencePackageDto? LastEvidence { get; private set; }
@@ -424,7 +426,7 @@ public class FakeAiService : IAiMicroservice
         if (NextException is not null)
             throw NextException;
 
-        return NextResult ?? DefaultResult();
+        return Responder is not null ? Responder(evidence) : NextResult ?? DefaultResult();
     }
 
     public static InvestigationResultDto DefaultResult() => new()

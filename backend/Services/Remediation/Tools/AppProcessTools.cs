@@ -120,7 +120,9 @@ public sealed class RestartApplicationTool(AppDbContext db, IRemediationTargetRe
 
     public string Name => ServiceToolNames.RestartApplication;
     public string Description => "Restart the connected application's own process on its enrolled machine (the same program, " +
-                                 "arguments and folder Windows reports for it), performed by the KAIRON UserAgent in the app owner's session. No arbitrary commands.";
+                                 "arguments and folder Windows reports for it), performed by the KAIRON UserAgent in the app owner's session. No arbitrary commands. " +
+                                 "Clears in-process state - stuck threads or connections, leaked memory, runaway background work, bad cached state. " +
+                                 "It does not fix a code defect that fails on every request, a misconfiguration, or an external dependency that is down.";
     public RiskLevel RiskLevel => RiskLevel.Medium;
     public IReadOnlyList<string> ExpectedMetricEffects => [];
 

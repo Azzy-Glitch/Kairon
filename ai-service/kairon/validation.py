@@ -11,10 +11,12 @@ import json
 import re
 from typing import Any, Dict, List
 
-from .schemas import EvidencePackage, InvestigationResult, Recommendation
+from .schemas import ConsideredAction, EvidencePackage, InvestigationResult, Recommendation
 
 SEVERITIES = {"info", "low", "medium", "high", "critical"}
 RISKS = {"low", "medium", "high", "critical"}
+CERTAINTIES = {"confirmed", "likely", "possible", "unknown"}
+VERDICTS = {"recommended", "not_recommended"}
 MAX_TEXT_CHARS = 4000
 MAX_SHORT_TEXT_CHARS = 500
 MAX_LIST_ITEMS = 12
@@ -162,6 +164,25 @@ def validate_investigation(
         if len(recommendations) >= MAX_RECOMMENDATIONS:
             break
 
+    # Only offered actions can have been weighed; anything else is dropped like an unoffered
+    # recommendation is.
+    considered: List[ConsideredAction] = []
+    for item in raw.get("considered_actions") or raw.get("consideredActions") or []:
+        if not isinstance(item, dict):
+            continue
+        action = _text(item.get("action"), MAX_SHORT_TEXT_CHARS)
+        if not action or (evidence is not None and action.lower() not in allowed_actions):
+            continue
+        considered.append(
+            ConsideredAction(
+                action=action,
+                verdict=_normalize_choice(item.get("verdict"), VERDICTS, "not_recommended"),
+                reason=_text(item.get("reason"), MAX_LIST_ITEM_CHARS),
+            )
+        )
+        if len(considered) >= MAX_RECOMMENDATIONS:
+            break
+
     return InvestigationResult(
         summary=_text(raw.get("summary")),
         root_cause=root_cause,
@@ -173,6 +194,11 @@ def validate_investigation(
         predicted_failure=_text(raw.get("predicted_failure") or raw.get("predictedFailure")),
         estimated_risk=_normalize_choice(raw.get("estimated_risk") or raw.get("estimatedRisk"), RISKS, "medium"),
         recommendations=recommendations,
+        root_cause_certainty=_normalize_choice(
+            raw.get("root_cause_certainty") or raw.get("rootCauseCertainty"), CERTAINTIES, "unknown"
+        ),
+        next_steps=_as_list_of_str(raw.get("next_steps") or raw.get("nextSteps"), 8),
+        considered_actions=considered,
         provider=provider,
         model=model,
     )

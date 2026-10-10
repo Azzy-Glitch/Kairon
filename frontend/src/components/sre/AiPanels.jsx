@@ -11,7 +11,21 @@ import { IconPredict, IconSparkles, IconBug } from '../Icons';
  * concluded, not what the system measured. AI-derived content sits inside a distinctly styled
  * container, carries an explicit badge, and states its confidence as an estimate.
  */
-export function AiInvestigationPanel({ diagnosis, failureReason, onRetry, retrying, stale }) {
+const CERTAINTY_LABELS = {
+  confirmed: 'Confirmed root cause',
+  likely: 'Likely root cause',
+  possible: 'Possible root cause',
+  unknown: 'Root cause not established'
+};
+
+const CERTAINTY_HINTS = {
+  confirmed: 'The evidence directly shows this cause.',
+  likely: 'The evidence strongly suggests this cause.',
+  possible: 'One of several explanations the evidence allows.',
+  unknown: 'The evidence cannot tell what caused this yet.'
+};
+
+export function AiInvestigationPanel({ diagnosis, assessment, failureReason, onRetry, retrying, stale }) {
   if (!diagnosis) {
     return (
       <section className="panel ai-panel ai-panel-pending">
@@ -59,7 +73,10 @@ export function AiInvestigationPanel({ diagnosis, failureReason, onRetry, retryi
       {diagnosis.summary && <p className="ai-summary">{diagnosis.summary}</p>}
 
       <div className="ai-field">
-        <span className="ai-field-label">Likely root cause</span>
+        {/* Older incidents have no assessment; they keep the original wording. */}
+        <span className="ai-field-label" title={assessment ? CERTAINTY_HINTS[assessment.rootCauseCertainty] : undefined}>
+          {assessment ? CERTAINTY_LABELS[assessment.rootCauseCertainty] || CERTAINTY_LABELS.unknown : 'Likely root cause'}
+        </span>
         <p className="ai-root-cause">{diagnosis.rootCause}</p>
       </div>
 
@@ -80,6 +97,17 @@ export function AiInvestigationPanel({ diagnosis, failureReason, onRetry, retryi
           <ul className="ai-list ai-evidence-list">
             {diagnosis.evidence.map((item, index) => (
               <li key={index}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {assessment?.nextSteps?.length > 0 && (
+        <div className="ai-field">
+          <span className="ai-field-label">What to check next</span>
+          <ul className="ai-list ai-next-steps">
+            {assessment.nextSteps.map((step, index) => (
+              <li key={index}>{step}</li>
             ))}
           </ul>
         </div>
@@ -112,27 +140,87 @@ export function AiInvestigationPanel({ diagnosis, failureReason, onRetry, retryi
   );
 }
 
-/** Prediction panel (frontend PRD section 8). Always labelled as a prediction. */
-export function PredictionPanel({ prediction }) {
-  if (!prediction) return null;
+const DIRECTION_ARROWS = { rising: '\u2191', falling: '\u2193', steady: '\u2192' };
+
+/**
+ * Prediction panel (frontend PRD section 8). Two clearly separated parts: KAIRON's own trend
+ * forecast (measured samples, a deterministic calculation - shown even when the AI is unavailable)
+ * and the AI's narrative prediction. Both are projections, never observed outcomes.
+ */
+export function PredictionPanel({ prediction, forecast }) {
+  if (!prediction && !forecast) return null;
+  const inconclusive = forecast?.outcome === 'inconclusive';
 
   return (
     <section className="panel ai-panel prediction-panel">
       <PanelHeader
         icon={<IconPredict className="w-5 h-5" />}
-        title="Predicted Impact"
-        badge={<AiBadge label="AI prediction" />}
+        title="Future Risk"
+        badge={prediction ? <AiBadge label="AI prediction" /> : null}
       />
 
-      <p className="prediction-text">{prediction.predictedFailure}</p>
+      {forecast && (
+        <div className="forecast-block" aria-label="Trend forecast">
+          <div className="prediction-risk">
+            <span className="ai-field-label">Trend forecast</span>
+            {inconclusive ? <span className="status-badge status-neutral">Inconclusive</span> : <RiskBadge risk={forecast.riskLevel} />}
+          </div>
 
-      <div className="prediction-risk">
-        <span className="ai-field-label">Estimated risk if unaddressed</span>
-        <RiskBadge risk={prediction.estimatedRisk} />
-      </div>
+          {inconclusive ? (
+            <p className="prediction-text">
+              Not enough data to project a trend yet. {forecast.evidence?.[0] || ''}
+            </p>
+          ) : (
+            <>
+              <p className="prediction-text">{forecast.failureMode}</p>
+              <p className="forecast-meta">
+                If the observed trend continues for the next {forecast.horizonMinutes} minutes
+                {' '}&middot; data confidence {Math.round((forecast.confidence || 0) * 100)}%
+              </p>
+            </>
+          )}
+
+          {forecast.trends?.length > 0 && (
+            <ul className="forecast-trends">
+              {forecast.trends.map((t) => (
+                <li key={t.metric} className={`forecast-trend trend-${t.direction}`}>
+                  <span className="forecast-trend-label">{t.label}</span>
+                  <span>
+                    {t.earlier}{t.unit} {DIRECTION_ARROWS[t.direction] || ''} {t.recent}{t.unit}
+                  </span>
+                  <span className="forecast-trend-threshold">threshold {t.threshold}{t.unit}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {!inconclusive && forecast.expectedImpact && (
+            <p className="recommendation-line">
+              <span className="ai-field-label">Expected impact</span> {forecast.expectedImpact}
+            </p>
+          )}
+          {forecast.preventiveAction && (
+            <p className="recommendation-line">
+              <span className="ai-field-label">Preventive action</span> {forecast.preventiveAction}
+            </p>
+          )}
+        </div>
+      )}
+
+      {prediction && (
+        <div className="forecast-ai">
+          <span className="ai-field-label">What the AI expects</span>
+          <p className="prediction-text">{prediction.predictedFailure}</p>
+          <div className="prediction-risk">
+            <span className="ai-field-label">Estimated risk if unaddressed</span>
+            <RiskBadge risk={prediction.estimatedRisk} />
+          </div>
+        </div>
+      )}
 
       <p className="ai-disclaimer">
-        A projection of what may happen if the incident continues, not an observed outcome.
+        A projection of what may happen if the incident continues, based on the measured trend - not an observed outcome
+        and not a predicted failure time.
       </p>
     </section>
   );
@@ -144,8 +232,10 @@ export function PredictionPanel({ prediction }) {
  * Generating a recommendation does not run it, and the UI must not imply otherwise. Approval lives
  * in its own panel; this one only ever describes.
  */
-export function RecommendationPanel({ recommendations }) {
+export function RecommendationPanel({ recommendations, considered }) {
   if (!recommendations?.length) return null;
+  const recommendedActions = new Set(recommendations.map((r) => r.action));
+  const declined = (considered || []).filter((c) => c.verdict !== 'recommended' && !recommendedActions.has(c.action));
 
   return (
     <section className="panel ai-panel recommendation-panel">
@@ -188,6 +278,19 @@ export function RecommendationPanel({ recommendations }) {
           </li>
         ))}
       </ul>
+
+      {declined.length > 0 && (
+        <div className="ai-field">
+          <span className="ai-field-label">Considered but not recommended</span>
+          <ul className="ai-list">
+            {declined.map((c) => (
+              <li key={c.action}>
+                <strong>{getActionLabel(c.action)}</strong>: {c.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <p className="ai-disclaimer">
         Recommendations are proposals only. Nothing runs until an operator approves it below.

@@ -116,7 +116,14 @@ public abstract class WindowsServiceTool : IRemediationTool, IScopedRemediationT
         IWindowsServiceInspector? inspector = null)
         => (_db, _targets, _control, _inspector) = (db, targets, control, inspector ?? WindowsServiceInspector.Instance);
     public abstract string Name { get; }
-    public virtual string Description => $"{Name} on the incident's explicitly enrolled, allowlisted Windows service target. No arbitrary commands.";
+    public virtual string Description => $"{Name} on the incident's explicitly enrolled, allowlisted Windows service target. No arbitrary commands." + Name switch
+    {
+        ServiceToolNames.RestartService => " Clears the service process's in-process state (stuck threads or connections, leaked memory); it does not fix a code defect, a misconfiguration or a failing external dependency.",
+        ServiceToolNames.StartService => " Only useful when the service has stopped.",
+        ServiceToolNames.StopService => " Causes an outage until the service is started again.",
+        ServiceToolNames.RunHealthCheck => " Read-only: reports the service state and changes nothing.",
+        _ => string.Empty
+    };
     public virtual RiskLevel RiskLevel => RiskLevel.Medium;
     public IReadOnlyList<string> ExpectedMetricEffects => [];
     public bool ValidateParameters(IReadOnlyDictionary<string, string> parameters, out string? error)

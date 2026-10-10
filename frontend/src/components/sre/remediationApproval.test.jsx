@@ -118,12 +118,12 @@ describe('IncidentDetail when nothing is approvable', () => {
         actions={{ approve: vi.fn(), reject: vi.fn(), investigate: vi.fn(), busyActionId: null, actionError: null }}
       />
     );
-    expect(screen.getByText('No recommended action')).toBeInTheDocument();
+    expect(screen.getByText('No action recommended')).toBeInTheDocument();
     expect(screen.getByText(incident.failureReason)).toBeInTheDocument();
     // "Recommendation ready" would suggest an action is waiting; there is none.
     expect(screen.getByText('No action available')).toBeInTheDocument();
     expect(screen.queryByText('Recommendation ready')).not.toBeInTheDocument();
-    expect(screen.getByText(/Make sure this app has a remediation target that is/)).toBeInTheDocument();
+    expect(screen.getByText(/Re-investigate if new evidence has arrived/)).toBeInTheDocument();
   });
 
   it('keeps the plain banner when the AI did recommend something that cannot run', () => {
@@ -144,7 +144,7 @@ describe('IncidentDetail when nothing is approvable', () => {
       />
     );
     expect(screen.getByText('No action can be approved')).toBeInTheDocument();
-    expect(screen.queryByText('No recommended action')).not.toBeInTheDocument();
+    expect(screen.queryByText('No action recommended')).not.toBeInTheDocument();
   });
 });
 

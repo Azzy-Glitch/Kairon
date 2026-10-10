@@ -146,9 +146,45 @@ class EndpointSummary(BaseModel):
     top_error_type: Optional[str] = None
 
 
+class MetricTrend(BaseModel):
+    metric: str = ""
+    label: str = ""
+    unit: str = ""
+    earlier: float = 0.0
+    recent: float = 0.0
+    threshold: float = 0.0
+    direction: str = "steady"
+    persistence: float = 0.0
+    samples: int = 0
+
+
+class RiskForecast(BaseModel):
+    """KAIRON's deterministic trend forecast (backend RiskForecaster), computed before the model is
+    asked anything. outcome is elevated | stable | inconclusive."""
+
+    outcome: str = "inconclusive"
+    risk_level: str = "unknown"
+    failure_mode: str = ""
+    evidence: List[str] = Field(default_factory=list)
+    horizon_minutes: int = 0
+    confidence: float = 0.0
+    expected_impact: str = ""
+    preventive_action: str = ""
+    method: str = "trend-baseline"
+    trends: List[MetricTrend] = Field(default_factory=list)
+
+
+class RecurrenceContext(BaseModel):
+    incidents_last_24h: int = 0
+    recurred_after_restart: bool = False
+    minutes_since_restart: Optional[float] = None
+    previous_remediation: Optional[str] = None
+
+
 class RemediationTargetContext(BaseModel):
     """The operator-authorized Windows service for this scope and its live state (no host/ids)."""
 
+    kind: str = "WindowsService"
     windows_service: str = ""
     service_state: str = "Unknown"
     telemetry_machine_scoped: bool = False
@@ -164,6 +200,8 @@ class EvidencePackage(BaseModel):
     available_actions: List[AvailableAction] = Field(default_factory=list)
     endpoint_breakdown: List[EndpointSummary] = Field(default_factory=list)
     remediation_target: Optional[RemediationTargetContext] = None
+    risk_forecast: Optional[RiskForecast] = None
+    recurrence: Optional[RecurrenceContext] = None
 
 
 # --- Structured investigation result (AI PRD section 7). ---
@@ -177,6 +215,12 @@ class Recommendation(BaseModel):
     parameters: Optional[Dict[str, str]] = None
 
 
+class ConsideredAction(BaseModel):
+    action: str = ""
+    verdict: str = "not_recommended"
+    reason: str = ""
+
+
 class InvestigationResult(BaseModel):
     summary: str = ""
     root_cause: str = ""
@@ -188,5 +232,8 @@ class InvestigationResult(BaseModel):
     predicted_failure: str = ""
     estimated_risk: str = "medium"
     recommendations: List[Recommendation] = Field(default_factory=list)
+    root_cause_certainty: str = "unknown"
+    next_steps: List[str] = Field(default_factory=list)
+    considered_actions: List[ConsideredAction] = Field(default_factory=list)
     provider: Optional[str] = None
     model: Optional[str] = None

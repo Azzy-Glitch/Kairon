@@ -19,7 +19,7 @@ public interface ILocalSchemaMigrator
 /// </summary>
 public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
 {
-    public const int CurrentVersion = 13;
+    public const int CurrentVersion = 14;
 
     private readonly AppDbContext _db;
     private readonly ILogger<SqliteSchemaMigrator> _logger;
@@ -330,6 +330,18 @@ public sealed class SqliteSchemaMigrator : ILocalSchemaMigrator
                 await ExecuteAsync(connection, transaction, "PRAGMA user_version = 13;", cancellationToken);
                 version = 13;
                 _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: application-process remediation", version);
+            }
+
+            // Version 14: incidents keep the AI's structured assessment (root-cause certainty, next
+            // steps, actions it weighed). Existing incidents simply have none.
+            if (version == 13) {
+                var incidentColumns = await ColumnsAsync(connection, transaction, "SreIncidents", cancellationToken);
+                if (!incidentColumns.Contains("AssessmentJson"))
+                    await ExecuteAsync(connection, transaction,
+                        "ALTER TABLE \"SreIncidents\" ADD COLUMN \"AssessmentJson\" TEXT NULL;", cancellationToken);
+                await ExecuteAsync(connection, transaction, "PRAGMA user_version = 14;", cancellationToken);
+                version = 14;
+                _logger.LogInformation("Applied SQLite schema migration to local schema version {Version}: incident AI assessment", version);
             }
 
             if (version != CurrentVersion)

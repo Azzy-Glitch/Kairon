@@ -50,7 +50,7 @@ def test_prompt_carries_breakdown_and_target_inside_the_untrusted_block(retry_st
 
     assert len(payload["endpoint_breakdown"]) == 10
     assert payload["endpoint_breakdown"][0]["endpoint"] == "/e0"
-    assert payload["remediation_target"] == {
+    assert payload["remediation_target"] == {"kind": "WindowsService",
         "windows_service": "OrdersSvc", "service_state": "Running", "telemetry_machine_scoped": True}
     assert "endpoint_breakdown" in investigation_system_prompt()
 

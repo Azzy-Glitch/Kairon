@@ -30,6 +30,7 @@ public static class EvidenceKinds
     public const string RelatedErrors = "related-errors";
     public const string CorrelatedSignals = "correlated-signals";
     public const string HistoricalIncidents = "historical-incidents";
+    public const string RiskForecast = "risk-forecast";
     public const string ServiceIdentity = "service-identity";
     public const string AgentEvents = "agent-events";
 }

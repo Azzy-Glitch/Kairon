@@ -16,7 +16,7 @@ import {
   verificationFailed
 } from '../../services/incidentService';
 import { IncidentStatus, RemediationStatus } from '../../types/incident';
-import { getRuleLabel, getSignalLabel } from '../../lib/labels';
+import { getActionLabel, getRuleLabel, getSignalLabel } from '../../lib/labels';
 import { resolveSource, sourceMeta } from '../../lib/source';
 
 /**
@@ -210,6 +210,7 @@ function DetailBody({ incident, actions }) {
 
           <AiInvestigationPanel
             diagnosis={incident.diagnosis}
+            assessment={incident.assessment}
             failureReason={incident.diagnosis ? null : incident.failureReason}
             stale={incident.diagnosisStale}
             // Re-investigation is offered while the incident is still open and nothing has been
@@ -221,14 +222,14 @@ function DetailBody({ incident, actions }) {
             retrying={actions.busyActionId === 'investigate'}
           />
 
-          <PredictionPanel prediction={incident.prediction} />
+          <PredictionPanel prediction={incident.prediction} forecast={incident.forecast} />
 
-          <RecommendationPanel recommendations={incident.recommendations} />
+          <RecommendationPanel recommendations={incident.recommendations} considered={incident.assessment?.consideredActions} />
 
           {/* With a diagnosis present the AI panel does not show failureReason, so an incident
               that ended up with nothing approvable (for example, no ready remediation target)
               would otherwise give no explanation at all. */}
-          {noRecommendation && <NoRecommendationPanel reason={incident.failureReason} />}
+          {noRecommendation && <NoRecommendationPanel assessment={incident.assessment} reason={incident.failureReason} />}
 
           {!noRecommendation && !awaiting && incident.diagnosis && incident.failureReason && !FAILURE_BANNER_STATUSES.includes(incident.status) && (
             <div className="resolution-banner resolution-neutral" role="status">
@@ -269,33 +270,69 @@ function DetailBody({ incident, actions }) {
 }
 
 /**
- * Shown when the AI explained the incident but recommended nothing. The AI may only choose from
- * actions KAIRON can really run for this app, so the usual reason is that no remediation target was
- * turned on for it when the incident was analysed. The diagnosis text may still talk about a fix in
- * general terms; this says plainly that nothing here can be approved, and what to do about it.
+ * Shown when the AI explained the incident but recommended nothing - saying what actually happened,
+ * not a generic "no recommendation". Three different outcomes, from the stored assessment:
+ * nothing could have been recommended (no ready target), the AI weighed the offered actions and
+ * explained why none fits, or (older incidents, or a model that gave no reasons) it simply chose
+ * none. It never claims the AI ruled an action out unless the AI actually said so.
  */
-function NoRecommendationPanel({ reason }) {
+function NoRecommendationPanel({ assessment, reason }) {
+  const offered = assessment?.offeredActions || [];
+  const declined = (assessment?.consideredActions || []).filter((c) => c.verdict !== 'recommended');
+  const nothingOffered = assessment && offered.length === 0;
+
   return (
     <section className="panel ai-panel recommendation-panel" role="status">
       <div className="panel-header">
-        <h4>No recommended action</h4>
+        <h4>{nothingOffered ? 'No action was available' : 'No action recommended'}</h4>
       </div>
-      <p className="recommendation-line">
-        The AI explained what went wrong, but had no action it could recommend. It may only choose from
-        actions KAIRON can actually run for this app, such as <strong>Restart the application</strong>,
-        and none was available when this incident was analysed. Any fix mentioned in the investigation
-        above is advice only.
-      </p>
-      {reason && (
-        <p className="recommendation-line">
-          <span className="ai-field-label">Reason</span> {reason}
-        </p>
+
+      {nothingOffered ? (
+        <>
+          <p className="recommendation-line">
+            KAIRON had no action it could run for this app when the incident was analysed, so the AI could only explain
+            the problem. Actions such as <strong>Restart the application</strong> become available once the app has a
+            remediation target that is turned on and ready.
+          </p>
+          <p className="recommendation-line">
+            <span className="ai-field-label">What to do</span> Turn on this app&apos;s remediation target (Remediation
+            Targets), then close this incident. If the problem continues, KAIRON opens a new incident that can offer the
+            action for you to approve.
+          </p>
+        </>
+      ) : declined.length > 0 ? (
+        <>
+          <p className="recommendation-line">The AI weighed the available actions and decided none fits right now:</p>
+          <ul className="ai-list">
+            {declined.map((c) => (
+              <li key={c.action}>
+                <strong>{getActionLabel(c.action)}</strong>: {c.reason}
+              </li>
+            ))}
+          </ul>
+          <p className="recommendation-line">
+            <span className="ai-field-label">What to do</span> Follow &ldquo;What to check next&rdquo; in the investigation
+            above. Close this incident once the cause is fixed.
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="recommendation-line">
+            The AI explained what went wrong but did not recommend
+            {offered.length > 0 ? <> any of the available actions ({offered.map(getActionLabel).join(', ')})</> : ' an action'}.
+            Any fix mentioned in the investigation above is advice only.
+          </p>
+          {reason && (
+            <p className="recommendation-line">
+              <span className="ai-field-label">Reason</span> {reason}
+            </p>
+          )}
+          <p className="recommendation-line">
+            <span className="ai-field-label">What to do</span> Re-investigate if new evidence has arrived, or follow the
+            investigation&apos;s advice and close this incident once fixed.
+          </p>
+        </>
       )}
-      <p className="recommendation-line">
-        <span className="ai-field-label">What to do</span> Make sure this app has a remediation target that is
-        turned on (Remediation Targets), then close this incident. If the problem continues, KAIRON opens a
-        new incident that can offer the action for you to approve.
-      </p>
     </section>
   );
 }

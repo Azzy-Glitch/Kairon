@@ -1503,6 +1503,14 @@
 }
 
 .incident-close { margin: 12px 0; }
+.forecast-block { display: flex; flex-direction: column; gap: 8px; }
+.forecast-meta { margin: 0; font-size: 12px; color: var(--text-muted); }
+.forecast-trends { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.forecast-trend { display: grid; grid-template-columns: minmax(80px, 1fr) auto auto; gap: 12px; font-size: 13px; align-items: baseline; }
+.forecast-trend-label { font-weight: 600; }
+.forecast-trend-threshold { color: var(--text-muted); font-size: 12px; }
+.forecast-trend.trend-rising { color: var(--critical, #b42318); }
+.forecast-ai { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
 .telemetry-snapshot-note { margin: 10px 2px 0; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 .incident-close-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;

@@ -295,7 +295,8 @@ public class IncidentOrchestrator : IIncidentOrchestrator
         }
 
         ApplyDiagnosis(incident, result);
-        ApplyPrediction(incident, result);
+        ApplyAssessment(incident, result, package);
+        ApplyPrediction(incident, result, package.RiskForecast);
         await CreateRecommendationsAsync(incident, result, cancellationToken);
     }
 
@@ -413,11 +414,57 @@ public class IncidentOrchestrator : IIncidentOrchestrator
             });
     }
 
-    /// <summary>Diagnosed -> Predicted.</summary>
-    private void ApplyPrediction(SreIncident incident, InvestigationResultDto result)
+    /// <summary>Stores what the AI weighed, alongside what KAIRON offered it. Only offered actions
+    /// are kept in the considered list - anything else was never a real option.</summary>
+    private static void ApplyAssessment(SreIncident incident, InvestigationResultDto result, EvidencePackageDto package)
     {
-        incident.PredictedImpact = result.PredictedFailure;
-        incident.PredictedRisk = result.EstimatedRisk;
+        var offered = package.AvailableActions.Select(a => a.Action).ToList();
+        var certainty = (result.RootCauseCertainty ?? string.Empty).Trim().ToLowerInvariant();
+        var assessment = new AiAssessment
+        {
+            RootCauseCertainty = AiAssessment.Certainties.Contains(certainty) ? certainty : "unknown",
+            NextSteps = result.NextSteps.Where(s => !string.IsNullOrWhiteSpace(s)).Take(8)
+                .Select(s => Bound(Redaction.Scrub(s), 500)).ToList(),
+            ConsideredActions = result.ConsideredActions
+                .Where(c => offered.Contains(c.Action, StringComparer.OrdinalIgnoreCase))
+                .Take(10)
+                .Select(c => new ConsideredActionDto
+                {
+                    Action = offered.First(o => o.Equals(c.Action, StringComparison.OrdinalIgnoreCase)),
+                    Verdict = c.Verdict == "recommended" ? "recommended" : "not_recommended",
+                    Reason = Bound(Redaction.Scrub(c.Reason), 600)
+                })
+                .ToList(),
+            OfferedActions = offered
+        };
+        incident.AssessmentJson = SreJson.Serialize(assessment);
+    }
+
+    /// <summary>Says what actually happened instead of a generic "no recommendation": nothing was
+    /// available, or the AI weighed the available actions and explained why it chose none.</summary>
+    private static string NoRecommendationReason(SreIncident incident)
+    {
+        var assessment = SreJson.Deserialize<AiAssessment?>(incident.AssessmentJson, null);
+        if (assessment is null) return "The AI produced no recommendation for this incident.";
+        if (assessment.OfferedActions.Count == 0)
+            return "No remediation action was available for this service and machine when the incident was analysed (no enabled, ready remediation target).";
+        var declined = assessment.ConsideredActions.FirstOrDefault(c => c.Verdict == "not_recommended" && c.Reason.Length > 0);
+        return declined is not null
+            ? $"The AI considered {declined.Action} and did not recommend it: {declined.Reason}"
+            : $"The AI did not recommend any of the available actions ({string.Join(", ", assessment.OfferedActions)}).";
+    }
+
+    private static string Bound(string? value, int max) =>
+        string.IsNullOrEmpty(value) ? string.Empty : value.Length <= max ? value : value[..max] + "...";
+
+    /// <summary>Diagnosed -> Predicted. The AI's narrative is preferred; when it gives none, KAIRON's
+    /// own trend forecast fills in, so a prediction never silently disappears.</summary>
+    private void ApplyPrediction(SreIncident incident, InvestigationResultDto result, RiskForecastDto? forecast)
+    {
+        var useForecast = string.IsNullOrWhiteSpace(result.PredictedFailure)
+                          && forecast is not null && forecast.Outcome != RiskForecastOutcomes.Inconclusive;
+        incident.PredictedImpact = useForecast ? forecast!.FailureMode : result.PredictedFailure;
+        incident.PredictedRisk = useForecast ? forecast!.RiskLevel : result.EstimatedRisk;
 
         var previous = IncidentLifecycle.Transition(incident, IncidentStatus.Predicted);
 
@@ -521,7 +568,7 @@ public class IncidentOrchestrator : IIncidentOrchestrator
             // incident is left for a human with the analysis attached.
             incident.RemediationState = RemediationStatus.None;
             incident.FailureReason = annotated.Count == 0
-                ? "The AI produced no recommendation for this incident."
+                ? NoRecommendationReason(incident)
                 : "No recommended action passed policy validation; operator action is required.";
 
             _audit.Record(incident, IncidentEventTypes.PolicyEvaluated, "policy",

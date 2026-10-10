@@ -91,13 +91,29 @@ public sealed class SqliteSchemaMigratorTests : IDisposable
 
         await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
 
-        Assert.Equal(13, await UserVersionAsync(db));
+        Assert.Equal(SqliteSchemaMigrator.CurrentVersion, await UserVersionAsync(db));
         Assert.Equal(Kairon.Backend.Models.Platform.RemediationTargetKinds.WindowsService,
             (await db.RemediationTargets.AsNoTracking().SingleAsync()).Kind);
         var bindingColumns = await db.Database.SqlQueryRaw<string>(
             "SELECT name AS Value FROM pragma_table_info('SdkMachineBindings')").ToListAsync();
         Assert.Contains("ProcessWorkingDirectory", bindingColumns);
         Assert.Equal(0, await db.ProcessRestartCommands.CountAsync());
+    }
+
+    [Fact]
+    public async Task VersionThirteenUpgradeAddsIncidentAssessmentAndKeepsExistingIncidents()
+    {
+        await using var db = CreateContext();
+        await db.Database.EnsureCreatedAsync();
+        await db.Database.ExecuteSqlRawAsync("ALTER TABLE \"SreIncidents\" DROP COLUMN \"AssessmentJson\";");
+        await db.Database.ExecuteSqlRawAsync("PRAGMA user_version = 13;");
+
+        await new SqliteSchemaMigrator(db, NullLogger<SqliteSchemaMigrator>.Instance).MigrateAsync();
+
+        Assert.Equal(14, await UserVersionAsync(db));
+        var columns = await db.Database.SqlQueryRaw<string>(
+            "SELECT name AS Value FROM pragma_table_info('SreIncidents')").ToListAsync();
+        Assert.Contains("AssessmentJson", columns);
     }
 
     [Fact]

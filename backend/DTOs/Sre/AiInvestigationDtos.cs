@@ -39,6 +39,114 @@ public class EvidencePackageDto
     /// when one is enabled. No host name, machine id or credential is included.</summary>
     [JsonPropertyName("remediation_target")]
     public RemediationTargetContextDto? RemediationTarget { get; set; }
+
+    /// <summary>KAIRON's own deterministic trend forecast for this incident (RiskForecaster),
+    /// computed from the metric samples above before the AI is asked anything.</summary>
+    [JsonPropertyName("risk_forecast")]
+    public RiskForecastDto? RiskForecast { get; set; }
+
+    /// <summary>How often this service has had incidents recently, and whether the problem came
+    /// back after a restart - the difference between a transient fault and a persistent defect.</summary>
+    [JsonPropertyName("recurrence")]
+    public RecurrenceContextDto? Recurrence { get; set; }
+}
+
+public static class RiskForecastOutcomes
+{
+    /// <summary>The trend shows the problem continuing or worsening.</summary>
+    public const string Elevated = "elevated";
+    /// <summary>Enough data, and it does not show the problem getting worse.</summary>
+    public const string Stable = "stable";
+    /// <summary>Not enough data to project anything.</summary>
+    public const string Inconclusive = "inconclusive";
+}
+
+public class RiskForecastDto
+{
+    [JsonPropertyName("outcome")]
+    public string Outcome { get; set; } = RiskForecastOutcomes.Inconclusive;
+
+    /// <summary>low | medium | high | critical, or "unknown" when inconclusive.</summary>
+    [JsonPropertyName("risk_level")]
+    public string RiskLevel { get; set; } = "unknown";
+
+    [JsonPropertyName("failure_mode")]
+    public string FailureMode { get; set; } = string.Empty;
+
+    [JsonPropertyName("evidence")]
+    public List<string> Evidence { get; set; } = new();
+
+    /// <summary>"If the observed trend continues for this long" - never a predicted failure time.</summary>
+    [JsonPropertyName("horizon_minutes")]
+    public int HorizonMinutes { get; set; }
+
+    /// <summary>How well the data supports the forecast (sample count and consistency), 0..1.</summary>
+    [JsonPropertyName("confidence")]
+    public double Confidence { get; set; }
+
+    [JsonPropertyName("expected_impact")]
+    public string ExpectedImpact { get; set; } = string.Empty;
+
+    [JsonPropertyName("preventive_action")]
+    public string PreventiveAction { get; set; } = string.Empty;
+
+    [JsonPropertyName("method")]
+    public string Method { get; set; } = "trend-baseline";
+
+    [JsonPropertyName("trends")]
+    public List<MetricTrendDto> Trends { get; set; } = new();
+}
+
+public class MetricTrendDto
+{
+    [JsonPropertyName("metric")]
+    public string Metric { get; set; } = string.Empty;
+
+    [JsonPropertyName("label")]
+    public string Label { get; set; } = string.Empty;
+
+    [JsonPropertyName("unit")]
+    public string Unit { get; set; } = string.Empty;
+
+    /// <summary>Average over the earlier half of the evidence window.</summary>
+    [JsonPropertyName("earlier")]
+    public double Earlier { get; set; }
+
+    /// <summary>Average over the later half.</summary>
+    [JsonPropertyName("recent")]
+    public double Recent { get; set; }
+
+    [JsonPropertyName("threshold")]
+    public double Threshold { get; set; }
+
+    /// <summary>rising | falling | steady</summary>
+    [JsonPropertyName("direction")]
+    public string Direction { get; set; } = "steady";
+
+    /// <summary>Share of later-half samples at or over the threshold, 0..1.</summary>
+    [JsonPropertyName("persistence")]
+    public double Persistence { get; set; }
+
+    [JsonPropertyName("samples")]
+    public int Samples { get; set; }
+}
+
+public class RecurrenceContextDto
+{
+    /// <summary>Other incidents for the same project, environment and service in the last 24 hours.</summary>
+    [JsonPropertyName("incidents_last_24h")]
+    public int IncidentsLast24h { get; set; }
+
+    /// <summary>A previous incident for this scope was resolved by a restart shortly before this one
+    /// was detected - the restart cleared the symptoms only temporarily.</summary>
+    [JsonPropertyName("recurred_after_restart")]
+    public bool RecurredAfterRestart { get; set; }
+
+    [JsonPropertyName("minutes_since_restart")]
+    public double? MinutesSinceRestart { get; set; }
+
+    [JsonPropertyName("previous_remediation")]
+    public string? PreviousRemediation { get; set; }
 }
 
 public class EndpointSummaryDto
@@ -72,6 +180,10 @@ public class EndpointSummaryDto
 
 public class RemediationTargetContextDto
 {
+    /// <summary>WindowsService or AppProcess: what a restart on this target actually restarts.</summary>
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = "WindowsService";
+
     [JsonPropertyName("windows_service")]
     public string WindowsService { get; set; } = string.Empty;
 
@@ -304,12 +416,39 @@ public class InvestigationResultDto
     [JsonPropertyName("recommendations")]
     public List<AiRecommendationDto> Recommendations { get; set; } = new();
 
+    /// <summary>confirmed | likely | possible | unknown - how well the evidence establishes the root cause.</summary>
+    [JsonPropertyName("root_cause_certainty")]
+    public string RootCauseCertainty { get; set; } = "unknown";
+
+    /// <summary>What a person should check or change next (investigation steps, code or dependency
+    /// fixes) - advice, never executed.</summary>
+    [JsonPropertyName("next_steps")]
+    public List<string> NextSteps { get; set; } = new();
+
+    /// <summary>Every available action the model weighed, with its verdict and why - so "not
+    /// recommended" is an explained decision rather than an empty list.</summary>
+    [JsonPropertyName("considered_actions")]
+    public List<ConsideredActionDto> ConsideredActions { get; set; } = new();
+
     /// <summary>Set by the AI service so the backend can record which provider produced this.</summary>
     [JsonPropertyName("provider")]
     public string? Provider { get; set; }
 
     [JsonPropertyName("model")]
     public string? Model { get; set; }
+}
+
+public class ConsideredActionDto
+{
+    [JsonPropertyName("action")]
+    public string Action { get; set; } = string.Empty;
+
+    /// <summary>recommended | not_recommended</summary>
+    [JsonPropertyName("verdict")]
+    public string Verdict { get; set; } = "not_recommended";
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; set; } = string.Empty;
 }
 
 public class AiRecommendationDto
