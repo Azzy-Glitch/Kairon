@@ -277,6 +277,143 @@ public sealed class AppProcessRemediationTests : IDisposable
         Assert.Single(h.Db.ProcessRestartCommands); // still only the one approved restart
     }
 
+    /// <summary>
+    /// Restart enabled AFTER the incident exists. Before a target is enabled, telemetry is not tied to
+    /// a machine, so the incident is unscoped and no restart can be offered. Once the target is on and
+    /// the fault is still happening, the app's fresh, Agent-verified telemetry proves the machine: the
+    /// SAME incident is re-scoped to it (no duplicate) and its remediation is re-evaluated - a stored
+    /// recommendation becomes approvable without another AI call; otherwise the AI is asked once,
+    /// because it was never offered the restart.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task EnablingRestartAfterTheIncidentExistsMakesTheSameIncidentRemediable(bool aiAlreadyRecommendedRestart)
+    {
+        var h = _h;
+        h.EnsureProject();
+        const string agentKey = "app-process-agent-proof-key-123456789012345";
+        const string userAgentKey = "app-process-user-agent-key-1234567890123456";
+        var agents = new AgentRegistrationService(h.Db, TimeProvider.System);
+        var machineId = Guid.NewGuid();
+        await agents.RegisterAsync(new AgentRegistrationDto
+        {
+            MachineId = machineId, HostName = "dev-laptop", OperatingSystem = "Windows", Architecture = "x64",
+            AgentVersion = "1.1", AgentKey = agentKey, UserAgentKey = userAgentKey
+        }, default);
+        var platformAudit = new PlatformAuditService(h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance);
+        var credentials = new ProjectCredentialService(h.Db, Options.Create(new PlatformSecurityOptions()), TimeProvider.System, platformAudit);
+        var pairing = new SdkPairingService(h.Db, credentials, TimeProvider.System, Options.Create(new ProductOptions()),
+            platformAudit, NullLogger<SdkPairingService>.Instance);
+        var created = (await pairing.CreateAsync(h.ProjectId, "python", default))!;
+        var paired = (await pairing.RedeemAsync(created.Code, "python", "1.1.0", default))!;
+        Assert.True(await pairing.ConfirmAsync(created.PairingId, paired.ApiKey, default));
+        var bindings = new MachineTelemetryBindingService(h.Db, agents, h.Targets, Options.Create(new WindowsRemediationOptions()));
+        var telemetry = new PlatformTelemetryService(h.Db, h.Queue, TimeProvider.System);
+        Task Send(DateTime at, long errors) =>
+            SendMetricAsync(h, bindings, telemetry, credentials, paired.ApiKey, agentKey, machineId, at, cpu: 12, "python", 4242, errors);
+        await agents.RecordUserSessionHeartbeatAsync(machineId, userAgentKey, UserSession(4242, DateTime.UtcNow.AddMinutes(-3)), default);
+
+        var registry = new RemediationToolRegistry([new RestartApplicationTool(h.Db, h.Targets)]);
+        var policy = new RemediationPolicy(registry, Options.Create(h.Remediation), NullLogger<RemediationPolicy>.Instance);
+        var executor = new RemediationExecutor(registry, policy, h.Audit, h.Db, Options.Create(h.Remediation), NullLogger<RemediationExecutor>.Instance);
+        var verifier = new VerificationService(h.Db, h.Audit, new RemediationToolRegistryAccessor(registry),
+            Options.Create(h.Verification), Options.Create(h.Detection), NullLogger<VerificationService>.Instance);
+        IncidentOrchestrator Orchestrator() => new(h.Db, h.CreateDetectionEngine(), h.CreateCorrelationEngine(),
+            new EvidenceCollector(h.Db, registry, Options.Create(h.AiOptions), Options.Create(h.Detection),
+                NullLogger<EvidenceCollector>.Instance), h.Ai, policy, registry, executor, verifier, h.Audit,
+            new IncidentKeyGenerator(h.Db), h.Queue, Options.Create(h.AiOptions), Options.Create(h.Remediation),
+            NullLogger<IncidentOrchestrator>.Instance);
+        h.Ai.Responder = evidence =>
+        {
+            var result = DeterministicInvestigation.Investigate(evidence);
+            if (aiAlreadyRecommendedRestart && result.Recommendations.Count == 0)
+                result.Recommendations.Add(new AiRecommendationDto
+                {
+                    Action = ServiceToolNames.RestartApplication, Reason = "Clears bad in-process state as a temporary mitigation.",
+                    ExpectedOutcome = "Errors stop if they come from in-process state.", RiskLevel = "medium"
+                });
+            return result;
+        };
+
+        // 1. Payment failures with no restart target yet: an unscoped incident with nothing approvable.
+        for (var i = 0; i < 4; i++) await Send(DateTime.UtcNow.AddSeconds(-40 + i * 5), errors: 6);
+        await Orchestrator().DetectAndCorrelateAsync(h.ProjectId, h.Environment, h.Service);
+        var incident = h.Db.SreIncidents.Single();
+        Assert.Null(IncidentMachineScope.GetMachineId(incident));
+        await Orchestrator().InvestigateAsync(incident.Id);
+        Assert.Empty(h.Db.RemediationActions);
+        Assert.Equal(1, h.Ai.InvestigateCalls);
+
+        // 2. The operator enables restart for this app; the fault is still happening.
+        var management = new RemediationTargetManagementService(h.Db, platformAudit, TimeProvider.System,
+            Options.Create(h.WindowsRemediation), h.WindowsServices, h.WindowsServices, h.Targets, h.Queue);
+        Assert.Equal(RemediationTargetOperationOutcome.Success,
+            (await management.EnableAppRestartForPairingAsync(created.PairingId, "operator-test")).Outcome);
+        for (var i = 0; i < 4; i++) await Send(DateTime.UtcNow.AddSeconds(-14 + i * 4), errors: 6);
+        await Orchestrator().DetectAndCorrelateAsync(h.ProjectId, h.Environment, h.Service);
+        await ProcessQueuedAsync(Orchestrator);
+
+        // 3. Still ONE incident - now tied to the app's machine - with the restart awaiting approval.
+        incident = h.Db.SreIncidents.AsNoTracking().Single();
+        Assert.Equal(machineId, IncidentMachineScope.GetMachineId(incident));
+        Assert.Equal(IncidentStatus.AwaitingApproval, incident.Status);
+        var action = Assert.Single(h.Db.RemediationActions.AsNoTracking());
+        Assert.Equal(ServiceToolNames.RestartApplication, action.ActionType);
+        Assert.Equal(RemediationStatus.AwaitingApproval, action.Status);
+        // A stored recommendation needed no new AI call; otherwise the AI was asked exactly once more.
+        Assert.Equal(aiAlreadyRecommendedRestart ? 1 : 2, h.Ai.InvestigateCalls);
+        Assert.Empty(h.Db.ProcessRestartCommands); // nothing runs without approval
+    }
+
+    /// <summary>The fault stopped before restart was enabled: there is no fresh evidence tying the old
+    /// incident to the machine, so nothing becomes approvable - and the incident says why.</summary>
+    [Fact]
+    public async Task EnablingRestartAfterTheFaultStoppedExplainsWhyTheOldIncidentStaysWithoutAction()
+    {
+        var (binding, target) = SeedReadyAppTarget();
+        target.Enabled = false;
+        _h.Db.SaveChanges();
+        var incident = _h.SeedIncident(IncidentStatus.RecommendationReady, correlationKey: $"{_h.ProjectId}|{_h.Environment}|{_h.Service}");
+        incident.RootCause = "Payment provider failures";
+        incident.AssessmentJson = SreJson.Serialize(new AiAssessment { OfferedActions = new() });
+        _h.Db.SaveChanges();
+        var management = new RemediationTargetManagementService(_h.Db,
+            new PlatformAuditService(_h.Db, TimeProvider.System, NullLogger<PlatformAuditService>.Instance), TimeProvider.System,
+            Options.Create(_h.WindowsRemediation), _h.WindowsServices, _h.WindowsServices, _h.Targets, _h.Queue);
+
+        await management.SetEnabledAsync(target.Id, true, "operator-test");
+        var registry = new RemediationToolRegistry([new RestartApplicationTool(_h.Db, _h.Targets)]);
+        var policy = new RemediationPolicy(registry, Options.Create(_h.Remediation), NullLogger<RemediationPolicy>.Instance);
+        await ProcessQueuedAsync(() => new IncidentOrchestrator(_h.Db, _h.CreateDetectionEngine(), _h.CreateCorrelationEngine(),
+            new EvidenceCollector(_h.Db, registry, Options.Create(_h.AiOptions), Options.Create(_h.Detection), NullLogger<EvidenceCollector>.Instance),
+            _h.Ai, policy, registry, _h.CreateExecutor(), _h.CreateVerificationService(), _h.Audit, new IncidentKeyGenerator(_h.Db), _h.Queue,
+            Options.Create(_h.AiOptions), Options.Create(_h.Remediation), NullLogger<IncidentOrchestrator>.Instance));
+        Assert.Equal(0, _h.Ai.InvestigateCalls); // nothing new to show the AI
+
+        var updated = _h.Db.SreIncidents.AsNoTracking().Single();
+        Assert.Equal(IncidentStatus.RecommendationReady, updated.Status);
+        Assert.Empty(_h.Db.RemediationActions);
+        Assert.Contains("not tied to a machine", updated.FailureReason);
+    }
+
+    private async Task ProcessQueuedAsync(Func<IncidentOrchestrator> orchestrator)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var items = new List<IncidentWorkItem>();
+        try { await foreach (var item in _h.Queue.ReadAllAsync(timeout.Token)) { items.Add(item); _h.Queue.Complete(item); } }
+        catch (OperationCanceledException) { }
+        foreach (var item in items)
+        {
+            switch (item.Kind)
+            {
+                case WorkItemKind.ProcessIncident: await orchestrator().InvestigateAsync(item.IncidentId!.Value); break;
+                case WorkItemKind.ReinvestigateIncident: await orchestrator().ReinvestigateAsync(item.IncidentId!.Value); break;
+                case WorkItemKind.ReevaluateRemediation: await orchestrator().ReevaluateRemediationAsync(item.IncidentId!.Value); break;
+            }
+        }
+    }
+
     // --- 2. Which process: only the one Windows names -------------------------------------------
 
     [Fact]

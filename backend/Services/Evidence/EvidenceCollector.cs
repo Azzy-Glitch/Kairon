@@ -23,6 +23,10 @@ public interface IEvidenceCollector
     /// what the model saw. Does not call SaveChanges.
     /// </summary>
     void Persist(SreIncident incident, EvidencePackageDto package);
+
+    /// <summary>The remediation tools KAIRON can offer for this incident right now (ready, authorized
+    /// target for its scope).</summary>
+    Task<IReadOnlyList<string>> OfferedActionsAsync(SreIncident incident, CancellationToken cancellationToken = default);
 }
 
 public class EvidenceCollector : IEvidenceCollector
@@ -183,12 +187,7 @@ public class EvidenceCollector : IEvidenceCollector
 
         // Precomputed before the (synchronous) DTO projection below can reference it - resolving a
         // scoped tool's target is a real, async EF read, so it cannot happen inside a LINQ .Where.
-        var authorizedToolNames = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var t in _tools.All())
-        {
-            if (t is not IScopedRemediationTool scoped || await scoped.TargetFingerprintAsync(incident, cancellationToken) is not null)
-                authorizedToolNames.Add(t.Name);
-        }
+        var authorizedToolNames = (await OfferedActionsAsync(incident, cancellationToken)).ToHashSet(StringComparer.Ordinal);
 
         var remediationTarget = await RemediationTargetContextAsync(incident, machineId, cancellationToken);
         var recurrence = await RecurrenceAsync(incident, machineId, cancellationToken);
@@ -305,6 +304,17 @@ public class EvidenceCollector : IEvidenceCollector
             package.CorrelatedSignals.Count, package.LogEvents.Count, package.HistoricalIncidents.Count);
 
         return package;
+    }
+
+    public async Task<IReadOnlyList<string>> OfferedActionsAsync(SreIncident incident, CancellationToken cancellationToken = default)
+    {
+        var offered = new List<string>();
+        foreach (var t in _tools.All())
+        {
+            if (t is not IScopedRemediationTool scoped || await scoped.TargetFingerprintAsync(incident, cancellationToken) is not null)
+                offered.Add(t.Name);
+        }
+        return offered;
     }
 
     public void Persist(SreIncident incident, EvidencePackageDto package)
@@ -438,7 +448,11 @@ public class EvidenceCollector : IEvidenceCollector
             .Where(h => !machineId.HasValue || IncidentMachineScope.GetMachineId(h) == machineId)
             .ToList();
 
+        // "It came back after a restart" only means something for the SAME kind of fault: a restart
+        // for an overload says nothing about payment errors that start later.
+        var currentKinds = FaultCategories.Of(SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>()));
         var lastRestart = recent
+            .Where(h => FaultCategories.Of(SreJson.Deserialize(h.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>())).Overlaps(currentKinds))
             .SelectMany(h => h.Actions)
             .Where(a => a.Status == RemediationStatus.Executed && a.CompletedAt.HasValue
                         && RestartActions.Contains(a.ActionType, StringComparer.Ordinal)

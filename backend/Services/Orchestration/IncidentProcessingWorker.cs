@@ -73,6 +73,10 @@ public class IncidentProcessingWorker : BackgroundService
                 await orchestrator.ReinvestigateAsync(item.IncidentId.Value, cancellationToken);
                 break;
 
+            case WorkItemKind.ReevaluateRemediation when item.IncidentId.HasValue:
+                await orchestrator.ReevaluateRemediationAsync(item.IncidentId.Value, cancellationToken);
+                break;
+
             case WorkItemKind.ExecuteRemediation when item.IncidentId.HasValue && item.ActionId.HasValue:
                 await orchestrator.ExecuteAndVerifyAsync(item.IncidentId.Value, item.ActionId.Value, cancellationToken);
                 break;

@@ -97,11 +97,37 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
     private readonly IWindowsServiceInspector _inspector;
     private readonly ILocalMachine _localMachine;
     private readonly IRemediationTargetResolver _resolver;
+    private readonly Kairon.Backend.Services.Orchestration.IIncidentProcessingQueue? _incidents;
+
+    /// <summary>
+    /// A target that is now enabled can make remediation available to incidents that already exist
+    /// for its scope. Each open incident is queued for a remediation re-check (no AI call unless the
+    /// AI was never offered the now-available action); what the incident may actually run is still
+    /// decided by the same policy, binding and readiness checks as always.
+    /// </summary>
+    private async Task RequestReevaluationAsync(RemediationTarget entity, CancellationToken ct)
+    {
+        if (_incidents is null || !entity.Enabled) return;
+        var open = await _db.SreIncidents.AsNoTracking()
+            .Where(i => i.ProjectId == entity.ProjectId && i.Service == entity.Service
+                        && i.Status != Kairon.Backend.Models.Sre.IncidentStatus.Resolved
+                        && i.Status != Kairon.Backend.Models.Sre.IncidentStatus.Failed
+                        && i.Status != Kairon.Backend.Models.Sre.IncidentStatus.Rejected
+                        && i.Status != Kairon.Backend.Models.Sre.IncidentStatus.Cancelled)
+            .Select(i => new { i.Id, i.Environment })
+            .ToListAsync(ct);
+        foreach (var incident in open.Where(i => string.Equals(i.Environment, entity.Environment, StringComparison.OrdinalIgnoreCase)))
+            _incidents.TryEnqueue(new Kairon.Backend.Services.Orchestration.IncidentWorkItem(
+                Kairon.Backend.Services.Orchestration.WorkItemKind.ReevaluateRemediation,
+                entity.ProjectId, incident.Environment, entity.Service, incident.Id));
+    }
 
     public RemediationTargetManagementService(AppDbContext db, IPlatformAuditService audit, TimeProvider time,
         IOptions<WindowsRemediationOptions>? windows = null, IWindowsServiceInspector? inspector = null,
-        ILocalMachine? localMachine = null, IRemediationTargetResolver? resolver = null)
+        ILocalMachine? localMachine = null, IRemediationTargetResolver? resolver = null,
+        Kairon.Backend.Services.Orchestration.IIncidentProcessingQueue? incidents = null)
     {
+        _incidents = incidents;
         _db = db;
         _audit = audit;
         _time = time;
@@ -180,6 +206,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         try
         {
             await _db.SaveChangesAsync(ct);
+            await RequestReevaluationAsync(entity, ct);
         }
         catch (DbUpdateException ex) when (IsUniqueConstraintViolation(ex))
         {
@@ -253,6 +280,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
         try
         {
             await _db.SaveChangesAsync(ct);
+            await RequestReevaluationAsync(entity, ct);
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -314,6 +342,7 @@ public sealed class RemediationTargetManagementService : IRemediationTargetManag
             try
             {
                 await _db.SaveChangesAsync(ct);
+                await RequestReevaluationAsync(entity, ct);
             }
             catch (DbUpdateConcurrencyException)
             {

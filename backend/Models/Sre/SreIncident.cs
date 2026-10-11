@@ -57,6 +57,11 @@ public class SreIncident
     /// KAIRON offered it. Null for incidents investigated before this existed.</summary>
     public string? AssessmentJson { get; set; }
 
+    /// <summary>What the last correlation pass did to this incident. Not persisted: it only tells the
+    /// orchestrator, in the same pass, whether remediation must be re-evaluated or re-investigated.</summary>
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public CorrelationOutcome LastCorrelation { get; set; }
+
     public RemediationStatus RemediationState { get; set; } = RemediationStatus.None;
     public VerificationStatus VerificationState { get; set; } = VerificationStatus.NotStarted;
 

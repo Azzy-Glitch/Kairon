@@ -27,7 +27,12 @@ public enum WorkItemKind
     /// processing so duplicate detection work can never turn into repeated AI calls after an
     /// incident has already advanced to AwaitingApproval.
     /// </summary>
-    ReinvestigateIncident = 3
+    ReinvestigateIncident = 3,
+
+    /// <summary>Re-check an incident's remediation against the current configuration and scope
+    /// (a target was enabled, or the incident was tied to a machine) - without calling the AI unless
+    /// it was never offered an action that is now available.</summary>
+    ReevaluateRemediation = 4
 }
 
 public record IncidentWorkItem(

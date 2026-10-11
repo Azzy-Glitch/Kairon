@@ -84,7 +84,15 @@ public sealed class WindowsServiceRemediationTests
         Assert.All(signals, s => Assert.Equal(machine, s.MachineId));
         var correlated = await h.CreateCorrelationEngine().CorrelateAsync(signals);
         Assert.All(correlated, i => Assert.Equal(machine, IncidentMachineScope.GetMachineId(i)));
-        Assert.DoesNotContain(correlated, i => i.Id == incident.Id);
+        // The same ongoing fault, detected before the target existed, is re-scoped rather than
+        // duplicated - but its actionable evidence is now ONLY the target machine's signals; the
+        // unscoped readings (which could have come from any machine) survive only in the timeline.
+        var rescoped = Assert.Single(correlated);
+        Assert.Equal(incident.Id, rescoped.Id);
+        Assert.Equal(CorrelationOutcome.Rescoped, rescoped.LastCorrelation);
+        Assert.All(SreJson.Deserialize(rescoped.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>()),
+            s => Assert.Equal(machine, s.MachineId));
+        Assert.EndsWith($"|{machine}", rescoped.CorrelationKey);
     }
 
     private sealed class Scm : IWindowsServiceControl {

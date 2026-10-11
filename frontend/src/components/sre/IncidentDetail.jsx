@@ -295,9 +295,10 @@ function NoRecommendationPanel({ assessment, reason }) {
             remediation target that is turned on and ready.
           </p>
           <p className="recommendation-line">
-            <span className="ai-field-label">What to do</span> Turn on this app&apos;s remediation target (Remediation
-            Targets), then close this incident. If the problem continues, KAIRON opens a new incident that can offer the
-            action for you to approve.
+            <span className="ai-field-label">What to do</span> Turn on this app&apos;s remediation target (Connect an App or
+            Remediation Targets). You don&apos;t need to recreate anything: if the problem is still happening, KAIRON ties this
+            incident to the app&apos;s machine from fresh telemetry and offers the action here automatically. If it has
+            already stopped, close this incident.
           </p>
         </>
       ) : declined.length > 0 ? (

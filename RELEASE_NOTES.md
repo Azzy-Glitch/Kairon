@@ -20,6 +20,16 @@ before and after.
 
 ## What changed since 1.0.0
 
+- **Incidents follow configuration changes and new faults**: enabling a remediation target after an
+  incident exists no longer leaves that incident without action. When the fault is still happening,
+  the app's fresh Agent-verified telemetry ties the same incident to the target's machine (no
+  duplicate incident), and its remediation is re-checked - a stored AI recommendation becomes
+  approvable without another AI call; the AI is asked again only if it was never offered the
+  now-available action. If the fault already stopped, the incident says why nothing can be offered.
+  A different kind of fault (e.g. payment errors) arriving after an open incident went quiet for
+  longer than the correlation window now opens its own incident instead of disappearing into the
+  old one, and a new kind of fault joining an active incident triggers one automatic
+  re-investigation. "Returned after a restart" now only applies to the same kind of fault.
 - **Queue depth and retries measured automatically**: both SDKs now report the peak number of
   requests in progress as queue depth and count retries of the app's failed outgoing HTTP calls
   (Python: `urllib`, `requests`, `httpx`; .NET: `HttpClient` diagnostics), with no code in the app.

@@ -78,26 +78,41 @@ public class CorrelationEngine : ICorrelationEngine
                 // still awaiting approval or stuck in investigation must not be duplicated - and sent
                 // to the AI again - just because its signals paused. Only a terminal state ends it; a
                 // later failure then starts a genuinely new incident.
-                var existing = await _db.SreIncidents
-                    .Include(i => i.Events)
-                    .Where(i => i.CorrelationKey == group.Key
-                                && i.Status != IncidentStatus.Resolved
-                                && i.Status != IncidentStatus.Failed
-                                && i.Status != IncidentStatus.Rejected
-                                && i.Status != IncidentStatus.Cancelled)
-                    .OrderByDescending(i => i.UpdatedAt)
-                    .FirstOrDefaultAsync(cancellationToken);
+                var existing = BelongsToOngoingFault(await OpenIncidentAsync(group.Key, cancellationToken), grouped);
+
+                // Telemetry is tied to a machine only once a remediation target is enabled for it, so
+                // an incident detected before that has an unscoped key. When the fault is still
+                // happening, this fresh, Agent-verified signal proves which machine it is on: the same
+                // incident is re-scoped rather than a second one opened beside it.
+                if (existing is null && grouped[0].MachineId is { } machineId)
+                {
+                    var unscoped = BelongsToOngoingFault(
+                        await OpenIncidentAsync(UnscopedKey(grouped[0]), cancellationToken), grouped);
+                    if (unscoped is not null)
+                    {
+                        Rescope(unscoped, grouped, machineId);
+                        touched.Add(unscoped);
+                        continue;
+                    }
+                }
 
                 if (existing is null)
                 {
                     var created = await CreateIncidentAsync(grouped, cancellationToken);
+                    created.LastCorrelation = CorrelationOutcome.Created;
                     touched.Add(created);
                 }
                 else
                 {
+                    var before = FaultCategories.Of(SreJson.Deserialize(existing.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>()));
                     var updated = await UpdateIncidentAsync(existing, grouped, cancellationToken);
                     if (updated)
+                    {
+                        existing.LastCorrelation = grouped.Any(s => !before.Contains(FaultCategories.Of(s.MetricName)))
+                            ? CorrelationOutcome.NewSymptoms
+                            : CorrelationOutcome.Updated;
                         touched.Add(existing);
+                    }
                 }
             }
 
@@ -111,6 +126,69 @@ public class CorrelationEngine : ICorrelationEngine
     }
 
     private static readonly SemaphoreSlim CorrelationGate = new(1, 1);
+
+    private Task<SreIncident?> OpenIncidentAsync(string correlationKey, CancellationToken cancellationToken) =>
+        _db.SreIncidents
+            .Include(i => i.Events)
+            .Where(i => i.CorrelationKey == correlationKey
+                        && i.Status != IncidentStatus.Resolved
+                        && i.Status != IncidentStatus.Failed
+                        && i.Status != IncidentStatus.Rejected
+                        && i.Status != IncidentStatus.Cancelled)
+            .OrderByDescending(i => i.UpdatedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+    private static string UnscopedKey(DetectionSignal signal) => $"{signal.ProjectId}|{signal.Environment}|{signal.Service}";
+
+    /// <summary>
+    /// One ongoing problem = one active incident: an open incident with the same key absorbs new
+    /// signals however long it has been idle, so an incident awaiting approval is never duplicated
+    /// (and sent to the AI again) just because its signals paused. The one exception is a genuinely
+    /// different fault arriving after the incident went quiet for longer than the correlation window -
+    /// payment errors after an overload stopped are a new problem, not the old one continuing, and
+    /// must not disappear into an incident nobody is looking at any more.
+    /// </summary>
+    private SreIncident? BelongsToOngoingFault(SreIncident? incident, List<DetectionSignal> signals)
+    {
+        if (incident is null) return null;
+        var snapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
+        if (snapshots.Count == 0) return incident;
+        var quietSince = snapshots.Max(s => s.DetectedAt);
+        var window = TimeSpan.FromSeconds(Math.Max(1, _options.CorrelationWindowSeconds));
+        var sameKind = signals.Any(s => FaultCategories.Of(snapshots).Contains(FaultCategories.Of(s.MetricName)));
+        return sameKind || signals.Min(s => s.DetectedAt) - quietSince <= window ? incident : null;
+    }
+
+    /// <summary>Ties an unscoped incident to the machine fresh, Agent-verified telemetry proved. The
+    /// unscoped readings stay in the timeline (Detected/Correlated events); the incident's actionable
+    /// evidence becomes the machine-scoped signals, so its scope is never inferred from telemetry
+    /// that was not proven to come from that machine.</summary>
+    private void Rescope(SreIncident incident, List<DetectionSignal> signals, Guid machineId)
+    {
+        var previous = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
+        var scoped = signals.GroupBy(s => s.RuleId).Select(g => Snapshot(g.OrderByDescending(s => s.DetectedAt).First())).ToList();
+
+        incident.CorrelationKey = signals[0].CorrelationKey;
+        incident.CorrelatedMetricsJson = SreJson.Serialize(scoped);
+        incident.SymptomsJson = SreJson.Serialize(scoped.Select(s => s.Symptom).ToList());
+        incident.SignalCount = scoped.Count;
+        incident.Title = BuildTitleFromSnapshots(scoped, incident.Service);
+        incident.Severity = (IncidentSeverity)Math.Max((int)incident.Severity, (int)signals.Max(s => s.Severity));
+        incident.TelemetryReferencesJson = SreJson.Serialize(
+            SreJson.Deserialize(incident.TelemetryReferencesJson, new List<Guid>())
+                .Concat(signals.SelectMany(s => s.TelemetryReferences)).Distinct().ToList());
+        if (!string.IsNullOrWhiteSpace(incident.RootCause)) incident.DiagnosisStale = true;
+        incident.UpdatedAt = DateTime.UtcNow;
+        incident.LastCorrelation = FaultCategories.Of(previous).IsSupersetOf(scoped.Select(s => FaultCategories.Of(s.MetricName)))
+            ? CorrelationOutcome.Rescoped
+            : CorrelationOutcome.NewSymptoms;
+
+        _audit.Record(incident, IncidentEventTypes.Correlated, "correlation-engine",
+            message: "Tied to the remediation target's machine by fresh Agent-verified telemetry; " +
+                     $"{previous.Count} earlier unscoped signal(s) kept in the timeline",
+            data: new { machineId, previous, scoped });
+        _logger.LogInformation("Incident {Key} re-scoped to machine {MachineId}", incident.IncidentKey, machineId);
+    }
 
     private async Task<SreIncident> CreateIncidentAsync(
         List<DetectionSignal> signals,

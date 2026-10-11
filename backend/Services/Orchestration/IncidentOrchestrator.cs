@@ -40,6 +40,9 @@ public interface IIncidentOrchestrator
     /// </summary>
     Task ReinvestigateAsync(Guid incidentId, CancellationToken cancellationToken = default);
 
+    /// <summary>Re-checks an incident's remediation against the current configuration and scope.</summary>
+    Task ReevaluateRemediationAsync(Guid incidentId, CancellationToken cancellationToken = default);
+
     Task<RemediationAction?> ApproveAsync(
         Guid incidentId, Guid actionId, string approvedBy, string? note, CancellationToken cancellationToken = default);
 
@@ -123,12 +126,23 @@ public class IncidentOrchestrator : IIncidentOrchestrator
 
         foreach (var incident in incidents)
         {
-            // Only freshly detected incidents need an investigation run. An incident already in
-            // the middle of the lifecycle just absorbed the new signals as extra evidence.
             if (incident.Status == IncidentStatus.Detected)
             {
                 _queue.TryEnqueue(new IncidentWorkItem(
                     WorkItemKind.ProcessIncident, projectId, environment, service, incident.Id));
+            }
+            else if (incident.LastCorrelation == CorrelationOutcome.NewSymptoms && AwaitsAutomaticRefresh(incident))
+            {
+                // A kind of fault the diagnosis never saw (e.g. payment errors joining a CPU incident):
+                // the AI is asked again, within the incident's investigation budget. More readings
+                // of symptoms it already explained only mark it stale - no extra AI calls.
+                _queue.TryEnqueue(new IncidentWorkItem(
+                    WorkItemKind.ReinvestigateIncident, projectId, environment, service, incident.Id));
+            }
+            else if (incident.LastCorrelation == CorrelationOutcome.Rescoped)
+            {
+                _queue.TryEnqueue(new IncidentWorkItem(
+                    WorkItemKind.ReevaluateRemediation, projectId, environment, service, incident.Id));
             }
         }
 
@@ -154,6 +168,110 @@ public class IncidentOrchestrator : IIncidentOrchestrator
 
     public Task ReinvestigateAsync(Guid incidentId, CancellationToken cancellationToken = default) =>
         WithIncidentLockAsync(incidentId, () => InvestigateCoreAsync(incidentId, allowReinvestigation: true, cancellationToken), cancellationToken);
+
+    /// <summary>Open, diagnosed, and with nothing proposed, approved or running - the only state in
+    /// which KAIRON refreshes an incident's analysis on its own. A pending approval is never withdrawn
+    /// automatically; the operator can still re-investigate it explicitly.</summary>
+    private static bool AwaitsAutomaticRefresh(SreIncident incident) =>
+        incident.Status is IncidentStatus.Diagnosed or IncidentStatus.Predicted or IncidentStatus.RecommendationReady
+        && !incident.Actions.Any(a => a.Status is RemediationStatus.AwaitingApproval or RemediationStatus.Approved
+                                      or RemediationStatus.Executing or RemediationStatus.Executed);
+
+    internal const string UnscopedExplanation =
+        "This incident was detected before a remediation target was enabled, so its telemetry is not tied to a machine " +
+        "and no action can be offered for it. If the problem is still happening, KAIRON ties it to the app's machine from " +
+        "fresh telemetry and offers the action automatically; if it has stopped, close this incident.";
+
+    public Task ReevaluateRemediationAsync(Guid incidentId, CancellationToken cancellationToken = default) =>
+        WithIncidentLockAsync(incidentId, () => ReevaluateRemediationCoreAsync(incidentId, cancellationToken), cancellationToken);
+
+    /// <summary>
+    /// Brings an incident's executable actions in line with the CURRENT configuration and scope,
+    /// doing only as much as is needed: a stored AI recommendation that now passes policy and has a
+    /// ready target becomes approvable with no AI call; only if KAIRON can now offer an action the AI
+    /// was never offered is the AI asked again (within budget). Every safety check is the same one a
+    /// fresh recommendation goes through.
+    /// </summary>
+    private async Task ReevaluateRemediationCoreAsync(Guid incidentId, CancellationToken cancellationToken)
+    {
+        var incident = await LoadAsync(incidentId, cancellationToken);
+        if (incident is null || !AwaitsAutomaticRefresh(incident)) return;
+
+        if (IncidentMachineScope.GetMachineId(incident) is null && await _evidence.OfferedActionsAsync(incident, cancellationToken) is { Count: 0 })
+        {
+            incident.FailureReason = UnscopedExplanation;
+            incident.UpdatedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        var annotated = SreJson.Deserialize(incident.RecommendationsJson, new List<RecommendationDto>());
+        var approvable = new List<RemediationAction>();
+        foreach (var recommendation in annotated.Where(r => r.IsRegisteredTool && r.PolicyNote is not null))
+        {
+            var action = await TryCreateApprovableAsync(incident, recommendation.Action, recommendation.Reason,
+                recommendation.ExpectedOutcome, ParseRisk(recommendation.RiskLevel), cancellationToken);
+            if (action is null) continue;
+            recommendation.PolicyNote = null;
+            approvable.Add(action);
+        }
+
+        if (approvable.Count > 0)
+        {
+            incident.RecommendationsJson = SreJson.Serialize(annotated);
+            incident.FailureReason = null;
+            foreach (var action in approvable) action.Status = RemediationStatus.AwaitingApproval;
+            incident.RemediationState = RemediationStatus.AwaitingApproval;
+            var previous = IncidentLifecycle.Transition(incident, IncidentStatus.AwaitingApproval);
+            _audit.Record(incident, IncidentEventTypes.AwaitingApproval, "remediation-reevaluation",
+                previousState: previous.ToString(), newState: incident.Status.ToString(),
+                message: $"Remediation became available after a configuration or scope change: {approvable.Count} action(s) awaiting approval");
+            await _db.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        var offeredBefore = SreJson.Deserialize<AiAssessment?>(incident.AssessmentJson, null)?.OfferedActions ?? new List<string>();
+        var offeredNow = await _evidence.OfferedActionsAsync(incident, cancellationToken);
+        if (offeredNow.Any(a => !offeredBefore.Contains(a, StringComparer.OrdinalIgnoreCase)))
+        {
+            // The AI chose from a smaller set than KAIRON can offer now; only it can decide whether
+            // the newly available action fits this incident.
+            await InvestigateCoreAsync(incidentId, allowReinvestigation: true, cancellationToken);
+        }
+    }
+
+    /// <summary>Policy, target binding and parameter rules for one proposed action - the same checks
+    /// CreateRecommendationsAsync applies. Returns the new Proposed action, or null when refused.</summary>
+    private async Task<RemediationAction?> TryCreateApprovableAsync(SreIncident incident, string actionName, string reason,
+        string expectedOutcome, RiskLevel risk, CancellationToken cancellationToken)
+    {
+        var decision = await _policy.ValidateProposalAsync(incident, actionName, risk, cancellationToken);
+        if (!decision.Allowed) return null;
+        var parameters = new Dictionary<string, string>();
+        if (_tools.TryGet(actionName, out var tool) && tool is IScopedRemediationTool scoped)
+        {
+            var binding = await scoped.TargetFingerprintAsync(incident, cancellationToken);
+            if (binding is null) return null;
+            parameters["targetFingerprint"] = binding;
+        }
+        var action = new RemediationAction
+        {
+            IncidentId = incident.Id,
+            ActionKey = await _keys.NextActionKeyAsync(cancellationToken),
+            ActionType = tool?.Name ?? actionName,
+            Reason = reason,
+            ExpectedOutcome = expectedOutcome,
+            RiskLevel = risk,
+            RequiresApproval = _remediationOptions.RequireApprovalForEveryAction,
+            Status = RemediationStatus.Proposed,
+            Source = "ai",
+            PolicyDecision = $"{decision.Code}: {decision.Reason}",
+            ParametersJson = SreJson.Serialize(parameters)
+        };
+        incident.Actions.Add(action);
+        _db.RemediationActions.Add(action);
+        return action;
+    }
 
     private async Task InvestigateCoreAsync(
         Guid incidentId,

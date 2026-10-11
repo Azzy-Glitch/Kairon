@@ -135,3 +135,33 @@ describe('Why nothing was recommended', () => {
     expect(screen.queryByText(/weighed the available actions/)).not.toBeInTheDocument();
   });
 });
+
+describe('Refreshing after a configuration change', () => {
+  it('replaces the "no action" explanation with the approval once the polled incident has an action', () => {
+    const base = {
+      id: 'i9', incidentKey: 'INC-0009', title: 'Checkout errors', service: 'Checkout', environment: 'Development',
+      severity: 'High', detectedAt: '2026-10-10T12:00:00Z', timeline: [],
+      diagnosis: { summary: 's', rootCause: 'Payment provider failures', confidence: 0.6 }
+    };
+    const actions = { approve: vi.fn(), reject: vi.fn(), investigate: vi.fn(), cancel: vi.fn(), busyActionId: null, actionError: null };
+    const query = (data) => ({ state: 'success', data, isLoading: false, isError: false, isEmpty: false, isSuccess: true, reload: vi.fn() });
+
+    const { rerender } = render(<IncidentDetail actions={actions} query={query({
+      ...base, status: IncidentStatus.RecommendationReady, actions: [], recommendations: [],
+      assessment: { rootCauseCertainty: 'possible', nextSteps: [], consideredActions: [], offeredActions: [] }
+    })} />);
+    expect(screen.getByText('No action was available')).toBeInTheDocument();
+    expect(screen.getByText(/offers the action here automatically/)).toBeInTheDocument();
+
+    // The next poll, after the target was enabled and the incident re-evaluated.
+    rerender(<IncidentDetail actions={actions} query={query({
+      ...base, status: IncidentStatus.AwaitingApproval,
+      recommendations: [{ action: 'RestartApplication', riskLevel: 'Medium', isRegisteredTool: true, reason: 'Temporary mitigation' }],
+      actions: [{ id: 'a1', actionKey: 'ACT-0001', actionType: 'RestartApplication', status: 'AwaitingApproval', riskLevel: 'Medium',
+        reason: 'Temporary mitigation', expectedOutcome: 'Errors stop', requiresApproval: true }],
+      assessment: { rootCauseCertainty: 'possible', nextSteps: [], consideredActions: [], offeredActions: ['RestartApplication'] }
+    })} />);
+    expect(screen.queryByText('No action was available')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Approve/ })).toBeInTheDocument();
+  });
+});
