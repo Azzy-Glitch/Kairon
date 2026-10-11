@@ -115,8 +115,23 @@ public class AiAssessmentViewDto
 {
     public string RootCauseCertainty { get; set; } = "unknown";
     public List<string> NextSteps { get; set; } = new();
+    public List<string> AlternativeExplanations { get; set; } = new();
+    public List<string> MissingEvidence { get; set; } = new();
+    public List<string> VerificationSteps { get; set; } = new();
+    public List<SignalOnsetViewDto> SignalOnsets { get; set; } = new();
     public List<ConsideredActionViewDto> ConsideredActions { get; set; } = new();
     public List<string> OfferedActions { get; set; } = new();
+}
+
+public class SignalOnsetViewDto
+{
+    public string Metric { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public DateTime FirstBreachAt { get; set; }
+    public double SecondsBeforeDetection { get; set; }
+    public double Peak { get; set; }
+    public double Threshold { get; set; }
+    public string Unit { get; set; } = string.Empty;
 }
 
 public class ConsideredActionViewDto
@@ -140,6 +155,11 @@ public class RecommendationDto
     public string Reason { get; set; } = string.Empty;
     public string ExpectedOutcome { get; set; } = string.Empty;
     public string RiskLevel { get; set; } = string.Empty;
+
+    /// <summary>temporary_mitigation | root_cause_fix | diagnostic</summary>
+    public string Kind { get; set; } = string.Empty;
+    public string Risks { get; set; } = string.Empty;
+    public string Verification { get; set; } = string.Empty;
 
     /// <summary>False when the named action is not a registered tool - the UI greys it out.</summary>
     public bool IsRegisteredTool { get; set; }

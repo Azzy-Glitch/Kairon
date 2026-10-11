@@ -18,12 +18,21 @@ _ERROR_MARKER = "root_cause"
 _PREDICT_MARKER = "risk_level"
 _RECOMMEND_MARKER = "recommendations"
 
-# Error text that points at a dependency rather than at the app's own process. Mirrors the backend's
-# DeterministicInvestigation.DependencyPattern.
-_DEPENDENCY = re.compile(
-    r"connection|connect\b|timed? ?out|timeout|refused|unreachable|database|\bdb\b|operationalerror|sql|dns|socket|econn|reset by peer|service unavailable|\b503\b|\b504\b",
+# The same evidence patterns the backend's DeterministicInvestigation uses.
+_DATABASE = re.compile(
+    r"database|\bsql\b|sqlalchemy|psycopg|operationalerror|mysql|postgres|sqlite|mongo|redis|\bdb\b|query timeout|deadlock|connection pool",
     re.IGNORECASE,
 )
+_EXTERNAL = re.compile(
+    r"timed? ?out|timeout|refused|unreachable|dns|socket|econn|reset by peer|service unavailable|bad gateway|gateway|upstream|provider|rate limit|too many requests|\b429\b|\b502\b|\b503\b|\b504\b|connection",
+    re.IGNORECASE,
+)
+# Failures that come from the process's own state - the cases a restart can clear.
+_IN_PROCESS = re.compile(
+    r"out ?of ?memory|memoryerror|too many open files|cannot allocate|resource temporarily unavailable|thread ?pool|event loop|pool (is )?exhausted|stack ?overflow",
+    re.IGNORECASE,
+)
+_DATABASE_PORT = re.compile(r":(5432|3306|1433|1521|27017|6379)\b")
 
 
 class MockProvider(AIProvider):
@@ -75,175 +84,235 @@ class MockProvider(AIProvider):
     def _investigation(self, user: str) -> dict:
         """Builds an investigation from the evidence embedded in the user prompt.
 
-        It applies the same evidence-based decision rules the real model is instructed to follow
-        (and the backend's DeterministicInvestigation applies in its own mock mode), so test mode
-        exercises the real recommendation -> policy -> approval flow:
-
-        - a stopped process is started again (StartService) when that is offered;
-        - a dependency failure (connection/timeout/database errors) is not fixed by a restart;
-        - a problem that came back soon after a restart is a persistent defect, not a transient one;
-        - a slowdown with no CPU pressure and no errors points at a slow dependency;
-        - otherwise a sudden fault in a previously healthy process is mitigated by the offered
-          restart, recommended as a temporary mitigation and never claimed as the fix.
+        It applies the reasoning the real model is instructed to follow - and the backend's
+        DeterministicInvestigation applies the same rules - so test mode exercises the real
+        recommendation -> policy -> approval flow. It explains first and acts second: what happened,
+        the signals behind it, how certain that is, alternatives, missing evidence, next steps and how
+        to verify a fix. A restart is only recommended when the fault is inside the process, and only
+        ever as a temporary mitigation. It never names an action KAIRON did not offer.
         """
-        evidence = self._parse_evidence(user)
+        e = self._parse_evidence(user)
+        signals = [x for x in (e.get("correlated_signals") or []) if isinstance(x, dict)]
+        metrics = {x.get("metric") for x in signals}
+        has = lambda *names: any(n in metrics for n in names)  # noqa: E731
+        has_errors, has_latency = has("errorRate", "errors"), has("latency")
+        has_cpu, has_memory = has("cpu", "processHighResource"), has("memory")
+        has_retries, has_queue = has("retries"), has("queue")
+        has_crash, has_log = has("processCrash"), has("logPattern")
+        incident = e.get("incident") or {}
+        related = [x for x in (e.get("related_errors") or []) if isinstance(x, dict)]
+        breakdown = [x for x in (e.get("endpoint_breakdown") or []) if isinstance(x, dict)]
+        dependencies = [x for x in (e.get("dependencies") or []) if isinstance(x, dict)]
+        onsets = [x for x in (e.get("signal_onsets") or []) if isinstance(x, dict)]
+        history = [x for x in (e.get("remediation_history") or []) if isinstance(x, dict)]
+        trends = ((e.get("risk_forecast") or {}).get("trends")) or []
+        recurrence = e.get("recurrence") or {}
+        forecast = e.get("risk_forecast") or {}
+        gaps = e.get("evidence_gaps") or []
 
-        signals = [s for s in (evidence.get("correlated_signals") or []) if isinstance(s, dict)]
-        metrics = {s.get("metric") for s in signals}
-        incident = evidence.get("incident") or {}
-        available = [a.get("action") for a in (evidence.get("available_actions") or []) if isinstance(a, dict) and a.get("action")]
-        recurrence = evidence.get("recurrence") or {}
-        forecast = evidence.get("risk_forecast") or {}
+        texts = [f"{x.get('error_type') or ''} {x.get('error_message') or ''} {x.get('stack_excerpt') or ''} "
+                 f"{x.get('status_code') if x.get('status_code') in (429, 502, 503, 504) else ''}" for x in related]
+        texts += [str(x.get("top_error_type") or "") for x in breakdown]
+        failing = [d for d in dependencies if (d.get("failures") or 0) > 0 or (d.get("avg_duration_ms") or 0) >= 1000]
+        db_dep = next((d for d in failing if _DATABASE.search(str(d.get("target"))) or _DATABASE_PORT.search(str(d.get("target")))), None)
+        ext_dep = next((d for d in failing if d is not db_dep), None)
+        db_text = any(_DATABASE.search(t) for t in texts)
+        ext_text = any(_EXTERNAL.search(t) for t in texts)
+        in_process = any(_IN_PROCESS.search(t) for t in texts)
+        rising = lambda m: any(t.get("metric") == m and t.get("direction") == "rising" for t in trends if isinstance(t, dict))  # noqa: E731
+        order = [o.get("metric") for o in onsets]
+        latency_led = "latency" in order and "errorRate" in order and order.index("latency") < order.index("errorRate")
+        top = max((x for x in breakdown if (x.get("server_errors") or 0) > 0), key=lambda x: x.get("server_errors") or 0, default=None)
+        top_type = (top or {}).get("top_error_type") or next((x.get("error_type") for x in related if x.get("error_type")), None)
+        top_message = next((x.get("error_message") for x in related if x.get("error_message")), None)
+        stack = next((x.get("stack_excerpt") for x in related if x.get("stack_excerpt")), None)
+        failed_restart = next((h for h in history if h.get("same_fault") and str(h.get("action", "")).startswith("Restart")
+                               and (h.get("status") == "Failed" or h.get("verification") == "Failed")), None)
+        error_rate = next((f"error rate {x.get('observed')}{x.get('unit', '')}" for x in signals if x.get("metric") == "errorRate"), "server errors")
+        onset_text = (" " + ", then ".join(f"{str(o.get('label', '')).lower()} ({float(o.get('seconds_before_detection') or 0):.0f}s before detection)"
+                                           for o in onsets[:3]) + " crossed their thresholds in that order.") if len(onsets) > 1 else ""
+        where = f" on {top.get('method')} {top.get('endpoint')}" if top else ""
 
-        has_errors = bool(metrics & {"errorRate", "errors"})
-        has_cpu = "cpu" in metrics
-        has_memory = "memory" in metrics
-        has_latency = "latency" in metrics
-        # KAIRON Agent-sourced signals (docs/OBSERVABILITY_MIGRATION.md).
-        has_process_crash = "processCrash" in metrics
-        has_log_pattern = "logPattern" in metrics
-
-        error_texts = [
-            f"{e.get('error_type') or ''} {e.get('error_message') or ''} "
-            f"{e.get('status_code') if e.get('status_code') in (503, 504) else ''}"
-            for e in (evidence.get("related_errors") or []) if isinstance(e, dict)
-        ] + [str(e.get("top_error_type") or "") for e in (evidence.get("endpoint_breakdown") or []) if isinstance(e, dict)]
-        # Dependency error text only counts when the incident itself is about errors or slowness.
-        dependency = bool(metrics & {"errorRate", "errors", "latency", "retries"}) and any(_DEPENDENCY.search(t) for t in error_texts)
-        recurred = bool(recurrence.get("recurred_after_restart"))
-        failing = sorted(
-            (e for e in (evidence.get("endpoint_breakdown") or []) if isinstance(e, dict) and (e.get("server_errors") or 0) > 0),
-            key=lambda e: e.get("server_errors") or 0, reverse=True,
-        )
-        top_error_type = next((e.get("top_error_type") for e in failing if e.get("top_error_type")), None)
-
-        restart = "RestartApplication" if "RestartApplication" in available else ("RestartService" if "RestartService" in available else None)
-        health_check = "RunHealthCheck" if "RunHealthCheck" in available else None
-        start = "StartService" if "StartService" in available else None
-
-        next_steps: list = []
-        restart_fits = False
-        other: list = []  # (action, verdict, reason, recommendation-or-None)
-
-        has_retries = "retries" in metrics
-        confidence = 0.3
+        # Strongest evidence first: a measured failing dependency; then retries + errors + dependency
+        # error text (a failing downstream call the app amplifies by retrying); then saturation inside
+        # the process; only then dependency inferred from error text alone.
         if not signals:
-            root_cause = "The evidence is not sufficient to identify a cause."
-            certainty = "unknown"
-            restart_reason = "There is not enough evidence to justify changing anything yet."
-            next_steps.append("Wait for more telemetry, then re-investigate.")
-        elif has_process_crash:
-            # A process that has stopped running is the most unambiguous evidence there is.
-            root_cause = "The monitored process stopped running unexpectedly."
-            certainty, confidence = "confirmed", 0.95
-            restart_reason = "The process is not running, so there is nothing to restart; it needs starting."
-            if start:
-                other.append((start, "recommended", "The process has stopped; starting it restores the service.", {
-                    "action": start,
-                    "reason": "The monitored process stopped running; starting it restores availability.",
-                    "expected_outcome": "The service runs again; KAIRON verifies recovery afterwards.",
-                    "risk_level": "medium",
-                }))
-            next_steps.append("Check the application's logs for why the process exited.")
-        elif recurred:
-            minutes = recurrence.get("minutes_since_restart")
-            when = f"{minutes:.0f} minute(s) " if isinstance(minutes, (int, float)) else ""
-            root_cause = f"The problem returned {when}after a restart, so it is not a one-off transient fault; the underlying cause is still present."
-            certainty, confidence = "possible", 0.6
-            restart_reason = "A restart already cleared this once and the problem came back; another restart would only hide it briefly."
-            next_steps.append("Investigate the application: recent deployments or configuration changes, and the exceptions in the evidence.")
-            if top_error_type:
-                next_steps.append(f"Start with the most frequent exception, {top_error_type}, and the code path that raises it.")
-        elif has_retries:
-            root_cause = "Repeated retries may be amplifying a downstream failure; the cause is not yet confirmed."
-            certainty, confidence = "possible", 0.92 if dependency else 0.6
-            restart_reason = "Retries point at a failing downstream call; restarting the app would reset the retry loop only until it builds up again."
-            next_steps.append("Find the downstream call being retried and check that dependency.")
-            next_steps.append("Add retry limits with backoff so a failing dependency cannot cause a retry storm.")
-        elif has_cpu or has_memory:
-            root_cause = ("CPU saturation in the app's own process is driving request latency up." if has_cpu and has_latency
-                          else "The app's own process is saturating the CPU." if has_cpu
-                          else "The app's own process is using an abnormal amount of memory.")
-            certainty, confidence = "likely", 0.78
-            restart_fits = True
-            restart_reason = ("The pressure is inside the app's own process, which was healthy before; a restart clears the runaway work "
-                              "or memory and should restore service as a temporary mitigation. It will build up again if the cause is in the code.")
-            next_steps.append("Find the CPU- or memory-heavy work (background jobs, hot loops, caches) so it does not build up again.")
-        elif dependency:
-            root_cause = "Requests are failing or slowing while calling a dependency (connection, timeout or database errors in the evidence)."
-            certainty, confidence = "likely", 0.72
-            restart_reason = "The errors point at a dependency the app calls; restarting the app would not bring that dependency back."
-            next_steps.append("Check the dependency named in the errors (database, downstream API, network) and restore it.")
-            next_steps.append("Consider timeouts and a circuit breaker so the app fails fast while the dependency is down.")
+            kind = "none"
+        elif has_crash:
+            kind = "crash"
+        elif recurrence.get("recurred_after_restart") or failed_restart:
+            kind = "recurred"
+        elif db_dep:
+            kind = "database"
+        elif ext_dep:
+            kind = "external"
+        elif has_retries and (db_text or ext_text):
+            kind = "database" if db_text else "external"
+        elif has_memory:
+            kind = "memory"
+        elif has_cpu:
+            kind = "cpu"
+        elif has_errors and db_text:
+            kind = "database"
+        elif has_errors and ext_text:
+            kind = "external"
+        elif has_queue or has_retries:
+            kind = "queue"
         elif has_latency and not has_errors:
-            root_cause = "Requests are slow without CPU pressure or errors, which usually means waiting on something slow (a dependency or lock)."
-            certainty, confidence = "possible", 0.55
-            restart_reason = "Nothing in the evidence suggests the slowdown is inside the app's own process, so a restart is unlikely to help."
-            next_steps.append("Check the latency of the dependencies the slow endpoint calls.")
+            kind = "latency"
         else:
-            restart_fits = True
-            if has_log_pattern and not has_errors:
-                root_cause = "Application logs show a repeated error pattern, most likely an unhandled exception; the evidence does not show its cause."
-                certainty, confidence = "possible", 0.68
-            else:
-                root_cause = ("The app started returning server errors; the evidence does not show why." if not top_error_type
-                              else f"The app started returning server errors ({top_error_type}); the evidence does not show whether this is bad in-process state or a code defect.")
-                certainty, confidence = "possible", 0.6
-            restart_reason = ("The fault began in a previously healthy process with no sign of a failing dependency; a restart clears "
-                              "in-process state and should restore service as a temporary mitigation. It cannot fix a code defect - if the "
-                              "problem returns after the restart, the code needs investigating.")
-            next_steps.append("After the restart, watch whether the problem returns; if it does, investigate the application code.")
-            if top_error_type:
-                next_steps.append(f"Review the code path that raises {top_error_type}.")
+            kind = "errors"
 
-        considered = []
-        recommendations = []
-        for action, verdict, reason, rec in other:
-            considered.append({"action": action, "verdict": verdict, "reason": reason})
-            if rec:
-                recommendations.append(rec)
+        f = {"root": "", "certainty": "unknown", "confidence": 0.3, "restart": False, "start": False,
+             "restart_reason": "", "next": [], "alt": [], "verify": []}
+        if kind == "none":
+            f.update(root="The evidence is not sufficient to identify a cause.",
+                     restart_reason="There is not enough evidence to justify changing anything.")
+            f["next"].append("Wait for more telemetry from the app, then re-investigate.")
+        elif kind == "crash":
+            f.update(root="The monitored process stopped running unexpectedly.", certainty="confirmed", confidence=0.95, start=True,
+                     restart_reason="The process is not running, so there is nothing to restart; it needs starting.")
+            f["next"].append("Check the application's logs for why the process exited (unhandled exception, out-of-memory kill, configuration).")
+            f["verify"].append("The process stays running and its health checks pass for several minutes.")
+        elif kind == "recurred":
+            if failed_restart:
+                root = (f"A restart for this same fault ({failed_restart.get('incident_key')}) did not resolve it (status "
+                        f"{failed_restart.get('status')}, verification {failed_restart.get('verification') or 'not run'}), so the cause is not transient process state.")
+            else:
+                minutes = recurrence.get("minutes_since_restart")
+                when = f"{minutes:.0f} minute(s) " if isinstance(minutes, (int, float)) else ""
+                root = f"The same kind of fault returned {when}after a restart, so the underlying cause is still present."
+            f.update(root=root, certainty="possible", confidence=0.6,
+                     restart_reason="A restart already failed to make this fault go away; repeating it would only hide the problem briefly.")
+            f["next"].append("Investigate what persists across restarts: recent deployments or configuration changes, data the app reads, and its dependencies.")
+            if top_type:
+                f["next"].append(f"Start with the most frequent exception, {top_type}{where}.")
+            f["alt"].append("A dependency that keeps failing would also make the fault return after every restart.")
+            f["verify"].append("The fault does not return within an hour after the underlying change is made.")
+        elif kind == "database":
+            root = (f"Calls to the database ({db_dep.get('target')}) are failing or slow ({db_dep.get('failures')} of {db_dep.get('calls')} failed, "
+                    f"avg {float(db_dep.get('avg_duration_ms') or 0):.0f} ms)" if db_dep else
+                    "The errors are database errors" + (f" ({top_type})" if top_type else ""))
+            root += (", and latency rose before the errors did." if latency_led else ".") + onset_text
+            f.update(root=root, certainty="likely", confidence=0.72,
+                     restart_reason="The evidence points at the database; restarting the app does not make the database faster or available, and reconnecting many clients at once can add load.")
+            f["next"] += ["Check the database: query latency and slow-query log, connection-pool usage and waits, locks, and server CPU, memory and disk I/O.",
+                          "Only add database capacity if those measurements show it running near its limits."]
+            f["alt"].append("Connection-pool exhaustion in the app (too few connections for the load) can look like a slow database.")
+            f["verify"].append(f"The {error_rate} and request latency return under threshold and database call latency is back to normal.")
+        elif kind == "external":
+            if ext_dep:
+                root = (f"Calls to the downstream service {ext_dep.get('target')} are failing or slow ({ext_dep.get('failures')} of "
+                        f"{ext_dep.get('calls')} failed, avg {float(ext_dep.get('avg_duration_ms') or 0):.0f} ms)")
+            else:
+                root = "Requests are failing while calling a downstream service" + (f' ("{top_message}")' if top_message else "")
+            root += (", and the app is retrying those calls - rising retries multiply the load on it." if has_retries else ".") + onset_text
+            f.update(root=root, certainty="likely" if (ext_dep or ext_text) else "possible", confidence=0.75 if ext_dep else 0.62,
+                     restart_reason="The failure is in a service the app calls; restarting the app does not bring it back.")
+            f["next"] += ["Check the downstream service's availability and the status codes it returns (429 means rate limiting, 503/504 overload or timeouts).",
+                          "Review the app's timeout and retry settings: bounded retries with backoff, and a circuit breaker so it fails fast while the dependency is down."]
+            f["alt"].append("A network or DNS problem between the app and the service would show the same symptoms.")
+            f["verify"].append(f"The {error_rate} returns under threshold and retries drop back to normal while the dependency answers successfully.")
+        elif kind == "queue":
+            f.update(root="Work is piling up" + (" while retries rise" if has_retries else "") + ": the app is receiving work faster than it completes it." + onset_text,
+                     certainty="possible", confidence=0.58,
+                     restart_reason="A restart would drop or delay the queued work and the backlog would rebuild for the same reason.")
+            f["next"].append("Check worker capacity and processing time per item, and whether a downstream step became slower.")
+            if has_retries:
+                f["next"].append("Check for retry amplification: failed items retried immediately add to the queue they are waiting in.")
+            f["alt"].append("A burst of incoming work, rather than slower processing, produces the same backlog.")
+            f["verify"].append("Queue depth trends back down and retries return to their usual level.")
+        elif kind == "memory":
+            f.update(root="The app's memory use is high" + (" and has been growing steadily" if rising("memory") else "") + ", which risks the process being killed." + onset_text,
+                     certainty="possible", confidence=0.6, restart=True,
+                     restart_reason="A restart frees the memory and buys time as a temporary mitigation; if a leak or unbounded cache is the cause, memory will grow again.")
+            f["next"].append("Find what holds the memory: caches without limits, growing collections, or a leak in the affected workload.")
+            f["alt"].append("A legitimate rise in load or data size, rather than a leak, also raises memory.")
+            f["verify"].append("After the change, memory levels off instead of growing over the following hour.")
+        elif kind == "cpu":
+            f.update(root=("CPU saturation in the app's own process is slowing its requests" if has_latency else "The app's own process is saturating the CPU") + "." + onset_text,
+                     certainty="likely", confidence=0.78, restart=True,
+                     restart_reason="The pressure is inside the app's process; a restart clears runaway work and restores service as a temporary mitigation. It will return if the workload or code causing it does.")
+            f["next"] += ["Find the CPU-heavy work (background jobs, hot loops, expensive requests) and whether the workload changed.",
+                          "If the load is legitimate, add capacity or reduce work per request; a restart does not help with that."]
+            f["alt"].append("A genuine traffic increase saturates the CPU the same way.")
+            f["verify"].append("CPU and latency return under threshold and stay there for several minutes.")
+        elif kind == "latency":
+            f.update(root="Requests are slow without CPU pressure or errors - the app is most likely waiting on something (a dependency, lock or external call)." + onset_text,
+                     certainty="possible", confidence=0.55,
+                     restart_reason="Nothing shows the slowdown is inside the app's process, so a restart is unlikely to help.")
+            f["next"].append("Check the latency of what the slow endpoint calls (database, downstream APIs) and for lock contention.")
+            f["alt"].append("A slow external service the app does not report as a dependency would look exactly like this.")
+            f["verify"].append("Latency returns under threshold.")
+        else:
+            if in_process:
+                root = f"The app is failing with errors that come from its own process state ({top_type or top_message})."
+            elif has_log and not has_errors:
+                root = "Application logs show a repeated error pattern, most likely an unhandled exception; the evidence does not show its cause."
+            else:
+                root = (f"The app started returning {error_rate}{where}" + (f", mostly {top_type}" if top_type else "") +
+                        ", while CPU, memory and its dependencies look normal." + onset_text)
+            f.update(root=root, certainty="possible" if (top_type or top_message or has_log) else "unknown",
+                     confidence=0.62 if in_process else 0.68 if (has_log and not has_errors) else 0.5,
+                     restart=in_process,
+                     restart_reason=("These errors come from the process's own state (resources exhausted inside it); a restart clears that state as a temporary mitigation."
+                                     if in_process else
+                                     "With normal resources and no failing dependency, the errors point at a code path, input or configuration problem; a restart would only help if the process state were corrupted, which the evidence does not show."))
+            f["next"].append(f"Look at the code path that raises {top_type}{where}" + (" (stack trace attached in the evidence)." if stack else ".")
+                             if top_type else f"Find which requests fail{where} and why - the errors carry no exception detail.")
+            f["next"].append("Check for a recent deployment or configuration change around the time the errors started.")
+            f["alt"].append("A dependency the app does not report as one (e.g. called without the SDK seeing it) could be the real source.")
+            f["verify"].append(f"The {error_rate} returns under threshold{where}.")
+
+        offered = [a.get("action") for a in (e.get("available_actions") or []) if isinstance(a, dict) and a.get("action")]
+        restart = "RestartApplication" if "RestartApplication" in offered else ("RestartService" if "RestartService" in offered else None)
+        health = "RunHealthCheck" if "RunHealthCheck" in offered else None
+        start = "StartService" if "StartService" in offered else None
+        verify_first = f["verify"][0] if f["verify"] else "KAIRON verifies recovery from fresh telemetry."
+        considered, recommendations = [], []
+        if start and f["start"]:
+            considered.append({"action": start, "verdict": "recommended", "reason": "The process has stopped; starting it restores the service."})
+            recommendations.append({"action": start, "kind": "temporary_mitigation", "risk_level": "medium",
+                                    "reason": "The monitored process stopped running; starting it restores availability while the cause of the exit is investigated.",
+                                    "expected_outcome": "The service runs again.",
+                                    "risks": "If the cause of the exit is still present, it may stop again.", "verification": verify_first})
         if restart:
-            fits = restart_fits and not has_process_crash
-            considered.append({"action": restart, "verdict": "recommended" if fits else "not_recommended", "reason": restart_reason})
+            fits = f["restart"] and not f["start"]
+            considered.append({"action": restart, "verdict": "recommended" if fits else "not_recommended", "reason": f["restart_reason"]})
             if fits:
-                recommendations.append({
-                    "action": restart,
-                    "reason": restart_reason,
-                    "expected_outcome": "The process starts fresh and the symptoms clear, if they were caused by in-process state. KAIRON verifies recovery afterwards.",
-                    "risk_level": "medium",
-                })
-        if health_check and not recommendations and signals:
-            considered.append({"action": health_check, "verdict": "recommended", "reason": "A read-only check of the target's state, useful while the cause is investigated."})
-            recommendations.append({
-                "action": health_check,
-                "reason": "Confirm the target's current state while the cause is investigated.",
-                "expected_outcome": "Current service state; this read-only check does not repair anything.",
-                "risk_level": "low",
-            })
+                recommendations.append({"action": restart, "kind": "temporary_mitigation", "risk_level": "medium", "reason": f["restart_reason"],
+                                        "expected_outcome": "The process starts fresh and the symptoms clear, if they come from in-process state.",
+                                        "risks": "A few seconds of downtime while the app restarts; in-flight requests fail. It does not fix the underlying cause.",
+                                        "verification": verify_first})
+        if health and not recommendations and signals:
+            considered.append({"action": health, "verdict": "recommended", "reason": "A read-only check of the target's state, useful while the cause is investigated."})
+            recommendations.append({"action": health, "kind": "diagnostic", "risk_level": "low",
+                                    "reason": "Confirm the target's current state while the cause is investigated.",
+                                    "expected_outcome": "Current service state; this read-only check does not repair anything.",
+                                    "risks": "None - it changes nothing.", "verification": "Not applicable."})
 
         has_forecast = bool(forecast) and forecast.get("outcome") not in (None, "inconclusive")
         symptoms = incident.get("symptoms") or []
-
+        evidence_lines = [f"{x.get('metric')} {x.get('observed')}{x.get('unit', '')} vs threshold {x.get('threshold')}{x.get('unit', '')}" for x in signals[:6]]
+        if len(onsets) > 1:
+            evidence_lines.append(f"{onsets[0].get('label')} crossed its threshold first, {float(onsets[0].get('seconds_before_detection') or 0):.0f}s before detection")
         return {
-            "summary": f"{incident.get('service', 'Service')} is degraded: " + "; ".join(str(s) for s in symptoms[:3]),
-            "root_cause": root_cause,
-            "root_cause_certainty": certainty,
-            "contributing_factors": [str(s.get("symptom", "")) for s in signals[:5]],
-            "evidence": [
-                f"{s.get('metric')} {s.get('observed')}{s.get('unit', '')} vs threshold "
-                f"{s.get('threshold')}{s.get('unit', '')}"
-                for s in signals[:6]
-            ],
-            "confidence": confidence,
+            "summary": f"{incident.get('service', 'Service')} is degraded: " + "; ".join(str(x) for x in symptoms[:3]),
+            "root_cause": f["root"],
+            "root_cause_certainty": f["certainty"],
+            "contributing_factors": [str(x.get("symptom", "")) for x in signals[:5]],
+            "evidence": evidence_lines,
+            "confidence": f["confidence"],
             "severity": str(incident.get("severity", "medium")).lower(),
-            "affected_components": [
-                c for c in [incident.get("affected_component"), incident.get("service")] if c
-            ],
+            "affected_components": [c for c in [incident.get("affected_component"), incident.get("service")] if c],
             "predicted_failure": forecast.get("failure_mode", "") if has_forecast else "Prediction inconclusive: not enough trend data.",
             "estimated_risk": forecast.get("risk_level", "medium") if has_forecast else "medium",
             "recommendations": recommendations,
-            "next_steps": next_steps,
+            "next_steps": f["next"],
             "considered_actions": considered,
+            "alternative_explanations": f["alt"],
+            "missing_evidence": list(gaps[:4]),
+            "verification_steps": f["verify"],
         }
 
     @staticmethod

@@ -40,6 +40,16 @@ export function useIncident(incidentId, { pollMs = 3000 } = {}) {
   return async;
 }
 
+/** Emerging risks (trend-based predictions), refreshed every 30 s. */
+export function useEmergingRisks({ pollMs = 30000 } = {}) {
+  const loader = useCallback(() => incidentsApi.getEmergingRisks(), []);
+  const async = useAsync(loader, { deps: [] });
+
+  usePolling(() => async.reload({ silent: true }), pollMs);
+
+  return async;
+}
+
 /** Dashboard aggregate: counts, severity mix, live metrics and component health. */
 export function useDashboard({ pollMs = DEFAULT_INTERVAL } = {}) {
   const loader = useCallback(() => incidentsApi.getDashboard(), []);

@@ -20,6 +20,19 @@ before and after.
 
 ## What changed since 1.0.0
 
+- **Diagnosis that explains, predictions that look ahead**: a different kind of fault gets its own
+  incident as soon as the earlier fault is no longer being detected (no fixed quiet period;
+  co-occurring symptoms still join one incident), and each symptom records when it was last seen.
+  The AI now also receives stack-trace excerpts, a per-dependency failure/latency summary, which
+  signal crossed its threshold first, earlier remediation attempts with their verified outcomes, and
+  an explicit list of evidence KAIRON does not have; it returns alternative explanations, missing
+  evidence and verification steps, and labels every action a temporary mitigation, root-cause fix
+  or diagnostic with its risks. Server errors with normal resources and no failing dependency are
+  investigated rather than restarted; a restart that already failed for the same fault is not
+  recommended again. Re-investigate first tries to tie an unscoped incident to the app's machine.
+  The Insights page adds **Emerging risks**: steady CPU/memory growth toward a threshold (with a
+  time to threshold only when the trend is consistent), latency rising before errors, growing
+  queues or retries, repeated dependency failures and recurring incidents.
 - **Incidents follow configuration changes and new faults**: enabling a remediation target after an
   incident exists no longer leaves that incident without action. When the fault is still happening,
   the app's fresh Agent-verified telemetry ties the same incident to the target's machine (no

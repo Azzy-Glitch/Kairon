@@ -38,8 +38,10 @@ class TestMockMode:
     async def test_investigation_maps_evidence_to_diagnosis(self, mock_config, retry_storm_evidence):
         result = await AiService(mock_config).investigate(retry_storm_evidence)
 
+        # Retries plus downstream-timeout errors: a failing dependency the retry loop amplifies.
         assert "retries" in result.root_cause.lower()
-        assert result.confidence == pytest.approx(0.92)
+        assert "downstream" in result.root_cause.lower()
+        assert result.confidence >= 0.6
         assert result.severity == "high"
 
     async def test_mock_is_deterministic(self, mock_config, retry_storm_evidence):

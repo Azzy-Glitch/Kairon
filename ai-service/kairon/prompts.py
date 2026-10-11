@@ -54,6 +54,24 @@ GROUND_RULES = (
     "inconclusive, say the prediction is inconclusive.\n"
     "14. next_steps lists what a person should check or change next (code paths, dependencies, "
     "configuration, capacity). They are advice only and are never executed.\n"
+    "15. Explain before you act. The root cause must name what happened, which component is affected "
+    "and which actual signals support it. Use signal_onsets to say which signal moved first - an "
+    "ordering, never proof of causation. Use dependencies, related_errors (with stack_excerpt) and "
+    "endpoint_breakdown to locate the failure. Correlation is not causation.\n"
+    "16. Match the response to the fault: database or downstream-API failures call for investigating "
+    "that dependency (latency, errors, rate limits, timeouts, connection pools, retries); resource "
+    "saturation inside the process calls for finding the heavy work, and a restart only as a "
+    "temporary mitigation; server errors with normal CPU, memory and dependencies call for "
+    "investigating the failing code path and recent changes - not a restart, unless the errors show "
+    "the process's own state is exhausted (e.g. out of memory, too many open files). Suggest adding "
+    "capacity only when measurements show a resource near its limit.\n"
+    "17. remediation_history holds earlier attempts and their measured outcomes. A restart that did not "
+    "resolve the same fault (failed, or verification failed) must not be recommended again for it.\n"
+    "18. List alternative_explanations the evidence does not rule out, missing_evidence that would "
+    "confirm or rule out the cause (evidence_gaps names what is unavailable), and verification_steps "
+    "that show the fault is really fixed. For each recommendation give kind (temporary_mitigation, "
+    "root_cause_fix or diagnostic), risks and verification. If you cannot identify a cause with "
+    "reasonable confidence, say so and recommend no action rather than forcing one.\n"
 )
 
 INVESTIGATION_SCHEMA = json.dumps(
@@ -73,6 +91,9 @@ INVESTIGATION_SCHEMA = json.dumps(
                 "reason": "string",
                 "expected_outcome": "string",
                 "risk_level": "low|medium|high|critical",
+                "kind": "temporary_mitigation|root_cause_fix|diagnostic",
+                "risks": "string",
+                "verification": "string",
             }
         ],
         "root_cause_certainty": "confirmed|likely|possible|unknown",
@@ -84,6 +105,9 @@ INVESTIGATION_SCHEMA = json.dumps(
                 "reason": "string",
             }
         ],
+        "alternative_explanations": ["string"],
+        "missing_evidence": ["string"],
+        "verification_steps": ["string"],
     },
     indent=None,
 )
@@ -176,6 +200,7 @@ def investigation_user_prompt(evidence: EvidencePackage) -> str:
                 "duration_ms": e.duration_ms,
                 "error_type": e.error_type,
                 "error_message": e.error_message,
+                "stack_excerpt": e.stack_excerpt,
             }
             # Bounded again here: the backend already caps the package, and the prompt caps what
             # of it actually reaches the model.
@@ -236,6 +261,10 @@ def investigation_user_prompt(evidence: EvidencePackage) -> str:
         ],
         "risk_forecast": evidence.risk_forecast.model_dump() if evidence.risk_forecast else None,
         "recurrence": evidence.recurrence.model_dump() if evidence.recurrence else None,
+        "signal_onsets": [o.model_dump(mode="json") for o in evidence.signal_onsets[:6]],
+        "dependencies": [d.model_dump() for d in evidence.dependencies[:10]],
+        "remediation_history": [r.model_dump() for r in evidence.remediation_history[:8]],
+        "evidence_gaps": evidence.evidence_gaps[:8],
     }
 
     return (

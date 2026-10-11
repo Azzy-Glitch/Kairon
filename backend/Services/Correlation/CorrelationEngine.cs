@@ -141,23 +141,33 @@ public class CorrelationEngine : ICorrelationEngine
     private static string UnscopedKey(DetectionSignal signal) => $"{signal.ProjectId}|{signal.Environment}|{signal.Service}";
 
     /// <summary>
-    /// One ongoing problem = one active incident: an open incident with the same key absorbs new
-    /// signals however long it has been idle, so an incident awaiting approval is never duplicated
-    /// (and sent to the AI again) just because its signals paused. The one exception is a genuinely
-    /// different fault arriving after the incident went quiet for longer than the correlation window -
-    /// payment errors after an overload stopped are a new problem, not the old one continuing, and
-    /// must not disappear into an incident nobody is looking at any more.
+    /// Whether these signals are part of the fault an open incident already tracks:
+    ///
+    /// - the same kind of fault (errors, CPU, latency, ...) is the same problem still unfolding and is
+    ///   absorbed however long it paused - an incident awaiting approval is never duplicated, or sent
+    ///   to the AI again, just because its signals stopped for a while;
+    /// - a different kind of fault that starts while the incident's own symptoms are still being
+    ///   detected is co-occurring evidence on the same service at the same time (CPU and latency of
+    ///   one overload) and joins it - the AI then re-examines the combined picture once;
+    /// - a different kind of fault once the incident's own symptoms are no longer being detected is a
+    ///   new problem and gets its own incident immediately. There is no fixed quiet period: "no longer
+    ///   detected" is measured against the detector's own re-reporting cadence (ActiveWindow).
     /// </summary>
     private SreIncident? BelongsToOngoingFault(SreIncident? incident, List<DetectionSignal> signals)
     {
         if (incident is null) return null;
         var snapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
         if (snapshots.Count == 0) return incident;
-        var quietSince = snapshots.Max(s => s.DetectedAt);
-        var window = TimeSpan.FromSeconds(Math.Max(1, _options.CorrelationWindowSeconds));
-        var sameKind = signals.Any(s => FaultCategories.Of(snapshots).Contains(FaultCategories.Of(s.MetricName)));
-        return sameKind || signals.Min(s => s.DetectedAt) - quietSince <= window ? incident : null;
+        if (signals.Any(s => FaultCategories.Of(snapshots).Contains(FaultCategories.Of(s.MetricName)))) return incident;
+        var lastSeen = snapshots.Max(s => s.LastSeenAt ?? s.DetectedAt);
+        return signals.Min(s => s.DetectedAt) - lastSeen <= ActiveWindow ? incident : null;
     }
+
+    /// <summary>How long after its last detection a symptom still counts as ongoing: an ongoing breach
+    /// re-fires at least once per cooldown and is evaluated over the detection window, so a symptom not
+    /// seen for longer than both (twice the cooldown, to absorb one missed sweep) has stopped.</summary>
+    private TimeSpan ActiveWindow => TimeSpan.FromSeconds(Math.Max(
+        Math.Max(1, _options.EvaluationWindowSeconds), 2 * Math.Max(1, _options.CooldownSeconds)));
 
     /// <summary>Ties an unscoped incident to the machine fresh, Agent-verified telemetry proved. The
     /// unscoped readings stay in the timeline (Detected/Correlated events); the incident's actionable
@@ -255,7 +265,18 @@ public class CorrelationEngine : ICorrelationEngine
         // "cpu" rows, one per re-evaluation, and its "N correlated signals" count climbed the same
         // unbounded way).
         if (signals.All(s => !ReadingChanged(existingSnapshots, s)))
+        {
+            // Nothing new to show anyone - but the symptom IS still being detected. Record when it
+            // was last seen, so "is this fault still ongoing?" reflects reality rather than the time
+            // the reading last changed. Not a touch: no re-investigation, no timeline entry.
+            foreach (var signal in signals)
+            {
+                var seen = existingSnapshots.FirstOrDefault(x => x.Rule == signal.RuleId);
+                if (seen is not null) seen.LastSeenAt = signal.DetectedAt;
+            }
+            incident.CorrelatedMetricsJson = SreJson.Serialize(existingSnapshots);
             return false;
+        }
 
         foreach (var signal in signals)
         {
@@ -352,6 +373,7 @@ public class CorrelationEngine : ICorrelationEngine
     {
         Rule = s.RuleId,
         MachineId = s.MachineId,
+        LastSeenAt = s.DetectedAt,
         MetricName = s.MetricName,
         Symptom = s.Symptom,
         Observed = s.Observed,

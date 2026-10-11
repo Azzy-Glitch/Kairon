@@ -165,3 +165,37 @@ describe('Refreshing after a configuration change', () => {
     expect(screen.getByRole('button', { name: /Approve/ })).toBeInTheDocument();
   });
 });
+
+describe('Evidence-grounded diagnosis', () => {
+  it('shows what moved first, alternatives, missing evidence, verification and each action\'s kind, risks and check', () => {
+    render(
+      <>
+        <AiInvestigationPanel
+          diagnosis={{ rootCause: 'Calls to the database (orders-db:5432) are failing or slow', confidence: 0.72 }}
+          assessment={{
+            rootCauseCertainty: 'likely', nextSteps: ['Check the database slow-query log.'], consideredActions: [], offeredActions: [],
+            alternativeExplanations: ['Connection-pool exhaustion in the app can look like a slow database.'],
+            missingEvidence: ['No database server metrics (CPU, connections, slow queries) - KAIRON does not collect them.'],
+            verificationSteps: ['Error rate and latency return under threshold.'],
+            signalOnsets: [
+              { metric: 'latency', label: 'Latency', threshold: 1000, unit: 'ms', secondsBeforeDetection: 90, peak: 2400 },
+              { metric: 'errorRate', label: 'Error rate', threshold: 10, unit: '%', secondsBeforeDetection: 20, peak: 40 }
+            ]
+          }}
+        />
+        <RecommendationPanel recommendations={[{ action: 'RestartApplication', riskLevel: 'Medium', isRegisteredTool: true,
+          reason: 'Clears in-process state.', kind: 'temporary_mitigation', risks: 'A few seconds of downtime.', verification: 'CPU back under 80%.' }]} />
+      </>
+    );
+
+    expect(screen.getByText('What moved first')).toBeInTheDocument();
+    expect(screen.getByText(/Latency crossed 1000ms 90s before detection/)).toBeInTheDocument();
+    expect(screen.getByText(/not proof that the first caused the rest/)).toBeInTheDocument();
+    expect(screen.getByText(/Connection-pool exhaustion/)).toBeInTheDocument();
+    expect(screen.getByText('Evidence not available')).toBeInTheDocument();
+    expect(screen.getByText('How to verify the fix')).toBeInTheDocument();
+    expect(screen.getByText('Temporary mitigation - does not fix the cause')).toBeInTheDocument();
+    expect(screen.getByText('A few seconds of downtime.')).toBeInTheDocument();
+    expect(screen.getByText('CPU back under 80%.')).toBeInTheDocument();
+  });
+});

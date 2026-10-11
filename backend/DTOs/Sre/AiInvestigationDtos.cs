@@ -49,6 +49,61 @@ public class EvidencePackageDto
     /// back after a restart - the difference between a transient fault and a persistent defect.</summary>
     [JsonPropertyName("recurrence")]
     public RecurrenceContextDto? Recurrence { get; set; }
+
+    /// <summary>When each metric first crossed its threshold in the evidence window, earliest first -
+    /// which signal moved first. Ordering, not proof of causation.</summary>
+    [JsonPropertyName("signal_onsets")]
+    public List<SignalOnsetDto> SignalOnsets { get; set; } = new();
+
+    /// <summary>Outgoing dependency calls the app reported in the window (SDK dependency events).</summary>
+    [JsonPropertyName("dependencies")]
+    public List<DependencySummaryDto> Dependencies { get; set; } = new();
+
+    /// <summary>Earlier remediation attempts for this service and their measured outcomes.</summary>
+    [JsonPropertyName("remediation_history")]
+    public List<RemediationOutcomeDto> RemediationHistory { get; set; } = new();
+
+    /// <summary>Kinds of evidence that are NOT available for this incident, so a conclusion can say
+    /// what it could not see instead of guessing.</summary>
+    [JsonPropertyName("evidence_gaps")]
+    public List<string> EvidenceGaps { get; set; } = new();
+}
+
+public class SignalOnsetDto
+{
+    [JsonPropertyName("metric")] public string Metric { get; set; } = string.Empty;
+    [JsonPropertyName("label")] public string Label { get; set; } = string.Empty;
+    [JsonPropertyName("first_breach_at")] public DateTime FirstBreachAt { get; set; }
+    /// <summary>Positive: breached this long before the incident was detected.</summary>
+    [JsonPropertyName("seconds_before_detection")] public double SecondsBeforeDetection { get; set; }
+    [JsonPropertyName("peak")] public double Peak { get; set; }
+    [JsonPropertyName("threshold")] public double Threshold { get; set; }
+    [JsonPropertyName("unit")] public string Unit { get; set; } = string.Empty;
+}
+
+public class DependencySummaryDto
+{
+    [JsonPropertyName("target")] public string Target { get; set; } = string.Empty;
+    [JsonPropertyName("calls")] public int Calls { get; set; }
+    [JsonPropertyName("failures")] public int Failures { get; set; }
+    [JsonPropertyName("avg_duration_ms")] public double AvgDurationMs { get; set; }
+    [JsonPropertyName("max_duration_ms")] public long MaxDurationMs { get; set; }
+}
+
+public class RemediationOutcomeDto
+{
+    [JsonPropertyName("incident_key")] public string IncidentKey { get; set; } = string.Empty;
+    [JsonPropertyName("fault_kinds")] public List<string> FaultKinds { get; set; } = new();
+    [JsonPropertyName("action")] public string Action { get; set; } = string.Empty;
+    /// <summary>Executed | Failed | Rejected | Cancelled ...</summary>
+    [JsonPropertyName("status")] public string Status { get; set; } = string.Empty;
+    /// <summary>Passed | Failed | Inconclusive, or null when it was never verified.</summary>
+    [JsonPropertyName("verification")] public string? Verification { get; set; }
+    [JsonPropertyName("recovery_score")] public double? RecoveryScore { get; set; }
+    [JsonPropertyName("error")] public string? Error { get; set; }
+    [JsonPropertyName("minutes_before_this_incident")] public double? MinutesBeforeThisIncident { get; set; }
+    /// <summary>True when that incident had the same kind of fault as this one.</summary>
+    [JsonPropertyName("same_fault")] public bool SameFault { get; set; }
 }
 
 public static class RiskForecastOutcomes
@@ -285,6 +340,10 @@ public class RelatedErrorDto
 
     [JsonPropertyName("error_message")]
     public string? ErrorMessage { get; set; }
+
+    /// <summary>The first and innermost frames of the (scrubbed) stack trace, when the SDK sent one.</summary>
+    [JsonPropertyName("stack_excerpt")]
+    public string? StackExcerpt { get; set; }
 }
 
 /// <summary>
@@ -430,6 +489,18 @@ public class InvestigationResultDto
     [JsonPropertyName("considered_actions")]
     public List<ConsideredActionDto> ConsideredActions { get; set; } = new();
 
+    /// <summary>Other explanations the evidence does not rule out.</summary>
+    [JsonPropertyName("alternative_explanations")]
+    public List<string> AlternativeExplanations { get; set; } = new();
+
+    /// <summary>Evidence that would confirm or rule out the cause but is not available.</summary>
+    [JsonPropertyName("missing_evidence")]
+    public List<string> MissingEvidence { get; set; } = new();
+
+    /// <summary>How to tell that the problem is really fixed.</summary>
+    [JsonPropertyName("verification_steps")]
+    public List<string> VerificationSteps { get; set; } = new();
+
     /// <summary>Set by the AI service so the backend can record which provider produced this.</summary>
     [JsonPropertyName("provider")]
     public string? Provider { get; set; }
@@ -464,6 +535,16 @@ public class AiRecommendationDto
 
     [JsonPropertyName("risk_level")]
     public string RiskLevel { get; set; } = "medium";
+
+    /// <summary>temporary_mitigation | root_cause_fix | diagnostic</summary>
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = "temporary_mitigation";
+
+    [JsonPropertyName("risks")]
+    public string Risks { get; set; } = string.Empty;
+
+    [JsonPropertyName("verification")]
+    public string Verification { get; set; } = string.Empty;
 
     [JsonPropertyName("parameters")]
     public Dictionary<string, string>? Parameters { get; set; }

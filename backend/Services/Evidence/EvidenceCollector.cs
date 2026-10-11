@@ -237,7 +237,8 @@ public class EvidenceCollector : IEvidenceCollector
                     ErrorType = Safe(e.ErrorType, 200),
                     // Error text can carry whatever the application put in an exception message,
                     // so it is scrubbed before it leaves the process.
-                    ErrorMessage = Safe(e.ErrorMessage, 500)
+                    ErrorMessage = Safe(e.ErrorMessage, 500),
+                    StackExcerpt = Safe(StackExcerpt(e.StackTrace), 1200)
                 })
                 .ToList(),
             CorrelatedSignals = snapshots.Take(30).Select(s => new CorrelatedSignalDto
@@ -292,6 +293,19 @@ public class EvidenceCollector : IEvidenceCollector
         };
 
         package.Recurrence = recurrence;
+        package.SignalOnsets = RiskForecaster.Onsets(package.RecentMetrics, _detection, incident.Timestamp).Take(6).ToList();
+        package.Dependencies = endpointRows
+            .Where(e => string.Equals(e.Method, "DEPENDENCY", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(e => e.ServerErrors).ThenByDescending(e => e.Requests)
+            .Take(10)
+            .Select(e => new DependencySummaryDto
+            {
+                Target = Safe(e.Endpoint, 300) ?? string.Empty, Calls = e.Requests, Failures = e.ServerErrors,
+                AvgDurationMs = Math.Round(e.AvgDuration, 1), MaxDurationMs = e.MaxDuration
+            })
+            .ToList();
+        package.RemediationHistory = await RemediationHistoryAsync(incident, machineId, cancellationToken);
+        package.EvidenceGaps = EvidenceGaps(package);
         // Computed from the full sample set, before the payload budget may trim it, so the forecast
         // reflects everything KAIRON measured.
         package.RiskForecast = RiskForecaster.Forecast(package.RecentMetrics, recurrence, _detection);
@@ -335,6 +349,18 @@ public class EvidenceCollector : IEvidenceCollector
         {
             AddEvidence(incident, EvidenceKinds.AgentEvents,
                 $"{package.LogEvents.Count} Agent event(s)", package.LogEvents, package.LogEvents.Count);
+        }
+
+        if (package.SignalOnsets.Count > 0)
+        {
+            AddEvidence(incident, EvidenceKinds.SignalOnsets,
+                "First to breach: " + string.Join(" -> ", package.SignalOnsets.Select(o => o.Label)), package.SignalOnsets, package.SignalOnsets.Count);
+        }
+
+        if (package.RemediationHistory.Count > 0)
+        {
+            AddEvidence(incident, EvidenceKinds.RemediationHistory,
+                $"{package.RemediationHistory.Count} earlier remediation attempt(s)", package.RemediationHistory, package.RemediationHistory.Count);
         }
 
         if (package.RiskForecast is { } forecast)
@@ -432,6 +458,83 @@ public class EvidenceCollector : IEvidenceCollector
     /// <summary>A restart this recent counts as "the problem came back after a restart".</summary>
     internal static readonly TimeSpan RecurrenceAfterRestartWindow = TimeSpan.FromHours(1);
 
+    /// <summary>First lines (where it was raised from) and last lines (the innermost frames and the
+    /// exception line) of a stack trace - the parts that locate a failure - instead of all of it.</summary>
+    internal static string? StackExcerpt(string? stackTrace)
+    {
+        if (string.IsNullOrWhiteSpace(stackTrace)) return null;
+        var lines = stackTrace.Split('\n').Select(l => l.TrimEnd('\r')).Where(l => l.Trim().Length > 0).ToList();
+        if (lines.Count <= 10) return string.Join("\n", lines);
+        return string.Join("\n", lines.Take(3).Append("  ...").Concat(lines.TakeLast(6)));
+    }
+
+    /// <summary>Earlier remediation attempts for this service (24 h) with their measured outcomes - a
+    /// restart whose verification failed is evidence the next diagnosis must not ignore.</summary>
+    private async Task<List<RemediationOutcomeDto>> RemediationHistoryAsync(SreIncident incident, Guid? machineId, CancellationToken cancellationToken)
+    {
+        var since = incident.Timestamp.AddHours(-24);
+        var incidents = (await _db.SreIncidents.AsNoTracking()
+                .Include(i => i.Actions)
+                .Where(i => i.Id != incident.Id && i.ProjectId == incident.ProjectId && i.Environment == incident.Environment
+                            && i.Service == incident.Service && i.Timestamp >= since && i.Timestamp <= incident.Timestamp)
+                .ToListAsync(cancellationToken))
+            .Where(h => !machineId.HasValue || IncidentMachineScope.GetMachineId(h) == machineId)
+            .ToList();
+        var attempts = incidents.SelectMany(i => i.Actions.Select(a => (Incident: i, Action: a)))
+            .Where(x => x.Action.Status is RemediationStatus.Executed or RemediationStatus.Failed)
+            .OrderByDescending(x => x.Action.CompletedAt ?? x.Action.CreatedAt)
+            .Take(8)
+            .ToList();
+        if (attempts.Count == 0) return new();
+
+        var verificationIds = attempts.Select(x => x.Action.VerificationResultId).Where(id => id.HasValue).Select(id => id!.Value).ToList();
+        var verifications = await _db.VerificationResults.AsNoTracking()
+            .Where(v => verificationIds.Contains(v.Id))
+            .ToDictionaryAsync(v => v.Id, cancellationToken);
+        var currentKinds = FaultCategories.Of(SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>()));
+
+        return attempts.Select(x =>
+        {
+            var kinds = FaultCategories.Of(SreJson.Deserialize(x.Incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>()));
+            var verification = x.Action.VerificationResultId is { } vid && verifications.TryGetValue(vid, out var v) ? v : null;
+            var at = x.Action.CompletedAt ?? x.Action.CreatedAt;
+            return new RemediationOutcomeDto
+            {
+                IncidentKey = Safe(x.Incident.IncidentKey, 100) ?? string.Empty,
+                FaultKinds = kinds.OrderBy(k => k).ToList(),
+                Action = x.Action.ActionType,
+                Status = x.Action.Status.ToString(),
+                Verification = verification?.Status.ToString(),
+                RecoveryScore = verification?.RecoveryScore,
+                Error = Safe(x.Action.ExecutionError ?? verification?.FailureReason, 300),
+                MinutesBeforeThisIncident = Math.Round((incident.Timestamp - at).TotalMinutes, 1),
+                SameFault = kinds.Overlaps(currentKinds)
+            };
+        }).ToList();
+    }
+
+    /// <summary>What this incident's evidence does not contain - stated, so a diagnosis can say what it
+    /// could not check rather than filling the gap with a guess.</summary>
+    private static List<string> EvidenceGaps(EvidencePackageDto package)
+    {
+        var gaps = new List<string>();
+        if (package.RecentMetrics.Count < RiskForecaster.MinimumSamples)
+            gaps.Add("Few metric samples in the evidence window - trends and timing are uncertain.");
+        if (package.RecentMetrics.All(m => m.MemoryPercent is null))
+            gaps.Add("No memory measurements.");
+        var serverErrors = package.RelatedErrors.Where(e => e.StatusCode >= 500).ToList();
+        if (serverErrors.Count > 0 && serverErrors.All(e => string.IsNullOrWhiteSpace(e.StackExcerpt)))
+            gaps.Add("Server errors without stack traces - the failing code location is not visible.");
+        if (serverErrors.Count > 0 && serverErrors.All(e => string.IsNullOrWhiteSpace(e.ErrorType) && string.IsNullOrWhiteSpace(e.ErrorMessage)))
+            gaps.Add("Server errors without an exception type or message.");
+        if (package.Dependencies.Count == 0)
+            gaps.Add("No per-dependency call data (database or downstream API latency and failures are not reported by this app).");
+        if (package.LogEvents.Count == 0)
+            gaps.Add("No application log events from the KAIRON Agent.");
+        gaps.Add("No database server metrics (CPU, connections, slow queries) - KAIRON does not collect them.");
+        return gaps;
+    }
+
     private async Task<RecurrenceContextDto> RecurrenceAsync(SreIncident incident, Guid? machineId, CancellationToken cancellationToken)
     {
         var since = incident.Timestamp.AddHours(-24);
@@ -480,6 +583,11 @@ public class EvidenceCollector : IEvidenceCollector
         {
             if (package.HistoricalIncidents.Count > 0) package.HistoricalIncidents.RemoveAt(0);
             else if (package.LogEvents.Count > 0) package.LogEvents.RemoveAt(0);
+            else if (package.RemediationHistory.Count > 2) package.RemediationHistory.RemoveAt(package.RemediationHistory.Count - 1);
+            else if (package.Dependencies.Count > 3) package.Dependencies.RemoveAt(package.Dependencies.Count - 1);
+            // Stack excerpts go (oldest first, keeping the newest) before whole errors do.
+            else if (package.RelatedErrors.Count(e => e.StackExcerpt is not null) > 1)
+                package.RelatedErrors.First(e => e.StackExcerpt is not null).StackExcerpt = null;
             else if (package.RelatedErrors.Count > 0) package.RelatedErrors.RemoveAt(0);
             else if (package.RecentMetrics.Count > 3) package.RecentMetrics.RemoveAt(0);
             else if (package.EndpointBreakdown.Count > 1) package.EndpointBreakdown.RemoveAt(package.EndpointBreakdown.Count - 1);

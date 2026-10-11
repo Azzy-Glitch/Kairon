@@ -58,6 +58,7 @@ public static class ServiceExtensions
         services.AddScoped<IPlatformAuditService, PlatformAuditService>();
         services.AddScoped<IProjectCredentialService, ProjectCredentialService>();
         services.AddScoped<ISdkSettingsService, SdkSettingsService>();
+        services.AddScoped<Kairon.Backend.Services.Evidence.IPredictiveInsightsService, Kairon.Backend.Services.Evidence.PredictiveInsightsService>();
         services.AddScoped<ISdkPairingService, SdkPairingService>();
         services.AddScoped<IAgentRegistrationService, AgentRegistrationService>();
         services.AddScoped<IMachineTelemetryBindingService, MachineTelemetryBindingService>();

@@ -21,7 +21,8 @@ function renderPage() {
  */
 vi.mock('../../hooks/useIncidents', () => ({
   useIncidents: () => ({ incidents: [], isLoading: false, isError: false, error: null, reload: () => {} }),
-  useIncidentDetails: () => ({ data: [], isLoading: false, isError: false, error: null })
+  useIncidentDetails: () => ({ data: [], isLoading: false, isError: false, error: null }),
+  useEmergingRisks: () => ({ data: null, isLoading: false, isError: false, error: null })
 }));
 
 let mockHealth;

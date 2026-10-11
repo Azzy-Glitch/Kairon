@@ -30,6 +30,11 @@ export function getEvidence(id) {
   return request(client.get(`/incidents/${id}/evidence`));
 }
 
+/** Emerging risks from the last hour of telemetry and 24 h of incident history (deterministic trends). */
+export function getEmergingRisks(projectId) {
+  return request(client.get('/insights/risks', { params: projectId ? { projectId } : {} }));
+}
+
 export function getDashboard(projectId) {
   return request(client.get('/incidents/dashboard', { params: projectId ? { projectId } : {} }));
 }

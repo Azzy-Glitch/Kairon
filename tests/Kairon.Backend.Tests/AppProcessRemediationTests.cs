@@ -163,14 +163,14 @@ public sealed class AppProcessRemediationTests : IDisposable
     }
 
     /// <summary>
-    /// A sudden HTTP 500 spike in a connected app, decided on the real evidence by the same rules the
-    /// AI is instructed to follow (DeterministicInvestigation): the restart is offered and recommended
-    /// as a temporary mitigation (cause "possible", never confirmed), runs only after approval, and the
-    /// incident resolves only on verified recovery. When the errors come back after that restart, the
-    /// next incident knows it - and is sent for investigation instead of being restarted again.
+    /// CPU saturation inside a connected app's own process, decided on the real evidence by the same
+    /// rules the AI is instructed to follow (DeterministicInvestigation): the restart is offered and
+    /// recommended as a temporary mitigation, runs only after approval, and the incident resolves only
+    /// on verified recovery. When the same fault comes back after that restart, the next incident knows
+    /// it - and is sent for investigation instead of being restarted again.
     /// </summary>
     [Fact]
-    public async Task AServerErrorSpikeIsMitigatedByRestartAndARecurrenceAfterTheRestartIsInvestigatedInstead()
+    public async Task InProcessSaturationIsMitigatedByRestartAndARecurrenceAfterTheRestartIsInvestigatedInstead()
     {
         var h = _h;
         h.EnsureProject();
@@ -192,8 +192,9 @@ public sealed class AppProcessRemediationTests : IDisposable
         Assert.True(await pairing.ConfirmAsync(created.PairingId, paired.ApiKey, default));
         var bindings = new MachineTelemetryBindingService(h.Db, agents, h.Targets, Options.Create(new WindowsRemediationOptions()));
         var telemetry = new PlatformTelemetryService(h.Db, h.Queue, TimeProvider.System);
+        // "errors" > 0 marks a faulty sample: the app's own process saturates the CPU.
         Task Send(DateTime at, long errors, int pid) =>
-            SendMetricAsync(h, bindings, telemetry, credentials, paired.ApiKey, agentKey, machineId, at, cpu: 12, "python", pid, errors);
+            SendMetricAsync(h, bindings, telemetry, credentials, paired.ApiKey, agentKey, machineId, at, cpu: errors > 0 ? 96 : 12, "python", pid);
 
         // Healthy app (pid 4242), then the restart target is enabled with one click.
         await Send(DateTime.UtcNow.AddSeconds(-60), errors: 0, pid: 4242);
@@ -240,12 +241,12 @@ public sealed class AppProcessRemediationTests : IDisposable
         // recommended it as a mitigation without claiming to know the cause.
         var evidence = h.Ai.LastEvidence!;
         Assert.Equal(RiskForecastOutcomes.Elevated, evidence.RiskForecast!.Outcome);
-        Assert.Contains(evidence.RiskForecast.Trends, t => t.Metric == "errorRate" && t.Direction == "rising");
+        Assert.Contains(evidence.RiskForecast.Trends, t => t.Metric == "cpu" && t.Direction == "rising");
         Assert.False(evidence.Recurrence!.RecurredAfterRestart);
         Assert.Equal(RemediationTargetKinds.AppProcess, evidence.RemediationTarget!.Kind);
         Assert.Equal(IncidentStatus.AwaitingApproval, incident.Status);
         var assessment = SreJson.Deserialize<AiAssessment?>(incident.AssessmentJson, null)!;
-        Assert.Equal("possible", assessment.RootCauseCertainty);
+        Assert.Equal("likely", assessment.RootCauseCertainty);
         Assert.Contains(assessment.ConsideredActions, c => c.Action == ServiceToolNames.RestartApplication && c.Verdict == "recommended");
         var action = Assert.Single(h.Db.RemediationActions.Where(a => a.IncidentId == incident.Id));
         Assert.Equal(ServiceToolNames.RestartApplication, action.ActionType);
@@ -257,8 +258,11 @@ public sealed class AppProcessRemediationTests : IDisposable
         Assert.Equal(IncidentStatus.Resolved, incident.Status);
         Assert.Equal(VerificationStatus.Passed, incident.VerificationState);
 
-        // The errors come back on the restarted process.
+        // The same saturation comes back on the restarted process. (The samples arrive within a moment
+        // of each other, so the sustained-breach span and request-burst limits are relaxed for them.)
         h.Detection.CooldownSeconds = 0;
+        h.Detection.SustainedBreachSeconds = 0;
+        h.Detection.RequestBurstPerMinute = 1_000_000;
         for (var i = 0; i < 4; i++) await Send(DateTime.UtcNow, errors: 7, pid: 5151);
         var recurrence = (await h.CreateCorrelationEngine().CorrelateAsync(
                 await h.CreateDetectionEngine().EvaluateAsync(h.ProjectId, h.Environment, h.Service)))
@@ -310,8 +314,9 @@ public sealed class AppProcessRemediationTests : IDisposable
         Assert.True(await pairing.ConfirmAsync(created.PairingId, paired.ApiKey, default));
         var bindings = new MachineTelemetryBindingService(h.Db, agents, h.Targets, Options.Create(new WindowsRemediationOptions()));
         var telemetry = new PlatformTelemetryService(h.Db, h.Queue, TimeProvider.System);
+        // "errors" > 0 marks a faulty sample: the app's own process saturates the CPU.
         Task Send(DateTime at, long errors) =>
-            SendMetricAsync(h, bindings, telemetry, credentials, paired.ApiKey, agentKey, machineId, at, cpu: 12, "python", 4242, errors);
+            SendMetricAsync(h, bindings, telemetry, credentials, paired.ApiKey, agentKey, machineId, at, cpu: errors > 0 ? 96 : 12, "python", 4242);
         await agents.RecordUserSessionHeartbeatAsync(machineId, userAgentKey, UserSession(4242, DateTime.UtcNow.AddMinutes(-3)), default);
 
         var registry = new RemediationToolRegistry([new RestartApplicationTool(h.Db, h.Targets)]);
@@ -336,7 +341,7 @@ public sealed class AppProcessRemediationTests : IDisposable
             return result;
         };
 
-        // 1. Payment failures with no restart target yet: an unscoped incident with nothing approvable.
+        // 1. CPU saturation with no restart target yet: an unscoped incident with nothing approvable.
         for (var i = 0; i < 4; i++) await Send(DateTime.UtcNow.AddSeconds(-40 + i * 5), errors: 6);
         await Orchestrator().DetectAndCorrelateAsync(h.ProjectId, h.Environment, h.Service);
         var incident = h.Db.SreIncidents.Single();

@@ -127,34 +127,122 @@ public sealed class RiskForecastAndInvestigationTests : IDisposable
     }
 
     [Fact]
-    public void ASuddenServerErrorSpikeGetsTheOfferedRestartAsAMitigationWithoutClaimingTheCause()
+    public void ServerErrorsWithNormalResourcesAreInvestigatedNotRestarted()
     {
-        var result = DeterministicInvestigation.Investigate(Evidence(
-            ["errorRate"], [ServiceToolNames.RestartApplication], errorType: "HTTPException", errorMessage: "Payment provider rejected the charge"));
+        var evidence = Evidence(["errorRate"], [ServiceToolNames.RestartApplication], errorType: "KeyError", errorMessage: "'sku'");
+        evidence.RelatedErrors[0].StackExcerpt = "Traceback (most recent call last):\n  File \"app.py\", line 42, in checkout\nKeyError: 'sku'";
 
-        var rec = Assert.Single(result.Recommendations);
-        Assert.Equal(ServiceToolNames.RestartApplication, rec.Action);
-        Assert.Contains("temporary mitigation", rec.Reason);
-        Assert.Contains("cannot fix a code defect", rec.Reason);
-        // An exception alone is not proof of a code bug.
-        Assert.Equal("possible", result.RootCauseCertainty);
-        Assert.DoesNotContain("confirmed", result.RootCause, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(result.NextSteps, s => s.Contains("HTTPException"));
+        var result = DeterministicInvestigation.Investigate(evidence);
+
+        Assert.Empty(result.Recommendations);
+        var restart = Assert.Single(result.ConsideredActions);
+        Assert.Equal("not_recommended", restart.Verdict);
+        Assert.Contains("code path", restart.Reason);
+        Assert.Contains("KeyError", result.RootCause);
+        Assert.Contains("CPU, memory and its dependencies look normal", result.RootCause);
+        Assert.Contains(result.NextSteps, s => s.Contains("KeyError") && s.Contains("stack trace"));
+        Assert.NotEmpty(result.AlternativeExplanations);
+        Assert.NotEmpty(result.VerificationSteps);
+        Assert.NotEqual("confirmed", result.RootCauseCertainty);
     }
 
     [Fact]
-    public void ADatabaseOutageGetsADependencyFocusedAnswerNotARestart()
+    public void ErrorsFromTheProcesssOwnStateGetARestartAsATemporaryMitigation()
     {
         var result = DeterministicInvestigation.Investigate(Evidence(
-            ["errorRate"], [ServiceToolNames.RestartService, ServiceToolNames.RunHealthCheck],
-            errorType: "OperationalError", errorMessage: "could not connect to database server: Connection refused"));
+            ["errorRate"], [ServiceToolNames.RestartApplication], errorType: "OSError", errorMessage: "[Errno 24] Too many open files"));
 
-        Assert.DoesNotContain(result.Recommendations, r => r.Action == ServiceToolNames.RestartService);
-        Assert.Contains(result.ConsideredActions, c => c.Action == ServiceToolNames.RestartService && c.Verdict == "not_recommended"
-                                                         && c.Reason.Contains("dependency"));
-        Assert.Equal(ServiceToolNames.RunHealthCheck, Assert.Single(result.Recommendations).Action);
-        Assert.Contains(result.NextSteps, s => s.Contains("dependency"));
-        Assert.Equal("likely", result.RootCauseCertainty);
+        var rec = Assert.Single(result.Recommendations);
+        Assert.Equal(ServiceToolNames.RestartApplication, rec.Action);
+        Assert.Equal("temporary_mitigation", rec.Kind);
+        Assert.Contains("temporary mitigation", rec.Reason);
+        Assert.NotEmpty(rec.Risks);
+        Assert.NotEmpty(rec.Verification);
+    }
+
+    [Fact]
+    public void AFailingUpstreamApiWithRetriesIsDiagnosedAsTheUpstreamNotTheApp()
+    {
+        var evidence = Evidence(["errorRate", "retries"], [ServiceToolNames.RestartApplication],
+            errorType: "HTTPException", errorMessage: "Payment provider rejected the charge");
+        evidence.Dependencies.Add(new DependencySummaryDto { Target = "payments.example:443/charge", Calls = 90, Failures = 63, AvgDurationMs = 120 });
+
+        var result = DeterministicInvestigation.Investigate(evidence);
+
+        Assert.Empty(result.Recommendations);
+        Assert.Contains("payments.example:443/charge", result.RootCause);
+        Assert.Contains("retrying", result.RootCause);
+        Assert.Contains(result.NextSteps, s => s.Contains("rate limiting"));
+        Assert.Contains(result.NextSteps, s => s.Contains("circuit breaker"));
+    }
+
+    [Fact]
+    public void DatabaseLatencyBeforeApiErrorsPointsAtTheDatabase()
+    {
+        var evidence = Evidence(["errorRate", "latency"], [ServiceToolNames.RestartApplication]);
+        evidence.Dependencies.Add(new DependencySummaryDto { Target = "orders-db:5432", Calls = 200, Failures = 12, AvgDurationMs = 2400 });
+        evidence.SignalOnsets.Add(new SignalOnsetDto { Metric = "latency", Label = "Latency", SecondsBeforeDetection = 90, FirstBreachAt = DateTime.UtcNow.AddSeconds(-90) });
+        evidence.SignalOnsets.Add(new SignalOnsetDto { Metric = "errorRate", Label = "Error rate", SecondsBeforeDetection = 20, FirstBreachAt = DateTime.UtcNow.AddSeconds(-20) });
+
+        var result = DeterministicInvestigation.Investigate(evidence);
+
+        Assert.Empty(result.Recommendations);
+        Assert.Contains("orders-db:5432", result.RootCause);
+        Assert.Contains("latency rose before the errors", result.RootCause);
+        Assert.Contains(result.NextSteps, s => s.Contains("slow-query") && s.Contains("connection-pool"));
+        Assert.Contains(result.NextSteps, s => s.Contains("Only add database capacity if"));
+        Assert.Contains(result.ConsideredActions, c => c.Verdict == "not_recommended" && c.Reason.Contains("database"));
+    }
+
+    [Fact]
+    public void QueueAndRetriesRisingTogetherPointAtWorkerCapacityAndRetryAmplification()
+    {
+        var result = DeterministicInvestigation.Investigate(Evidence(["queue", "retries"], [ServiceToolNames.RestartApplication]));
+
+        Assert.Empty(result.Recommendations);
+        Assert.Contains(result.NextSteps, s => s.Contains("worker capacity"));
+        Assert.Contains(result.NextSteps, s => s.Contains("retry amplification"));
+    }
+
+    [Fact]
+    public void GrowingMemoryIsExplainedAsMemoryPressureWithARestartOnlyBuyingTime()
+    {
+        var evidence = Evidence(["memory"], [ServiceToolNames.RestartApplication]);
+        evidence.RiskForecast = new RiskForecastDto { Outcome = RiskForecastOutcomes.Elevated, RiskLevel = "high",
+            Trends = [new MetricTrendDto { Metric = "memory", Direction = "rising", Earlier = 60, Recent = 88, Threshold = 85 }] };
+
+        var result = DeterministicInvestigation.Investigate(evidence);
+
+        Assert.Contains("growing steadily", result.RootCause);
+        Assert.Contains("buys time", Assert.Single(result.Recommendations).Reason);
+        Assert.Contains(result.NextSteps, s => s.Contains("leak"));
+    }
+
+    [Fact]
+    public void MissingEvidenceIsReportedRatherThanGuessedAt()
+    {
+        var evidence = Evidence(["errorRate"], []);
+        evidence.EvidenceGaps.Add("Server errors without stack traces - the failing code location is not visible.");
+
+        var result = DeterministicInvestigation.Investigate(evidence);
+
+        Assert.Equal("unknown", result.RootCauseCertainty);   // no exception detail at all
+        Assert.Contains(result.MissingEvidence, m => m.Contains("stack traces"));
+        Assert.Contains(result.NextSteps, s => s.Contains("carry no exception detail"));
+    }
+
+    [Fact]
+    public void ARestartThatFailedForTheSameFaultIsNotRecommendedAgain()
+    {
+        var evidence = Evidence(["cpu"], [ServiceToolNames.RestartApplication]);
+        evidence.RemediationHistory.Add(new RemediationOutcomeDto { IncidentKey = "INC-0003", Action = ServiceToolNames.RestartApplication,
+            Status = "Executed", Verification = "Failed", SameFault = true });
+
+        var result = DeterministicInvestigation.Investigate(evidence);
+
+        Assert.Empty(result.Recommendations);
+        Assert.Contains("INC-0003", result.RootCause);
+        Assert.Contains("verification Failed", result.RootCause);
     }
 
     [Fact]
@@ -184,7 +272,7 @@ public sealed class RiskForecastAndInvestigationTests : IDisposable
         var result = DeterministicInvestigation.Investigate(Evidence(["latency"], [ServiceToolNames.RestartApplication]));
 
         Assert.Empty(result.Recommendations);
-        Assert.Contains(result.NextSteps, s => s.Contains("dependencies"));
+        Assert.Contains(result.NextSteps, s => s.Contains("downstream APIs"));
     }
 
     [Fact]
@@ -205,6 +293,62 @@ public sealed class RiskForecastAndInvestigationTests : IDisposable
         Assert.Empty(result.Recommendations);
         Assert.Equal("unknown", result.RootCauseCertainty);
         Assert.StartsWith("Prediction inconclusive", result.PredictedFailure);
+    }
+
+    // --- Evidence the collector assembles from the database ----------------------------------
+
+    [Fact]
+    public async Task EvidenceCarriesStackExcerptsDependenciesOnsetsPastOutcomesAndGaps()
+    {
+        var now = DateTime.UtcNow;
+        // Latency breaches first, errors follow.
+        for (var i = 0; i < 6; i++)
+            _h.SeedMetric(now.AddSeconds(-100 + i * 15), cpu: 20, latency: i >= 1 ? 1600 : 200, requests: 10, errors: i >= 3 ? 5 : 0);
+        var error = _h.SeedTelemetry(now.AddSeconds(-20), statusCode: 500, errorType: "KeyError", errorMessage: "'sku'");
+        error.StackTrace = string.Join("\n", Enumerable.Range(1, 20).Select(n => $"  frame {n}")) + "\nKeyError: 'sku'";
+        var dependency = _h.SeedTelemetry(now.AddSeconds(-15), endpoint: "orders-db:5432", statusCode: 503, durationMs: 3000, errorType: null, errorMessage: null);
+        dependency.Method = "DEPENDENCY";
+        // An earlier restart for the same kind of fault whose verification failed.
+        var earlier = _h.SeedIncident(IncidentStatus.Failed, correlationKey: "earlier");
+        earlier.Timestamp = now.AddMinutes(-30);
+        earlier.CorrelatedMetricsJson = SreJson.Serialize(new List<CorrelatedSignalSnapshot> { new() { Rule = "error-rate-threshold", MetricName = "errorRate" } });
+        var verification = new VerificationResult { IncidentId = earlier.Id, Status = VerificationStatus.Failed, RecoveryScore = 0.2, FailureReason = "Error rate still 40%" };
+        _h.Db.VerificationResults.Add(verification);
+        _h.Db.RemediationActions.Add(new RemediationAction { IncidentId = earlier.Id, ActionKey = "ACT-0009", ActionType = ServiceToolNames.RestartApplication,
+            Status = RemediationStatus.Executed, CompletedAt = now.AddMinutes(-28), VerificationResultId = verification.Id });
+        var incident = _h.SeedIncident(IncidentStatus.Detected, correlationKey: "current");
+        incident.Timestamp = now;
+        incident.CorrelatedMetricsJson = SreJson.Serialize(new List<CorrelatedSignalSnapshot>
+        {
+            new() { Rule = "error-rate-threshold", MetricName = "errorRate", Observed = 50, Threshold = 10, Unit = "%" },
+            new() { Rule = "latency-threshold", MetricName = "latency", Observed = 1600, Threshold = 1000, Unit = "ms" }
+        });
+        _h.Db.SaveChanges();
+
+        var evidence = await _h.CreateEvidenceCollector().CollectAsync(incident);
+
+        var excerpt = Assert.Single(evidence.RelatedErrors, e => e.ErrorType == "KeyError").StackExcerpt!;
+        Assert.Contains("frame 1", excerpt);
+        Assert.Contains("KeyError: 'sku'", excerpt);
+        Assert.DoesNotContain("frame 10", excerpt);   // the middle is elided
+        var db = Assert.Single(evidence.Dependencies);
+        Assert.Equal("orders-db:5432", db.Target);
+        Assert.Equal(1, db.Failures);
+        Assert.Equal(new[] { "latency", "errorRate" }, evidence.SignalOnsets.Select(o => o.Metric).ToArray());
+        Assert.True(evidence.SignalOnsets[0].SecondsBeforeDetection > evidence.SignalOnsets[1].SecondsBeforeDetection);
+        var past = Assert.Single(evidence.RemediationHistory);
+        Assert.Equal(("Failed", true), (past.Verification, past.SameFault));
+        Assert.Contains("Error rate still 40%", past.Error);
+        Assert.Contains(evidence.EvidenceGaps, g => g.Contains("memory"));
+        Assert.Contains(evidence.EvidenceGaps, g => g.Contains("database server metrics"));
+        Assert.DoesNotContain(evidence.EvidenceGaps, g => g.Contains("per-dependency"));
+
+        // And the investigation uses it: the failed restart for this same fault comes first, so no
+        // restart is suggested again.
+        var result = DeterministicInvestigation.Investigate(evidence);
+        Assert.Contains("did not resolve it", result.RootCause);
+        Assert.Contains("verification Failed", result.RootCause);
+        Assert.DoesNotContain(result.Recommendations, r => r.Action.StartsWith("Restart"));
     }
 
     // --- Persisted forecast and assessment --------------------------------------------------

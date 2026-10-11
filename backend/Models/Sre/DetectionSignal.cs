@@ -66,6 +66,10 @@ public class CorrelatedSignalSnapshot
     public string Unit { get; set; } = string.Empty;
     public string Severity { get; set; } = string.Empty;
     public DateTime DetectedAt { get; set; }
+
+    /// <summary>When this symptom was last detected - updated by every re-detection, even when the
+    /// reading did not change. Null on snapshots written before this existed (DetectedAt is used).</summary>
+    public DateTime? LastSeenAt { get; set; }
 }
 
 public static class IncidentMachineScope

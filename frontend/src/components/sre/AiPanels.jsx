@@ -102,6 +102,30 @@ export function AiInvestigationPanel({ diagnosis, assessment, failureReason, onR
         </div>
       )}
 
+      {assessment?.signalOnsets?.length > 1 && (
+        <div className="ai-field">
+          <span className="ai-field-label">What moved first</span>
+          <ol className="ai-list ai-onsets">
+            {assessment.signalOnsets.map((onset) => (
+              <li key={onset.metric}>
+                {onset.label} crossed {onset.threshold}{onset.unit} {Math.round(onset.secondsBeforeDetection)}s before detection
+                (peak {onset.peak}{onset.unit})
+              </li>
+            ))}
+          </ol>
+          <span className="forecast-meta">An ordering of measurements - not proof that the first caused the rest.</span>
+        </div>
+      )}
+
+      {assessment?.alternativeExplanations?.length > 0 && (
+        <div className="ai-field">
+          <span className="ai-field-label">Other possible explanations</span>
+          <ul className="ai-list">
+            {assessment.alternativeExplanations.map((item, index) => <li key={index}>{item}</li>)}
+          </ul>
+        </div>
+      )}
+
       {assessment?.nextSteps?.length > 0 && (
         <div className="ai-field">
           <span className="ai-field-label">What to check next</span>
@@ -109,6 +133,24 @@ export function AiInvestigationPanel({ diagnosis, assessment, failureReason, onR
             {assessment.nextSteps.map((step, index) => (
               <li key={index}>{step}</li>
             ))}
+          </ul>
+        </div>
+      )}
+
+      {assessment?.verificationSteps?.length > 0 && (
+        <div className="ai-field">
+          <span className="ai-field-label">How to verify the fix</span>
+          <ul className="ai-list">
+            {assessment.verificationSteps.map((item, index) => <li key={index}>{item}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {assessment?.missingEvidence?.length > 0 && (
+        <div className="ai-field">
+          <span className="ai-field-label">Evidence not available</span>
+          <ul className="ai-list ai-missing-evidence">
+            {assessment.missingEvidence.map((item, index) => <li key={index}>{item}</li>)}
           </ul>
         </div>
       )}
@@ -232,6 +274,12 @@ export function PredictionPanel({ prediction, forecast }) {
  * Generating a recommendation does not run it, and the UI must not imply otherwise. Approval lives
  * in its own panel; this one only ever describes.
  */
+const KIND_LABELS = {
+  temporary_mitigation: 'Temporary mitigation - does not fix the cause',
+  root_cause_fix: 'Fixes the cause',
+  diagnostic: 'Diagnostic - changes nothing'
+};
+
 export function RecommendationPanel({ recommendations, considered }) {
   if (!recommendations?.length) return null;
   const recommendedActions = new Set(recommendations.map((r) => r.action));
@@ -259,9 +307,29 @@ export function RecommendationPanel({ recommendations, considered }) {
               </p>
             )}
 
+            {rec.kind && (
+              <p className="recommendation-line">
+                <span className={`status-badge ${rec.kind === 'root_cause_fix' ? 'status-good' : 'status-neutral'}`}>
+                  {KIND_LABELS[rec.kind] || rec.kind}
+                </span>
+              </p>
+            )}
+
             {rec.expectedOutcome && (
               <p className="recommendation-line">
                 <span className="ai-field-label">Expected outcome</span> {rec.expectedOutcome}
+              </p>
+            )}
+
+            {rec.risks && (
+              <p className="recommendation-line">
+                <span className="ai-field-label">Risks</span> {rec.risks}
+              </p>
+            )}
+
+            {rec.verification && (
+              <p className="recommendation-line">
+                <span className="ai-field-label">How to verify</span> {rec.verification}
               </p>
             )}
 

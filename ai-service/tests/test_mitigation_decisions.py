@@ -13,6 +13,9 @@ import json
 from kairon.prompts import GROUND_RULES, investigation_system_prompt, investigation_user_prompt
 from kairon.schemas import (
     AvailableAction,
+    DependencySummary,
+    RemediationOutcome,
+    SignalOnset,
     CorrelatedSignal,
     EndpointSummary,
     EvidencePackage,
@@ -73,15 +76,92 @@ def test_forecast_recurrence_and_target_kind_reach_the_model_inside_the_untruste
 # --- Deterministic (mock) decisions --------------------------------------------------------------
 
 
-async def test_a_sudden_server_error_spike_gets_the_offered_restart_as_a_mitigation(mock_config):
+async def test_server_errors_with_normal_resources_are_investigated_not_restarted(mock_config):
+    result = await AiService(mock_config).investigate(_evidence(["errorRate"], ["RestartApplication"], error_type="KeyError", error_message="'sku'"))
+
+    assert result.recommendations == []
+    restart = next(c for c in result.considered_actions if c.action == "RestartApplication")
+    assert restart.verdict == "not_recommended" and "code path" in restart.reason
+    assert any("KeyError" in s for s in result.next_steps)
+    assert result.alternative_explanations and result.verification_steps
+
+
+async def test_errors_from_the_processs_own_state_get_a_restart_as_a_temporary_mitigation(mock_config):
     result = await AiService(mock_config).investigate(
-        _evidence(["errorRate"], ["RestartApplication"], error_type="HTTPException", error_message="Payment provider rejected the charge"))
+        _evidence(["errorRate"], ["RestartApplication"], error_type="OSError", error_message="[Errno 24] Too many open files"))
 
     assert [r.action for r in result.recommendations] == ["RestartApplication"]
-    assert "temporary mitigation" in result.recommendations[0].reason
-    assert "cannot fix a code defect" in result.recommendations[0].reason
-    assert result.root_cause_certainty == "possible"
-    assert any(c.action == "RestartApplication" and c.verdict == "recommended" for c in result.considered_actions)
+    rec = result.recommendations[0]
+    assert rec.kind == "temporary_mitigation" and "temporary mitigation" in rec.reason
+    assert rec.risks and rec.verification
+
+
+async def test_a_failing_upstream_api_with_retries_points_at_the_upstream(mock_config):
+    evidence = _evidence(["errorRate", "retries"], ["RestartApplication"], error_type="HTTPException",
+                         error_message="Payment provider rejected the charge")
+    evidence.dependencies.append(DependencySummary(target="payments.example:443/charge", calls=90, failures=63, avg_duration_ms=120))
+
+    result = await AiService(mock_config).investigate(evidence)
+
+    assert result.recommendations == []
+    assert "payments.example:443/charge" in result.root_cause and "retries" in result.root_cause
+    assert any("rate limiting" in s for s in result.next_steps)
+
+
+async def test_database_latency_before_errors_points_at_the_database(mock_config):
+    evidence = _evidence(["errorRate", "latency"], ["RestartApplication"])
+    evidence.dependencies.append(DependencySummary(target="orders-db:5432", calls=200, failures=12, avg_duration_ms=2400))
+    evidence.signal_onsets += [SignalOnset(metric="latency", label="Latency", seconds_before_detection=90),
+                               SignalOnset(metric="errorRate", label="Error rate", seconds_before_detection=20)]
+
+    result = await AiService(mock_config).investigate(evidence)
+
+    assert result.recommendations == []
+    assert "orders-db:5432" in result.root_cause and "latency rose before the errors" in result.root_cause
+    assert any("Only add database capacity if" in s for s in result.next_steps)
+
+
+async def test_a_restart_that_failed_for_the_same_fault_is_not_recommended_again(mock_config):
+    evidence = _evidence(["cpu"], ["RestartApplication"])
+    evidence.remediation_history.append(RemediationOutcome(incident_key="INC-0003", action="RestartApplication",
+                                                           status="Executed", verification="Failed", same_fault=True))
+
+    result = await AiService(mock_config).investigate(evidence)
+
+    assert result.recommendations == []
+    assert "INC-0003" in result.root_cause
+
+
+async def test_missing_evidence_is_reported_not_guessed(mock_config):
+    evidence = _evidence(["errorRate"], [])
+    evidence.evidence_gaps.append("Server errors without stack traces - the failing code location is not visible.")
+
+    result = await AiService(mock_config).investigate(evidence)
+
+    assert result.root_cause_certainty == "unknown"
+    assert any("stack traces" in m for m in result.missing_evidence)
+
+
+def test_the_new_evidence_reaches_the_model_and_the_instructions_put_explanation_first():
+    evidence = _evidence(["errorRate"], ["RestartApplication"], error_type="KeyError")
+    evidence.related_errors[0].stack_excerpt = "File app.py, line 42\nKeyError: 'sku'"
+    evidence.dependencies.append(DependencySummary(target="orders-db:5432", calls=10, failures=2))
+    evidence.signal_onsets.append(SignalOnset(metric="latency", label="Latency", seconds_before_detection=60))
+    evidence.remediation_history.append(RemediationOutcome(action="RestartApplication", status="Executed", verification="Failed"))
+    evidence.evidence_gaps.append("No memory measurements.")
+    prompt = investigation_user_prompt(evidence)
+    payload = json.loads(prompt[prompt.index("{"): prompt.rindex("}") + 1])
+
+    assert payload["related_errors"][0]["stack_excerpt"].endswith("KeyError: 'sku'")
+    assert payload["dependencies"][0]["target"] == "orders-db:5432"
+    assert payload["signal_onsets"][0]["metric"] == "latency"
+    assert payload["remediation_history"][0]["verification"] == "Failed"
+    assert payload["evidence_gaps"] == ["No memory measurements."]
+    rules = GROUND_RULES.lower()
+    assert "explain before you act" in rules and "correlation is not causation" in rules
+    assert "recommend no action rather than forcing one" in rules
+    for field in ("alternative_explanations", "missing_evidence", "verification_steps", "temporary_mitigation|root_cause_fix|diagnostic"):
+        assert field in investigation_system_prompt()
 
 
 async def test_a_database_outage_gets_a_dependency_answer_not_a_restart(mock_config):
@@ -91,8 +171,8 @@ async def test_a_database_outage_gets_a_dependency_answer_not_a_restart(mock_con
 
     assert [r.action for r in result.recommendations] == ["RunHealthCheck"]
     restart = next(c for c in result.considered_actions if c.action == "RestartService")
-    assert restart.verdict == "not_recommended" and "dependency" in restart.reason
-    assert any("dependency" in s for s in result.next_steps)
+    assert restart.verdict == "not_recommended" and "database" in restart.reason
+    assert any("database" in s for s in result.next_steps)
 
 
 async def test_errors_that_returned_after_a_restart_are_investigated_not_restarted_again(mock_config):

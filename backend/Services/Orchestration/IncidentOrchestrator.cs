@@ -166,8 +166,21 @@ public class IncidentOrchestrator : IIncidentOrchestrator
         finally { gate.Release(); }
     }
 
-    public Task ReinvestigateAsync(Guid incidentId, CancellationToken cancellationToken = default) =>
-        WithIncidentLockAsync(incidentId, () => InvestigateCoreAsync(incidentId, allowReinvestigation: true, cancellationToken), cancellationToken);
+    public async Task ReinvestigateAsync(Guid incidentId, CancellationToken cancellationToken = default)
+    {
+        // An incident detected before its telemetry was tied to a machine first gets the chance to be
+        // tied to it from fresh, Agent-verified telemetry - otherwise re-investigating it could never
+        // make a machine-specific action available, however many times the operator asked.
+        var scope = await _db.SreIncidents.AsNoTracking()
+            .Where(i => i.Id == incidentId)
+            .Select(i => new { i.ProjectId, i.Environment, i.Service, i.Status, i.CorrelatedMetricsJson })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (scope is not null && !IncidentLifecycle.IsTerminal(scope.Status)
+            && IncidentMachineScope.GetMachineId(new SreIncident { CorrelatedMetricsJson = scope.CorrelatedMetricsJson }) is null)
+            await DetectAndCorrelateAsync(scope.ProjectId, scope.Environment, scope.Service, cancellationToken);
+
+        await WithIncidentLockAsync(incidentId, () => InvestigateCoreAsync(incidentId, allowReinvestigation: true, cancellationToken), cancellationToken);
+    }
 
     /// <summary>Open, diagnosed, and with nothing proposed, approved or running - the only state in
     /// which KAIRON refreshes an incident's analysis on its own. A pending approval is never withdrawn
@@ -553,7 +566,11 @@ public class IncidentOrchestrator : IIncidentOrchestrator
                     Reason = Bound(Redaction.Scrub(c.Reason), 600)
                 })
                 .ToList(),
-            OfferedActions = offered
+            OfferedActions = offered,
+            AlternativeExplanations = Clean(result.AlternativeExplanations, 5, 400),
+            MissingEvidence = Clean(result.MissingEvidence, 6, 300),
+            VerificationSteps = Clean(result.VerificationSteps, 5, 300),
+            SignalOnsets = package.SignalOnsets
         };
         incident.AssessmentJson = SreJson.Serialize(assessment);
     }
@@ -571,6 +588,9 @@ public class IncidentOrchestrator : IIncidentOrchestrator
             ? $"The AI considered {declined.Action} and did not recommend it: {declined.Reason}"
             : $"The AI did not recommend any of the available actions ({string.Join(", ", assessment.OfferedActions)}).";
     }
+
+    private static List<string> Clean(IEnumerable<string>? values, int count, int max) =>
+        (values ?? []).Where(v => !string.IsNullOrWhiteSpace(v)).Take(count).Select(v => Bound(Redaction.Scrub(v), max)).ToList();
 
     private static string Bound(string? value, int max) =>
         string.IsNullOrEmpty(value) ? string.Empty : value.Length <= max ? value : value[..max] + "...";
@@ -616,6 +636,9 @@ public class IncidentOrchestrator : IIncidentOrchestrator
                 Reason = recommendation.Reason,
                 ExpectedOutcome = recommendation.ExpectedOutcome,
                 RiskLevel = risk.ToString(),
+                Kind = recommendation.Kind,
+                Risks = recommendation.Risks,
+                Verification = recommendation.Verification,
                 IsRegisteredTool = _tools.Contains(recommendation.Action),
                 PolicyNote = decision.Allowed ? null : decision.Reason
             };

@@ -84,6 +84,7 @@ class RelatedError(BaseModel):
     duration_ms: int = 0
     error_type: Optional[str] = None
     error_message: Optional[str] = None
+    stack_excerpt: Optional[str] = None
 
 
 class CorrelatedSignal(BaseModel):
@@ -174,6 +175,36 @@ class RiskForecast(BaseModel):
     trends: List[MetricTrend] = Field(default_factory=list)
 
 
+class SignalOnset(BaseModel):
+    metric: str = ""
+    label: str = ""
+    first_breach_at: Optional[datetime] = None
+    seconds_before_detection: float = 0.0
+    peak: float = 0.0
+    threshold: float = 0.0
+    unit: str = ""
+
+
+class DependencySummary(BaseModel):
+    target: str = ""
+    calls: int = 0
+    failures: int = 0
+    avg_duration_ms: float = 0.0
+    max_duration_ms: int = 0
+
+
+class RemediationOutcome(BaseModel):
+    incident_key: str = ""
+    fault_kinds: List[str] = Field(default_factory=list)
+    action: str = ""
+    status: str = ""
+    verification: Optional[str] = None
+    recovery_score: Optional[float] = None
+    error: Optional[str] = None
+    minutes_before_this_incident: Optional[float] = None
+    same_fault: bool = False
+
+
 class RecurrenceContext(BaseModel):
     incidents_last_24h: int = 0
     recurred_after_restart: bool = False
@@ -202,6 +233,10 @@ class EvidencePackage(BaseModel):
     remediation_target: Optional[RemediationTargetContext] = None
     risk_forecast: Optional[RiskForecast] = None
     recurrence: Optional[RecurrenceContext] = None
+    signal_onsets: List[SignalOnset] = Field(default_factory=list)
+    dependencies: List[DependencySummary] = Field(default_factory=list)
+    remediation_history: List[RemediationOutcome] = Field(default_factory=list)
+    evidence_gaps: List[str] = Field(default_factory=list)
 
 
 # --- Structured investigation result (AI PRD section 7). ---
@@ -212,6 +247,9 @@ class Recommendation(BaseModel):
     reason: str = ""
     expected_outcome: str = ""
     risk_level: str = "medium"
+    kind: str = "temporary_mitigation"
+    risks: str = ""
+    verification: str = ""
     parameters: Optional[Dict[str, str]] = None
 
 
@@ -235,5 +273,8 @@ class InvestigationResult(BaseModel):
     root_cause_certainty: str = "unknown"
     next_steps: List[str] = Field(default_factory=list)
     considered_actions: List[ConsideredAction] = Field(default_factory=list)
+    alternative_explanations: List[str] = Field(default_factory=list)
+    missing_evidence: List[str] = Field(default_factory=list)
+    verification_steps: List[str] = Field(default_factory=list)
     provider: Optional[str] = None
     model: Optional[str] = None

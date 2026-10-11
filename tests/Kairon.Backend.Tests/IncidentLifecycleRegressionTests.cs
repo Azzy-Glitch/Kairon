@@ -43,12 +43,13 @@ public sealed class IncidentLifecycleRegressionTests : IDisposable
 
     // --- A new fault after the earlier incident went quiet --------------------------------------
 
-    [Fact]
-    public async Task APaymentFailureSpikeAfterAnEarlierFaultWentQuietOpensItsOwnIncident()
+    [Theory]
+    [InlineData(10)]
+    [InlineData(3)]   // no fixed five-minute quiet period: the overload is simply no longer being detected
+    public async Task APaymentFailureSpikeAfterAnEarlierFaultStoppedOpensItsOwnIncident(int overloadStoppedMinutesAgo)
     {
-        // The overload incident was left open (nobody approved or closed it) and its fault stopped
-        // well over a correlation window ago.
-        var overload = SeedOpenIncident("cpu", DateTime.UtcNow.AddMinutes(-10));
+        // The overload incident was left open (nobody approved or closed it) and its fault stopped.
+        var overload = SeedOpenIncident("cpu", DateTime.UtcNow.AddMinutes(-overloadStoppedMinutesAgo));
         SeedPaymentFailures();
 
         var touched = await _h.CreateOrchestrator().DetectAndCorrelateAsync(_h.ProjectId, _h.Environment, _h.Service);
@@ -75,6 +76,43 @@ public sealed class IncidentLifecycleRegressionTests : IDisposable
         Assert.Contains("errorRate", (await _h.Db.SreIncidents.AsNoTracking().SingleAsync()).CorrelatedMetricsJson);
         var queued = await DrainAsync();
         Assert.Contains(queued, w => w.Kind == WorkItemKind.ReinvestigateIncident && w.IncidentId == active.Id);
+    }
+
+    [Fact]
+    public async Task AFaultStillBeingDetectedWithAnUnchangedReadingCountsAsOngoing()
+    {
+        // First detected long ago, but re-detected 30 s ago with the same reading: still happening.
+        var overload = SeedOpenIncident("cpu", DateTime.UtcNow.AddMinutes(-10));
+        var snapshots = SreJson.Deserialize(overload.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
+        snapshots[0].LastSeenAt = DateTime.UtcNow.AddSeconds(-30);
+        overload.CorrelatedMetricsJson = SreJson.Serialize(snapshots);
+        _h.Db.SaveChanges();
+        SeedPaymentFailures();
+
+        await _h.CreateOrchestrator().DetectAndCorrelateAsync(_h.ProjectId, _h.Environment, _h.Service);
+
+        Assert.Single(_h.Db.SreIncidents);   // co-occurring symptoms of what is happening now
+        Assert.Contains(await DrainAsync(), w => w.Kind == WorkItemKind.ReinvestigateIncident && w.IncidentId == overload.Id);
+    }
+
+    [Fact]
+    public async Task UnchangedReDetectionsRecordThatTheFaultIsStillHappeningWithoutTouchingTheIncident()
+    {
+        _h.Detection.CooldownSeconds = 0;
+        SeedPaymentFailures();
+        await _h.CreateOrchestrator().DetectAndCorrelateAsync(_h.ProjectId, _h.Environment, _h.Service);
+        var incident = await _h.Db.SreIncidents.AsNoTracking().SingleAsync();
+        var firstSeen = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>()).Max(s => s.LastSeenAt);
+        await DrainAsync();
+
+        await Task.Delay(50);
+        await _h.CreateOrchestrator().DetectAndCorrelateAsync(_h.ProjectId, _h.Environment, _h.Service);
+
+        var again = await _h.Db.SreIncidents.AsNoTracking().SingleAsync();
+        Assert.True(SreJson.Deserialize(again.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>()).Max(s => s.LastSeenAt) > firstSeen);
+        Assert.Equal(incident.SignalCount, again.SignalCount);
+        Assert.Empty(await DrainAsync());
+        Assert.DoesNotContain(_h.Db.IncidentEvents, e => e.IncidentId == incident.Id && e.EventType == IncidentEventTypes.Correlated);
     }
 
     [Fact]

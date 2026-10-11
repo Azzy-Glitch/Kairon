@@ -16,6 +16,7 @@ from .schemas import ConsideredAction, EvidencePackage, InvestigationResult, Rec
 SEVERITIES = {"info", "low", "medium", "high", "critical"}
 RISKS = {"low", "medium", "high", "critical"}
 CERTAINTIES = {"confirmed", "likely", "possible", "unknown"}
+KINDS = {"temporary_mitigation", "root_cause_fix", "diagnostic"}
 VERDICTS = {"recommended", "not_recommended"}
 MAX_TEXT_CHARS = 4000
 MAX_SHORT_TEXT_CHARS = 500
@@ -158,6 +159,9 @@ def validate_investigation(
                 reason=_text(item.get("reason")),
                 expected_outcome=_text(item.get("expected_outcome") or item.get("expectedOutcome")),
                 risk_level=_normalize_choice(item.get("risk_level") or item.get("riskLevel"), RISKS, "medium"),
+                kind=_normalize_choice(item.get("kind"), KINDS, "temporary_mitigation"),
+                risks=_text(item.get("risks"), MAX_LIST_ITEM_CHARS),
+                verification=_text(item.get("verification"), MAX_LIST_ITEM_CHARS),
                 parameters=parameters,
             )
         )
@@ -199,6 +203,9 @@ def validate_investigation(
         ),
         next_steps=_as_list_of_str(raw.get("next_steps") or raw.get("nextSteps"), 8),
         considered_actions=considered,
+        alternative_explanations=_as_list_of_str(raw.get("alternative_explanations") or raw.get("alternativeExplanations"), 5),
+        missing_evidence=_as_list_of_str(raw.get("missing_evidence") or raw.get("missingEvidence"), 6),
+        verification_steps=_as_list_of_str(raw.get("verification_steps") or raw.get("verificationSteps"), 5),
         provider=provider,
         model=model,
     )

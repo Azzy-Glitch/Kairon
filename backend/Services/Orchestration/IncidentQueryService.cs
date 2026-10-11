@@ -206,6 +206,14 @@ public class IncidentQueryService : IIncidentQueryService
             {
                 RootCauseCertainty = assessment.RootCauseCertainty,
                 NextSteps = assessment.NextSteps,
+                AlternativeExplanations = assessment.AlternativeExplanations,
+                MissingEvidence = assessment.MissingEvidence,
+                VerificationSteps = assessment.VerificationSteps,
+                SignalOnsets = assessment.SignalOnsets.Select(o => new SignalOnsetViewDto
+                {
+                    Metric = o.Metric, Label = o.Label, FirstBreachAt = o.FirstBreachAt, SecondsBeforeDetection = o.SecondsBeforeDetection,
+                    Peak = o.Peak, Threshold = o.Threshold, Unit = o.Unit
+                }).ToList(),
                 OfferedActions = assessment.OfferedActions,
                 ConsideredActions = assessment.ConsideredActions
                     .Select(c => new ConsideredActionViewDto { Action = c.Action, Verdict = c.Verdict, Reason = c.Reason })

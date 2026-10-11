@@ -20,5 +20,12 @@ public sealed class AiAssessment
     /// authorized target at investigation time). Empty means nothing could have been recommended.</summary>
     public List<string> OfferedActions { get; set; } = new();
 
+    public List<string> AlternativeExplanations { get; set; } = new();
+    public List<string> MissingEvidence { get; set; } = new();
+    public List<string> VerificationSteps { get; set; } = new();
+
+    /// <summary>Which signal moved first, as computed from the evidence (not by the AI).</summary>
+    public List<SignalOnsetDto> SignalOnsets { get; set; } = new();
+
     public static readonly string[] Certainties = ["confirmed", "likely", "possible", "unknown"];
 }

@@ -113,6 +113,40 @@ public static class RiskForecaster
         };
     }
 
+    /// <summary>
+    /// When each metric first crossed its detection threshold in the evidence window, earliest first.
+    /// It answers "which signal moved first" - an ordering that can point at where a problem started,
+    /// never proof that the earlier signal caused the later one.
+    /// </summary>
+    public static List<SignalOnsetDto> Onsets(IReadOnlyList<MetricSampleDto> samples, DetectionOptions thresholds, DateTime detectedAt)
+    {
+        var ordered = samples.OrderBy(s => s.Timestamp).ToList();
+        var onsets = new List<SignalOnsetDto>();
+        void Add(string metric, string label, string unit, double threshold, Func<MetricSampleDto, double?> value)
+        {
+            var points = ordered.Select(s => (s.Timestamp, Value: value(s))).Where(p => p.Value.HasValue).ToList();
+            var first = points.FirstOrDefault(p => p.Value >= threshold);
+            if (first.Value is null) return;
+            onsets.Add(new SignalOnsetDto
+            {
+                Metric = metric, Label = label, Unit = unit, Threshold = Math.Round(threshold, 1),
+                FirstBreachAt = first.Timestamp,
+                SecondsBeforeDetection = Math.Round((detectedAt - first.Timestamp).TotalSeconds, 0),
+                Peak = Math.Round(points.Max(p => p.Value!.Value), 1)
+            });
+        }
+        Add("latency", "Latency", "ms", thresholds.LatencyMsThreshold, s => s.ResponseTimeMs);
+        Add("cpu", "CPU", "%", thresholds.CpuPercentThreshold, s => s.CpuPercent);
+        Add("memory", "Memory", "%", thresholds.MemoryPercentThreshold, s => s.MemoryPercent);
+        Add("errorRate", "Error rate", "%", thresholds.ErrorRateThreshold * 100,
+            s => s.RequestCount > 0 ? 100.0 * s.ErrorCount / s.RequestCount : null);
+        Add("queue", "Queue depth", "", thresholds.QueueDepthThreshold, s => s.QueueDepth);
+        // Retries are a count per sample; the threshold is per minute, so compare per-sample rates.
+        var interval = ordered.Count > 1 ? Math.Max(1, (ordered[^1].Timestamp - ordered[0].Timestamp).TotalSeconds / (ordered.Count - 1)) : 60;
+        Add("retries", "Retries", "/min", thresholds.RetryStormPerMinute, s => s.RetryCount * (60.0 / interval));
+        return onsets.OrderBy(o => o.FirstBreachAt).ToList();
+    }
+
     private static void AddTrend(List<MetricTrendDto> trends, string metric, string label, string unit, double threshold, IReadOnlyList<double?> raw)
     {
         var values = raw.Where(v => v.HasValue).Select(v => v!.Value).ToList();
