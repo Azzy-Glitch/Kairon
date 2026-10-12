@@ -39,6 +39,13 @@ public class DetectionSignal
     /// <summary>Telemetry rows (Incidents table) that support this signal.</summary>
     public List<Guid> TelemetryReferences { get; set; } = new();
 
+    /// <summary>Kinds of fault (FaultCategories) the scope's LATEST samples measure at all, and those
+    /// they show over threshold - the same for every signal of one detection pass. Lets correlation
+    /// tell "still happening" from "stopped" by the data, rather than only by when a rule last fired
+    /// (which lags behind cooldown and the evaluation window). Not persisted.</summary>
+    public IReadOnlySet<string> MeasuredNow { get; set; } = new HashSet<string>();
+    public IReadOnlySet<string> BreachingNow { get; set; } = new HashSet<string>();
+
     /// <summary>
     /// Dedup identity. Two signals with the same key inside the cooldown window are the same
     /// observation seen twice, not two separate problems.
@@ -59,6 +66,9 @@ public class CorrelatedSignalSnapshot
 {
     public Guid? MachineId { get; set; }
     public string Rule { get; set; } = string.Empty;
+
+    /// <summary>The endpoint the signal concerns, when the rule knows it (error rules do).</summary>
+    public string? Endpoint { get; set; }
     public string MetricName { get; set; } = string.Empty;
     public string Symptom { get; set; } = string.Empty;
     public double? Observed { get; set; }

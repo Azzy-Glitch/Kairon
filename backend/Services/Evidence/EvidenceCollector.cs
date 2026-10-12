@@ -2,6 +2,7 @@ using Kairon.Backend.Configuration;
 using Kairon.Backend.Services.Remediation.Tools;
 using Kairon.Backend.DTOs.Sre;
 using Kairon.Backend.Infrastructure;
+using Kairon.Backend.Models;
 using Kairon.Backend.Models.Platform;
 using Kairon.Backend.Models.Sre;
 using Kairon.Backend.Services.Remediation;
@@ -70,15 +71,35 @@ public class EvidenceCollector : IEvidenceCollector
         // incident rather than only the moment it tripped.
         var windowStart = incident.Timestamp.AddSeconds(-_detection.EvaluationWindowSeconds * 2);
 
-        var metrics = await _db.Metrics
-            .AsNoTracking()
+        // Two bounded slices instead of "the newest N samples": the run-up to detection, where the
+        // precursors are (which signal moved first), and the latest samples (the current state). With
+        // a 5 s SDK cadence the newest 30 samples cover only 150 s, so the run-up was cut off at
+        // detection and lost entirely on a later re-investigation.
+        var lookback = incident.Timestamp - windowStart;
+        IQueryable<Metric> ScopedMetrics() => _db.Metrics.AsNoTracking()
             .Where(m => m.ProjectId == incident.ProjectId
                         && m.Environment == incident.Environment
-                        && m.Service == incident.Service && (!machineId.HasValue || m.MachineId == machineId)
-                        && m.Timestamp >= windowStart)
-            .OrderByDescending(m => m.Timestamp)
-            .Take(_options.MaxMetricSamples)
-            .ToListAsync(cancellationToken);
+                        && m.Service == incident.Service && (!machineId.HasValue || m.MachineId == machineId));
+        var runUp = (await ScopedMetrics()
+                .Where(m => m.Timestamp >= windowStart && m.Timestamp <= incident.Timestamp)
+                .OrderByDescending(m => m.Timestamp).Take(MaxAnalysisSamples)
+                .ToListAsync(cancellationToken))
+            .OrderBy(m => m.Timestamp).Select(ToSample).ToList();
+        var since = (await ScopedMetrics()
+                .Where(m => m.Timestamp > incident.Timestamp)
+                .OrderByDescending(m => m.Timestamp).Take(MaxAnalysisSamples)
+                .ToListAsync(cancellationToken))
+            .OrderBy(m => m.Timestamp).Select(ToSample).ToList();
+        var latestAt = since.Count > 0 ? since[^1].Timestamp : runUp.Count > 0 ? runUp[^1].Timestamp : incident.Timestamp;
+        var current = since.Where(m => m.Timestamp >= latestAt - lookback).ToList();
+        var sinceBudget = current.Count == 0 ? 0 : runUp.Count == 0 ? _options.MaxMetricSamples : Math.Max(1, _options.MaxMetricSamples / 3);
+        var sentMetrics = Downsample(runUp, _options.MaxMetricSamples - sinceBudget).Concat(Downsample(current, sinceBudget)).ToList();
+        // Onsets are about the run-up to detection; the forecast is about where things are heading now.
+        var onsetSamples = runUp.Concat(since.Where(m => m.Timestamp <= incident.Timestamp + lookback)).ToList();
+        // The latest lookback-long stretch of data across both slices: right after detection that is
+        // the rise itself; long after, it is purely the current state.
+        var forecastSamples = runUp.Concat(since).Where(m => m.Timestamp >= latestAt - lookback).ToList();
+        var evidenceSpansGap = since.Count > 0 && latestAt - incident.Timestamp > lookback;
 
         var errorsQuery = _db.Incidents
             .AsNoTracking()
@@ -211,20 +232,7 @@ public class EvidenceCollector : IEvidenceCollector
                 DetectedAt = incident.Timestamp,
                 Symptoms = symptoms.Take(20).Select(s => Safe(s, 300) ?? string.Empty).ToList()
             },
-            RecentMetrics = metrics
-                .OrderBy(m => m.Timestamp)
-                .Select(m => new MetricSampleDto
-                {
-                    Timestamp = m.Timestamp,
-                    CpuPercent = m.CpuPercent,
-                    MemoryPercent = m.MemoryPercent,
-                    ResponseTimeMs = m.ResponseTimeMs,
-                    RequestCount = m.RequestCount,
-                    ErrorCount = m.ErrorCount,
-                    RetryCount = m.RetryCount,
-                    QueueDepth = m.QueueDepth
-                })
-                .ToList(),
+            RecentMetrics = sentMetrics,
             RelatedErrors = errors
                 .OrderBy(e => e.Timestamp)
                 .Select(e => new RelatedErrorDto
@@ -293,7 +301,7 @@ public class EvidenceCollector : IEvidenceCollector
         };
 
         package.Recurrence = recurrence;
-        package.SignalOnsets = RiskForecaster.Onsets(package.RecentMetrics, _detection, incident.Timestamp).Take(6).ToList();
+        package.SignalOnsets = RiskForecaster.Onsets(onsetSamples, _detection, incident.Timestamp).Take(6).ToList();
         package.Dependencies = endpointRows
             .Where(e => string.Equals(e.Method, "DEPENDENCY", StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(e => e.ServerErrors).ThenByDescending(e => e.Requests)
@@ -305,10 +313,13 @@ public class EvidenceCollector : IEvidenceCollector
             })
             .ToList();
         package.RemediationHistory = await RemediationHistoryAsync(incident, machineId, cancellationToken);
-        package.EvidenceGaps = EvidenceGaps(package);
+        package.EvidenceGaps = EvidenceGaps(package, machineScoped: machineId.HasValue);
+        if (evidenceSpansGap)
+            package.EvidenceGaps.Insert(0, $"The incident was detected {(latestAt - incident.Timestamp).TotalMinutes:0} minute(s) before the latest sample; " +
+                                           "the metrics cover the run-up to detection and the latest samples, not everything in between.");
         // Computed from the full sample set, before the payload budget may trim it, so the forecast
         // reflects everything KAIRON measured.
-        package.RiskForecast = RiskForecaster.Forecast(package.RecentMetrics, recurrence, _detection);
+        package.RiskForecast = RiskForecaster.Forecast(forecastSamples, recurrence, _detection);
 
         EnforcePayloadBudget(package);
 
@@ -458,6 +469,35 @@ public class EvidenceCollector : IEvidenceCollector
     /// <summary>A restart this recent counts as "the problem came back after a restart".</summary>
     internal static readonly TimeSpan RecurrenceAfterRestartWindow = TimeSpan.FromHours(1);
 
+    /// <summary>Upper bound on samples read for analysis (onsets, forecast) per slice - never sent to the
+    /// AI as such; the AI gets at most MaxMetricSamples of them.</summary>
+    internal const int MaxAnalysisSamples = 300;
+
+    private static MetricSampleDto ToSample(Metric m) => new()
+    {
+        Timestamp = m.Timestamp,
+        CpuPercent = m.CpuPercent,
+        MemoryPercent = m.MemoryPercent,
+        ResponseTimeMs = m.ResponseTimeMs,
+        RequestCount = m.RequestCount,
+        ErrorCount = m.ErrorCount,
+        RetryCount = m.RetryCount,
+        QueueDepth = m.QueueDepth
+    };
+
+    /// <summary>Evenly spaced samples (always keeping the first and last), so a bounded payload still
+    /// spans the whole slice instead of only its newest end.</summary>
+    internal static List<MetricSampleDto> Downsample(IReadOnlyList<MetricSampleDto> samples, int count)
+    {
+        if (count <= 0) return new();
+        if (samples.Count <= count) return samples.ToList();
+        if (count == 1) return [samples[^1]];
+        return Enumerable.Range(0, count)
+            .Select(i => samples[(int)Math.Round(i * (samples.Count - 1) / (double)(count - 1))])
+            .Distinct()
+            .ToList();
+    }
+
     /// <summary>First lines (where it was raised from) and last lines (the innermost frames and the
     /// exception line) of a stack trace - the parts that locate a failure - instead of all of it.</summary>
     internal static string? StackExcerpt(string? stackTrace)
@@ -468,15 +508,17 @@ public class EvidenceCollector : IEvidenceCollector
         return string.Join("\n", lines.Take(3).Append("  ...").Concat(lines.TakeLast(6)));
     }
 
-    /// <summary>Earlier remediation attempts for this service (24 h) with their measured outcomes - a
-    /// restart whose verification failed is evidence the next diagnosis must not ignore.</summary>
+    /// <summary>Remediation attempts for this service (24 h) with their measured outcomes - including
+    /// this incident's own: a restart whose verification failed is evidence the next diagnosis (or a
+    /// re-investigation of the same incident) must not ignore.</summary>
     private async Task<List<RemediationOutcomeDto>> RemediationHistoryAsync(SreIncident incident, Guid? machineId, CancellationToken cancellationToken)
     {
         var since = incident.Timestamp.AddHours(-24);
         var incidents = (await _db.SreIncidents.AsNoTracking()
                 .Include(i => i.Actions)
-                .Where(i => i.Id != incident.Id && i.ProjectId == incident.ProjectId && i.Environment == incident.Environment
-                            && i.Service == incident.Service && i.Timestamp >= since && i.Timestamp <= incident.Timestamp)
+                .Where(i => i.ProjectId == incident.ProjectId && i.Environment == incident.Environment
+                            && i.Service == incident.Service
+                            && (i.Id == incident.Id || (i.Timestamp >= since && i.Timestamp <= incident.Timestamp)))
                 .ToListAsync(cancellationToken))
             .Where(h => !machineId.HasValue || IncidentMachineScope.GetMachineId(h) == machineId)
             .ToList();
@@ -508,14 +550,14 @@ public class EvidenceCollector : IEvidenceCollector
                 RecoveryScore = verification?.RecoveryScore,
                 Error = Safe(x.Action.ExecutionError ?? verification?.FailureReason, 300),
                 MinutesBeforeThisIncident = Math.Round((incident.Timestamp - at).TotalMinutes, 1),
-                SameFault = kinds.Overlaps(currentKinds)
+                SameFault = x.Incident.Id == incident.Id || kinds.Overlaps(currentKinds)
             };
         }).ToList();
     }
 
     /// <summary>What this incident's evidence does not contain - stated, so a diagnosis can say what it
     /// could not check rather than filling the gap with a guess.</summary>
-    private static List<string> EvidenceGaps(EvidencePackageDto package)
+    private static List<string> EvidenceGaps(EvidencePackageDto package, bool machineScoped)
     {
         var gaps = new List<string>();
         if (package.RecentMetrics.Count < RiskForecaster.MinimumSamples)
@@ -529,7 +571,9 @@ public class EvidenceCollector : IEvidenceCollector
             gaps.Add("Server errors without an exception type or message.");
         if (package.Dependencies.Count == 0)
             gaps.Add("No per-dependency call data (database or downstream API latency and failures are not reported by this app).");
-        if (package.LogEvents.Count == 0)
+        if (machineScoped)
+            gaps.Add("KAIRON Agent log events are not used for this incident: they are not tied to a machine.");
+        else if (package.LogEvents.Count == 0)
             gaps.Add("No application log events from the KAIRON Agent.");
         gaps.Add("No database server metrics (CPU, connections, slow queries) - KAIRON does not collect them.");
         return gaps;

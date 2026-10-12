@@ -132,6 +132,7 @@ public class SignalOnsetViewDto
     public double Peak { get; set; }
     public double Threshold { get; set; }
     public string Unit { get; set; } = string.Empty;
+    public bool BreachedBeforeWindow { get; set; }
 }
 
 public class ConsideredActionViewDto

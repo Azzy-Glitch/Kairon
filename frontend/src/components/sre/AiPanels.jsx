@@ -106,12 +106,16 @@ export function AiInvestigationPanel({ diagnosis, assessment, failureReason, onR
         <div className="ai-field">
           <span className="ai-field-label">What moved first</span>
           <ol className="ai-list ai-onsets">
-            {assessment.signalOnsets.map((onset) => (
-              <li key={onset.metric}>
-                {onset.label} crossed {onset.threshold}{onset.unit} {Math.round(onset.secondsBeforeDetection)}s before detection
-                (peak {onset.peak}{onset.unit})
-              </li>
-            ))}
+            {[...assessment.signalOnsets]
+              .sort((a, b) => Number(a.breachedBeforeWindow) - Number(b.breachedBeforeWindow))
+              .map((onset) => (
+                <li key={onset.metric}>
+                  {onset.breachedBeforeWindow
+                    ? <>{onset.label} was already over {onset.threshold}{onset.unit} when the evidence window starts - when it began is unknown</>
+                    : <>{onset.label} crossed {onset.threshold}{onset.unit} {Math.round(onset.secondsBeforeDetection)}s before detection</>}
+                  {' '}(peak {onset.peak}{onset.unit})
+                </li>
+              ))}
           </ol>
           <span className="forecast-meta">An ordering of measurements - not proof that the first caused the rest.</span>
         </div>

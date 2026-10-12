@@ -158,10 +158,34 @@ public class CorrelationEngine : ICorrelationEngine
         if (incident is null) return null;
         var snapshots = SreJson.Deserialize(incident.CorrelatedMetricsJson, new List<CorrelatedSignalSnapshot>());
         if (snapshots.Count == 0) return incident;
-        if (signals.Any(s => FaultCategories.Of(snapshots).Contains(FaultCategories.Of(s.MetricName)))) return incident;
+
+        // The same fault - same kind of symptom on the same endpoint (when both are known) - resumes
+        // its incident however long it paused.
+        if (signals.Any(s => snapshots.Any(x => SameFault(x, s)))) return incident;
+
+        // A different fault is co-occurring evidence only while the incident's own fault is still
+        // happening. For kinds of fault the new signals cannot themselves explain, the latest samples
+        // answer that directly: still over threshold -> co-occurring; measured and back to normal ->
+        // stopped, so this is a new incident (no waiting for the incident's rules to age out of
+        // cooldown and the evaluation window). Only when the samples cannot tell - the same kind of
+        // fault on another endpoint, or a symptom metrics do not show (e.g. a log pattern) - does the
+        // time since the incident's fault was last detected decide.
+        var own = FaultCategories.Of(snapshots);
+        own.ExceptWith(signals.Select(s => FaultCategories.Of(s.MetricName)));
+        var latest = signals[0];
+        if (own.Count > 0)
+        {
+            if (own.Overlaps(latest.BreachingNow)) return incident;
+            if (own.All(latest.MeasuredNow.Contains)) return null;
+        }
         var lastSeen = snapshots.Max(s => s.LastSeenAt ?? s.DetectedAt);
         return signals.Min(s => s.DetectedAt) - lastSeen <= ActiveWindow ? incident : null;
     }
+
+    private static bool SameFault(CorrelatedSignalSnapshot existing, DetectionSignal signal) =>
+        FaultCategories.Of(existing.MetricName) == FaultCategories.Of(signal.MetricName)
+        && (string.IsNullOrWhiteSpace(existing.Endpoint) || string.IsNullOrWhiteSpace(signal.Endpoint)
+            || string.Equals(existing.Endpoint, signal.Endpoint, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>How long after its last detection a symptom still counts as ongoing: an ongoing breach
     /// re-fires at least once per cooldown and is evaluated over the detection window, so a symptom not
@@ -373,6 +397,7 @@ public class CorrelationEngine : ICorrelationEngine
     {
         Rule = s.RuleId,
         MachineId = s.MachineId,
+        Endpoint = string.IsNullOrWhiteSpace(s.Endpoint) ? null : s.Endpoint,
         LastSeenAt = s.DetectedAt,
         MetricName = s.MetricName,
         Symptom = s.Symptom,

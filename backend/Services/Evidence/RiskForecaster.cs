@@ -125,14 +125,17 @@ public static class RiskForecaster
         void Add(string metric, string label, string unit, double threshold, Func<MetricSampleDto, double?> value)
         {
             var points = ordered.Select(s => (s.Timestamp, Value: value(s))).Where(p => p.Value.HasValue).ToList();
-            var first = points.FirstOrDefault(p => p.Value >= threshold);
-            if (first.Value is null) return;
+            var index = points.FindIndex(p => p.Value >= threshold);
+            if (index < 0) return;
+            var first = points[index];
             onsets.Add(new SignalOnsetDto
             {
                 Metric = metric, Label = label, Unit = unit, Threshold = Math.Round(threshold, 1),
                 FirstBreachAt = first.Timestamp,
                 SecondsBeforeDetection = Math.Round((detectedAt - first.Timestamp).TotalSeconds, 0),
-                Peak = Math.Round(points.Max(p => p.Value!.Value), 1)
+                Peak = Math.Round(points.Max(p => p.Value!.Value), 1),
+                // Already over the threshold at its first reading: when it crossed is unknown.
+                BreachedBeforeWindow = index == 0
             });
         }
         Add("latency", "Latency", "ms", thresholds.LatencyMsThreshold, s => s.ResponseTimeMs);

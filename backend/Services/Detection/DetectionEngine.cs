@@ -219,6 +219,34 @@ public class DetectionEngine : IDetectionEngine
         return Evaluate(context);
     }
 
+    /// <summary>
+    /// Which kinds of fault the scope's latest samples measure, and which of those are over threshold
+    /// right now - judged on the last two readings of each metric, so a single momentary dip does not
+    /// count as "stopped". Kinds with no recent reading are left unmeasured (correlation then falls back
+    /// to timing).
+    /// </summary>
+    internal static (HashSet<string> Measured, HashSet<string> Breaching) CurrentState(DetectionContext context)
+    {
+        var measured = new HashSet<string>(StringComparer.Ordinal);
+        var breaching = new HashSet<string>(StringComparer.Ordinal);
+        var recent = context.Metrics.Where(m => m.Timestamp >= context.WindowStart && m.Timestamp <= context.Now)
+            .OrderBy(m => m.Timestamp).ToList();
+        void Check(string kind, double threshold, Func<Metric, double?> value)
+        {
+            var last = recent.Select(value).Where(v => v.HasValue).TakeLast(2).ToList();
+            if (last.Count == 0) return;
+            measured.Add(kind);
+            if (last.Any(v => v >= threshold)) breaching.Add(kind);
+        }
+        var o = context.Options;
+        Check("cpu", o.CpuPercentThreshold, m => m.CpuPercent);
+        Check("memory", o.MemoryPercentThreshold, m => m.MemoryPercent);
+        Check("latency", o.LatencyMsThreshold, m => m.ResponseTimeMs);
+        Check("queue", o.QueueDepthThreshold, m => m.QueueDepth);
+        Check("errors", o.ErrorRateThreshold, m => m.RequestCount > 0 ? (double)m.ErrorCount / m.RequestCount : null);
+        return (measured, breaching);
+    }
+
     public IReadOnlyList<DetectionSignal> Evaluate(DetectionContext context)
     {
         if (!context.Options.Enabled)
@@ -226,6 +254,7 @@ public class DetectionEngine : IDetectionEngine
 
         var signals = new List<DetectionSignal>();
         var cooldown = TimeSpan.FromSeconds(context.Options.CooldownSeconds);
+        var (measuredNow, breachingNow) = CurrentState(context);
 
         foreach (var rule in _rules)
         {
@@ -246,6 +275,8 @@ public class DetectionEngine : IDetectionEngine
                 continue;
 
             signal.MachineId = context.MachineId;
+            signal.MeasuredNow = measuredNow;
+            signal.BreachingNow = breachingNow;
             if (!_cooldown.TryEnter(signal.DedupKey, context.Now, cooldown))
             {
                 _logger.LogDebug("Signal {RuleId} for {Service} suppressed by cooldown", signal.RuleId, signal.Service);

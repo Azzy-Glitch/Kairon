@@ -79,6 +79,9 @@ public class SignalOnsetDto
     [JsonPropertyName("peak")] public double Peak { get; set; }
     [JsonPropertyName("threshold")] public double Threshold { get; set; }
     [JsonPropertyName("unit")] public string Unit { get; set; } = string.Empty;
+    /// <summary>The metric was already over its threshold at the first sample of the window, so when it
+    /// actually crossed is unknown - it cannot be said to have moved first.</summary>
+    [JsonPropertyName("breached_before_window")] public bool BreachedBeforeWindow { get; set; }
 }
 
 public class DependencySummaryDto

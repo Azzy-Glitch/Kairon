@@ -73,10 +73,13 @@ public static class DeterministicInvestigation
         var trends = evidence.RiskForecast?.Trends ?? new();
         bool Rising(string metric) => trends.Any(t => t.Metric == metric && t.Direction == "rising");
         var memoryGrowing = Rising("memory") || hasMemory;
-        var onsets = evidence.SignalOnsets;
-        var first = onsets.FirstOrDefault();
-        var latencyLedErrors = onsets.FindIndex(o => o.Metric == "latency") is var li && li >= 0
-                               && onsets.FindIndex(o => o.Metric == "errorRate") is var ei && ei > li;
+        // Only onsets that happened inside the evidence window have a known time; a metric already over
+        // its threshold at the window's first sample cannot be said to have moved first.
+        var known = evidence.SignalOnsets.Where(o => !o.BreachedBeforeWindow).OrderBy(o => o.FirstBreachAt).ToList();
+        var censored = evidence.SignalOnsets.Where(o => o.BreachedBeforeWindow).ToList();
+        var first = known.Count > 1 ? known[0] : null;
+        var latencyLedErrors = known.FindIndex(o => o.Metric == "latency") is var li && li >= 0
+                               && known.FindIndex(o => o.Metric == "errorRate") is var ei && ei > li;
 
         var top = evidence.EndpointBreakdown.Where(e => e.ServerErrors > 0).OrderByDescending(e => e.ServerErrors).FirstOrDefault();
         var topErrorType = top?.TopErrorType ?? evidence.RelatedErrors.Select(e => e.ErrorType).FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
@@ -86,26 +89,72 @@ public static class DeterministicInvestigation
         var failedRestart = evidence.RemediationHistory.FirstOrDefault(r => r.SameFault && r.Action.StartsWith("Restart", StringComparison.Ordinal)
                                                                            && (r.Status == "Failed" || r.Verification is "Failed"));
         var errorRateText = signals.FirstOrDefault(s => s.Metric == "errorRate") is { } er ? $"error rate {er.Observed}{er.Unit}" : "server errors";
-        var onsetText = onsets.Count > 1
-            ? " " + string.Join(", then ", onsets.Take(3).Select(o => $"{o.Label.ToLowerInvariant()} ({o.SecondsBeforeDetection:0}s before detection)")) + " crossed their thresholds in that order."
-            : string.Empty;
+        var onsetText = (known.Count > 1
+                ? " " + string.Join(", then ", known.Take(3).Select(o => $"{o.Label.ToLowerInvariant()} ({o.SecondsBeforeDetection:0}s before detection)")) + " crossed their thresholds in that order."
+                : string.Empty)
+            + (censored.Count > 0 && known.Count > 0
+                ? $" {string.Join(" and ", censored.Select(o => o.Label))} {(censored.Count == 1 ? "was" : "were")} already over threshold when the evidence window starts, so when {(censored.Count == 1 ? "it" : "they")} began is unknown."
+                : string.Empty);
 
-        // Strongest evidence first: a measured failing dependency; then retries + errors + dependency
-        // error text (a failing downstream call the app is amplifying by retrying); then saturation
-        // inside the process; only then dependency inferred from error text alone.
+        // Each explanation is scored by the strength of what supports it, not by a fixed ranking:
+        // measured evidence (a failing dependency the app reported, CPU or memory over threshold)
+        // outweighs inference (a dependency named only in error text, retries pointing at an
+        // unidentified call). Moving first adds a little, and only when that ordering is known. A
+        // close runner-up is a genuine conflict: the diagnosis is qualified and names it.
+        var dependencyText = databaseText || externalText;
+        var scores = new Dictionary<string, double>(StringComparer.Ordinal);
+        void Score(string hypothesis, double value)
+        {
+            if (value > 0 && (!scores.TryGetValue(hypothesis, out var existing) || value > existing)) scores[hypothesis] = value;
+        }
+        if (databaseDependency is not null) Score("database", 3);
+        if (externalDependency is not null) Score("external", 3);
+        if (hasRetries && dependencyText) Score(databaseText ? "database" : "external", 2);
+        if (hasErrors && databaseText) Score("database", 1.5);
+        if (hasErrors && externalText) Score("external", 1.5);
+        if (hasMemory) Score("memory", Rising("memory") ? 3 : 2.5);
+        if (hasCpu) Score("cpu", 3);
+        if (hasQueue) Score("queue", 1.5);
+        if (hasRetries && !dependencyText) Score("queue", 1);
+        if (hasLatency && !hasErrors && !hasCpu) Score("latency", 1);
+        if (hasErrors || hasLogPattern)
+            Score("errors", 1 + (topErrorType is not null || stack is not null ? 0.5 : 0) + (inProcessText ? 1 : 0)
+                            - (dependencyText && !inProcessText ? 0.5 : 0));
+        var movedFirst = first?.Metric switch
+        {
+            "cpu" => "cpu",
+            "memory" => "memory",
+            "queue" => "queue",
+            "errorRate" => "errors",
+            "retries" => scores.ContainsKey("external") ? "external" : scores.ContainsKey("database") ? "database" : "queue",
+            "latency" => scores.ContainsKey("database") ? "database" : scores.ContainsKey("external") ? "external" : "latency",
+            _ => null
+        };
+        if (movedFirst is not null && scores.ContainsKey(movedFirst)) scores[movedFirst] += 0.5;
+        string[] tieOrder = ["database", "external", "cpu", "memory", "queue", "errors", "latency"];
+        var ranked = scores.OrderByDescending(kv => kv.Value).ThenBy(kv => Array.IndexOf(tieOrder, kv.Key)).ToList();
+
         var kind = signals.Count == 0 ? "none"
             : hasCrash ? "crash"
             : recurred || failedRestart is not null ? "recurred"
-            : databaseDependency is not null ? "database"
-            : externalDependency is not null ? "external"
-            : hasRetries && (databaseText || externalText) ? (databaseText ? "database" : "external")
-            : hasMemory ? "memory"
-            : hasCpu ? "cpu"
-            : hasErrors && databaseText ? "database"
-            : hasErrors && externalText ? "external"
-            : hasQueue || hasRetries ? "queue"
-            : hasLatency && !hasErrors ? "latency"
+            : ranked.Count > 0 ? ranked[0].Key
             : "errors";
+        var competitor = kind is not ("none" or "crash" or "recurred") && ranked.Count > 1 && ranked[1].Value >= ranked[0].Value - 1
+            ? ranked[1].Key
+            : null;
+
+        string ResourceContext()
+        {
+            var normal = new List<string>();
+            if (!hasCpu && evidence.RecentMetrics.Any(m => m.CpuPercent.HasValue)) normal.Add("CPU");
+            if (!hasMemory && evidence.RecentMetrics.Any(m => m.MemoryPercent.HasValue)) normal.Add("memory");
+            var parts = new List<string>();
+            if (normal.Count > 0) parts.Add($"{string.Join(" and ", normal)} {(normal.Count == 1 ? "is" : "are")} within normal range");
+            parts.Add(evidence.Dependencies.Count == 0
+                ? "dependency calls are not measured for this app"
+                : "no dependency failures were measured");
+            return "; " + string.Join("; ", parts);
+        }
 
         var f = new Finding();
         if (kind == "none")
@@ -141,7 +190,8 @@ public static class DeterministicInvestigation
                 ? $"Calls to the database ({databaseDependency.Target}) are failing or slow ({databaseDependency.Failures} of {databaseDependency.Calls} failed, avg {databaseDependency.AvgDurationMs:0} ms)"
                 : "The errors are database errors" + (topErrorType is not null ? $" ({topErrorType})" : "")) +
                 (latencyLedErrors ? ", and latency rose before the errors did." : ".") + onsetText;
-            (f.Certainty, f.Confidence) = ("likely", 0.72);
+            (f.Certainty, f.Confidence) = databaseDependency is not null ? ("likely", 0.72) : ("possible", 0.55);
+            if (databaseDependency is null) f.RootCause = f.RootCause.TrimEnd('.') + " - inferred from the error text; database calls are not measured for this app.";
             f.RestartReason = "The evidence points at the database; restarting the app does not make the database faster or available, and reconnecting many clients at once can add load.";
             f.NextSteps.Add("Check the database: query latency and slow-query log, connection-pool usage and waits, locks, and server CPU, memory and disk I/O.");
             f.NextSteps.Add("Only add database capacity if those measurements show it running near its limits.");
@@ -153,9 +203,11 @@ public static class DeterministicInvestigation
             var target = externalDependency?.Target;
             f.RootCause = (target is not null
                 ? $"Calls to the downstream service {target} are failing or slow ({externalDependency!.Failures} of {externalDependency.Calls} failed, avg {externalDependency.AvgDurationMs:0} ms)"
-                : "Requests are failing while calling a downstream service" + (topMessage is not null ? $" (\"{topMessage}\")" : "")) +
-                (hasRetries ? ", and the app is retrying those calls - rising retries multiply the load on it." : ".") + onsetText;
-            (f.Certainty, f.Confidence) = (target is not null || externalText ? "likely" : "possible", target is not null ? 0.75 : 0.62);
+                : "The errors suggest a downstream call is failing" + (topMessage is not null ? $" (\"{topMessage}\")" : "") +
+                  " - the dependency itself is not measured, so this is inferred from the error text") +
+                (hasRetries ? ", and the app is retrying calls - rising retries multiply the load on whatever is failing." : ".") + onsetText;
+            (f.Certainty, f.Confidence) = target is not null ? ("likely", 0.75) : ("possible", 0.55);
+            if (target is null) f.NextSteps.Add("Find which call is failing and being retried - the evidence does not identify the dependency.");
             f.RestartReason = "The failure is in a service the app calls; restarting the app does not bring it back.";
             f.NextSteps.Add("Check the downstream service's availability and the status codes it returns (429 means rate limiting, 503/504 overload or timeouts).");
             f.NextSteps.Add("Review the app's timeout and retry settings: bounded retries with backoff, and a circuit breaker so it fails fast while the dependency is down.");
@@ -209,19 +261,36 @@ public static class DeterministicInvestigation
                 : !hasErrors && hasLogPattern
                 ? "Application logs show a repeated error pattern, most likely an unhandled exception; the evidence does not show its cause."
                 : $"The app started returning {errorRateText}{where}" + (topErrorType is not null ? $", mostly {topErrorType}" : "") +
-                  ", while CPU, memory and its dependencies look normal." + onsetText;
+                  ResourceContext() + "." + onsetText;
             (f.Certainty, f.Confidence) = (topErrorType is not null || topMessage is not null || hasLogPattern ? "possible" : "unknown",
                 inProcessText ? 0.62 : hasLogPattern && !hasErrors ? 0.68 : 0.5);
             f.RestartFits = inProcessText;
             f.RestartReason = inProcessText
                 ? "These errors come from the process's own state (resources exhausted inside it); a restart clears that state as a temporary mitigation."
-                : "With normal resources and no failing dependency, the errors point at a code path, input or configuration problem; a restart would only help if the process state were corrupted, which the evidence does not show.";
+                : "With no measured resource pressure or dependency failure, the errors point at a code path, input or configuration problem; a restart would only help if the process state were corrupted, which the evidence does not show.";
             f.NextSteps.Add(topErrorType is not null
                 ? $"Look at the code path that raises {topErrorType}{where}" + (stack is not null ? " (stack trace attached in the evidence)." : ".")
                 : $"Find which requests fail{where} and why - the errors carry no exception detail.");
             f.NextSteps.Add("Check for a recent deployment or configuration change around the time the errors started.");
             f.Alternatives.Add("A dependency the app does not report as one (e.g. called without the SDK seeing it) could be the real source.");
             f.Verification.Add($"The {errorRateText} returns under threshold{where}.");
+        }
+
+        if (competitor is not null)
+        {
+            if (f.Certainty is "confirmed" or "likely") f.Certainty = "possible";
+            f.Confidence = Math.Min(f.Confidence, 0.6);
+            f.Alternatives.Insert(0, competitor switch
+            {
+                "database" => "The evidence also fits a database problem (database errors or slow database calls).",
+                "external" => "The evidence also fits a failing downstream call (retries or timeout/connection errors)" +
+                              (externalDependency is null ? " - the dependency itself is not measured." : "."),
+                "cpu" => "The evidence also fits CPU saturation inside the app's own process.",
+                "memory" => "The evidence also fits memory pressure inside the app's own process.",
+                "queue" => "The evidence also fits a backlog of work the app is not keeping up with.",
+                "latency" => "The evidence also fits a slow dependency or lock contention.",
+                _ => "The evidence also fits a code-path, input or configuration problem in the app itself."
+            });
         }
 
         var offered = evidence.AvailableActions.Select(a => a.Action).ToList();
@@ -281,7 +350,7 @@ public static class DeterministicInvestigation
             RootCauseCertainty = f.Certainty,
             ContributingFactors = signals.Select(s => s.Symptom).Take(5).ToList(),
             Evidence = signals.Select(s => $"{s.Metric} {s.Observed}{s.Unit} vs threshold {s.Threshold}{s.Unit}")
-                .Concat(first is not null && onsets.Count > 1 ? new[] { $"{first.Label} crossed its threshold first, {first.SecondsBeforeDetection:0}s before detection" } : [])
+                .Concat(first is not null ? new[] { $"{first.Label} crossed its threshold first, {first.SecondsBeforeDetection:0}s before detection" } : [])
                 .Take(8).ToList(),
             Confidence = f.Confidence,
             Severity = evidence.Incident.Severity.ToLowerInvariant(),

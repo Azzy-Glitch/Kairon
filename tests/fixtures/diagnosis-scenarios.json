@@ -1,0 +1,129 @@
+{
+  "_comment": "Shared contract for the deterministic (offline/test-mode) diagnosis. The backend's DeterministicInvestigation (tests/Kairon.Backend.Tests/DiagnosisContractTests.cs) and the AI service's mock provider (ai-service/tests/test_diagnosis_contract.py) must both satisfy every scenario, so the two implementations cannot drift apart. Evidence uses the backend<->AI wire format (snake_case).",
+  "scenarios": [
+    {
+      "name": "server errors with an exception and no measured dependencies are investigated, not restarted",
+      "evidence": {
+        "incident": { "service": "Checkout", "severity": "High" },
+        "recent_metrics": [ { "timestamp": "2026-10-12T10:00:00Z", "cpu_percent": 20, "memory_percent": 40, "request_count": 10, "error_count": 5 } ],
+        "correlated_signals": [ { "metric": "errorRate", "observed": 40, "threshold": 10, "unit": "%" } ],
+        "related_errors": [ { "status_code": 500, "error_type": "KeyError", "error_message": "'sku'", "endpoint": "/checkout" } ],
+        "available_actions": [ { "action": "RestartApplication" } ]
+      },
+      "expect": { "certainty": "possible", "recommends": [], "root_contains": [ "KeyError", "dependency calls are not measured" ], "root_excludes": [ "look normal" ], "restart_verdict": "not_recommended" }
+    },
+    {
+      "name": "errors from the process's own state get a restart as a temporary mitigation",
+      "evidence": {
+        "incident": { "service": "Checkout", "severity": "High" },
+        "correlated_signals": [ { "metric": "errorRate", "observed": 40, "threshold": 10, "unit": "%" } ],
+        "related_errors": [ { "status_code": 500, "error_type": "OSError", "error_message": "[Errno 24] Too many open files" } ],
+        "available_actions": [ { "action": "RestartApplication" } ]
+      },
+      "expect": { "recommends": [ "RestartApplication" ], "restart_verdict": "recommended" }
+    },
+    {
+      "name": "a measured slow database that moved before the errors is the likely cause",
+      "evidence": {
+        "incident": { "service": "Checkout", "severity": "High" },
+        "correlated_signals": [ { "metric": "errorRate", "observed": 30, "threshold": 10, "unit": "%" }, { "metric": "latency", "observed": 2400, "threshold": 1000, "unit": "ms" } ],
+        "dependencies": [ { "target": "orders-db:5432", "calls": 200, "failures": 12, "avg_duration_ms": 2400 } ],
+        "signal_onsets": [
+          { "metric": "latency", "label": "Latency", "first_breach_at": "2026-10-12T10:00:00Z", "seconds_before_detection": 90 },
+          { "metric": "errorRate", "label": "Error rate", "first_breach_at": "2026-10-12T10:01:10Z", "seconds_before_detection": 20 }
+        ],
+        "available_actions": [ { "action": "RestartApplication" } ]
+      },
+      "expect": { "certainty": "likely", "recommends": [], "root_contains": [ "orders-db:5432", "latency rose before the errors" ], "restart_verdict": "not_recommended" }
+    },
+    {
+      "name": "a measured failing upstream with retries names the upstream",
+      "evidence": {
+        "incident": { "service": "Checkout", "severity": "High" },
+        "correlated_signals": [ { "metric": "errorRate", "observed": 30, "threshold": 10, "unit": "%" }, { "metric": "retries", "observed": 90, "threshold": 30, "unit": "/min" } ],
+        "dependencies": [ { "target": "payments.example:443/charge", "calls": 90, "failures": 63, "avg_duration_ms": 120 } ],
+        "available_actions": [ { "action": "RestartApplication" } ]
+      },
+      "expect": { "certainty": "likely", "recommends": [], "root_contains": [ "payments.example:443/charge", "retries" ] }
+    },
+    {
+      "name": "CPU saturation inside the process gets a restart as a temporary mitigation",
+      "evidence": {
+        "incident": { "service": "Checkout", "severity": "High" },
+        "correlated_signals": [ { "metric": "cpu", "observed": 96, "threshold": 80, "unit": "%" }, { "metric": "latency", "observed": 1500, "threshold": 1000, "unit": "ms" } ],
+        "available_actions": [ { "action": "RestartApplication" } ]
+      },
+      "expect": { "certainty": "likely", "recommends": [ "RestartApplication" ], "root_contains": [ "CPU" ] }
+    },
+    {
+      "name": "measured CPU against retries plus timeout text is a qualified diagnosis naming the alternative",
+      "evidence": {
+        "incident": { "service": "Checkout", "severity": "High" },
+        "correlated_signals": [ { "metric": "cpu", "observed": 98, "threshold": 80, "unit": "%" }, { "metric": "retries", "observed": 45, "threshold": 30, "unit": "/min" } ],
+        "related_errors": [ { "status_code": 500, "error_type": "ReadTimeout", "error_message": "upstream timed out" } ],
+        "available_actions": [ { "action": "RestartApplication" } ]
+      },
+      "expect": { "certainty": "possible", "root_contains": [ "CPU" ], "alternatives_contain": [ "downstream" ] }
+    },
+    {
+      "name": "dependency error text alone is an inference, not proof",
+      "evidence": {
+        "incident": { "service": "Checkout", "severity": "High" },
+        "correlated_signals": [ { "metric": "errorRate", "observed": 40, "threshold": 10, "unit": "%" } ],
+        "related_errors": [ { "status_code": 500, "error_type": "ConnectTimeout", "error_message": "connect timed out" } ],
+        "available_actions": [ { "action": "RestartApplication" } ]
+      },
+      "expect": { "certainty": "possible", "recommends": [], "root_contains": [ "not measured" ], "next_steps_contain": [ "which call" ] }
+    },
+    {
+      "name": "a restart that failed verification for the same fault is not recommended again",
+      "evidence": {
+        "incident": { "service": "Checkout", "severity": "High" },
+        "correlated_signals": [ { "metric": "cpu", "observed": 96, "threshold": 80, "unit": "%" } ],
+        "remediation_history": [ { "incident_key": "INC-0003", "action": "RestartApplication", "status": "Executed", "verification": "Failed", "same_fault": true } ],
+        "available_actions": [ { "action": "RestartApplication" } ]
+      },
+      "expect": { "recommends": [], "root_contains": [ "INC-0003", "did not resolve" ], "restart_verdict": "not_recommended" }
+    },
+    {
+      "name": "a metric already over threshold at the window start is not claimed to have moved first",
+      "evidence": {
+        "incident": { "service": "Checkout", "severity": "High" },
+        "correlated_signals": [ { "metric": "cpu", "observed": 95, "threshold": 80, "unit": "%" }, { "metric": "errorRate", "observed": 25, "threshold": 10, "unit": "%" } ],
+        "signal_onsets": [
+          { "metric": "cpu", "label": "CPU", "first_breach_at": "2026-10-12T10:00:00Z", "seconds_before_detection": 180, "breached_before_window": true },
+          { "metric": "errorRate", "label": "Error rate", "first_breach_at": "2026-10-12T10:02:00Z", "seconds_before_detection": 60 }
+        ],
+        "available_actions": [ { "action": "RestartApplication" } ]
+      },
+      "expect": { "root_excludes": [ "crossed their thresholds in that order" ], "evidence_excludes": [ "crossed its threshold first" ] }
+    },
+    {
+      "name": "steadily growing memory buys time with a restart and points at a leak",
+      "evidence": {
+        "incident": { "service": "Checkout", "severity": "High" },
+        "correlated_signals": [ { "metric": "memory", "observed": 88, "threshold": 85, "unit": "%" } ],
+        "risk_forecast": { "outcome": "elevated", "risk_level": "high", "trends": [ { "metric": "memory", "direction": "rising", "earlier": 60, "recent": 88, "threshold": 85 } ] },
+        "available_actions": [ { "action": "RestartApplication" } ]
+      },
+      "expect": { "recommends": [ "RestartApplication" ], "root_contains": [ "growing steadily" ], "next_steps_contain": [ "leak" ] }
+    },
+    {
+      "name": "a growing queue with retries points at worker capacity and retry amplification",
+      "evidence": {
+        "incident": { "service": "Worker", "severity": "High" },
+        "correlated_signals": [ { "metric": "queue", "observed": 80, "threshold": 50, "unit": "" }, { "metric": "retries", "observed": 60, "threshold": 30, "unit": "/min" } ],
+        "available_actions": [ { "action": "RestartApplication" } ]
+      },
+      "expect": { "recommends": [], "next_steps_contain": [ "worker capacity", "retry amplification" ] }
+    },
+    {
+      "name": "no signals is an explicitly unknown cause with nothing recommended",
+      "evidence": {
+        "incident": { "service": "Checkout", "severity": "Low" },
+        "available_actions": [ { "action": "RestartApplication" } ]
+      },
+      "expect": { "certainty": "unknown", "recommends": [] }
+    }
+  ]
+}

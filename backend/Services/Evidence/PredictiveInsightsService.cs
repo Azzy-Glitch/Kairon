@@ -65,6 +65,8 @@ public sealed class PredictiveInsightsService(AppDbContext db, IOptions<Detectio
     internal const double MinimumSpanMinutes = 10;
     internal const double MinimumFit = 0.6;
     internal const int MaxHorizonMinutes = 6 * 60;
+    /// <summary>A scope whose newest sample is older than this is not projected: the trend may have ended.</summary>
+    internal const double StaleAfterMinutes = 5;
     private const int MaxScopes = 25;
     private const int MaxSamplesPerScope = 720;
 
@@ -98,7 +100,16 @@ public sealed class PredictiveInsightsService(AppDbContext db, IOptions<Detectio
             samples.Reverse();
 
             var span = samples.Count > 1 ? (samples[^1].At - samples[0].At).TotalMinutes : 0;
-            if (samples.Count < MinimumSamples || span < MinimumSpanMinutes)
+            var age = samples.Count > 0 ? (now - samples[^1].At).TotalMinutes : double.MaxValue;
+            if (samples.Count > 0 && age > StaleAfterMinutes)
+            {
+                result.InsufficientData.Add(new InsufficientDataDto
+                {
+                    ProjectId = scope.ProjectId, Environment = scope.Environment, Service = scope.Service,
+                    Reason = $"The data is stale: the newest sample is {age:0} minutes old, so a trend that may already have ended is not projected."
+                });
+            }
+            else if (samples.Count < MinimumSamples || span < MinimumSpanMinutes)
             {
                 result.InsufficientData.Add(new InsufficientDataDto
                 {
@@ -133,6 +144,15 @@ public sealed class PredictiveInsightsService(AppDbContext db, IOptions<Detectio
             Samples = fit.Count, WindowMinutes = WindowMinutes
         };
 
+        // Retries are counted per sample; the threshold is per minute, so convert using each sample's
+        // real interval (collection can be irregular).
+        var retriesPerMinute = new List<(DateTime At, double Value)>();
+        for (var i = 1; i < samples.Count; i++)
+        {
+            var minutes = (samples[i].At - samples[i - 1].At).TotalMinutes;
+            if (samples[i].Retries is { } r && minutes > 0) retriesPerMinute.Add((samples[i].At, r / minutes));
+        }
+
         // Resources climbing toward exhaustion.
         foreach (var (metric, label, threshold, pick, consequence, preventive) in new (string, string, double, Func<Sample, double?>, string, string)[]
                  {
@@ -144,16 +164,17 @@ public sealed class PredictiveInsightsService(AppDbContext db, IOptions<Detectio
                          "Check for a leak or an unbounded cache in the workload that grows; a restart only resets the clock.")
                  })
         {
-            if (Trend(samples, pick) is not { } fit || !Consistent(fit) || fit.SlopePerMinute <= 0) continue;
-            if (fit.End >= threshold) continue; // already breaching: a current problem, not a forecast
+            if (Steady(Points(samples, pick)) is not { } fit) continue;
+            if (fit.End >= threshold || RecentlyAtOrOver(samples, pick, threshold)) continue; // a current problem, not a forecast
             var minutes = (threshold - fit.End) / fit.SlopePerMinute;
             if (minutes > MaxHorizonMinutes) continue;
             yield return Risk("capacity", metric, label, fit, "%", consequence, preventive, (int)Math.Ceiling(minutes));
         }
 
         // Latency climbing while errors are still under threshold - slowdowns often turn into timeouts.
-        if (Trend(samples, s => s.Latency) is { } latency && Consistent(latency, 0.5) && latency.SlopePerMinute > 0
-            && latency.End < _thresholds.LatencyMsThreshold && latency.End >= _thresholds.LatencyMsThreshold * 0.5 && latency.End >= latency.Start * 1.5)
+        if (Steady(Points(samples, s => s.Latency), 0.5) is { } latency
+            && latency.End < _thresholds.LatencyMsThreshold && !RecentlyAtOrOver(samples, s => s.Latency, _thresholds.LatencyMsThreshold)
+            && latency.End >= _thresholds.LatencyMsThreshold * 0.5 && latency.End >= latency.Start * 1.5)
         {
             var requests = samples.Sum(s => s.Requests);
             var errorRate = requests > 0 ? (double)samples.Sum(s => s.Errors) / requests : 0;
@@ -168,16 +189,16 @@ public sealed class PredictiveInsightsService(AppDbContext db, IOptions<Detectio
         }
 
         // Backlog and retries building up.
-        foreach (var (metric, label, threshold, pick, preventive) in new (string, string, double, Func<Sample, double?>, string)[]
+        foreach (var (metric, label, threshold, points, unit, preventive) in new (string, string, double, List<(DateTime At, double Value)>, string, string)[]
                  {
-                     ("queue", "Queue depth rising", _thresholds.QueueDepthThreshold, s => s.Queue,
+                     ("queue", "Queue depth rising", _thresholds.QueueDepthThreshold, Points(samples, s => s.Queue), "",
                          "Check worker capacity and per-item processing time, and whether a downstream step became slower."),
-                     ("retries", "Retries rising", _thresholds.RetryStormPerMinute, s => s.Retries,
+                     ("retries", "Retries rising", _thresholds.RetryStormPerMinute, retriesPerMinute, "/min",
                          "Find which call is being retried and why; make retries bounded with backoff so they cannot amplify a failure.")
                  })
         {
-            if (Trend(samples, pick) is not { } fit || !Consistent(fit, 0.5) || fit.SlopePerMinute <= 0 || fit.End < Math.Max(1, threshold * 0.3)) continue;
-            yield return Risk("backlog", metric, label, fit, metric == "retries" ? "/sample" : "",
+            if (Steady(points, 0.5) is not { } fit || fit.End < Math.Max(1, threshold * 0.3)) continue;
+            yield return Risk("backlog", metric, label, fit, unit,
                 "If the trend continues the service degrades: work waits longer and a retry storm can overload what it depends on.",
                 preventive, null);
         }
@@ -231,14 +252,33 @@ public sealed class PredictiveInsightsService(AppDbContext db, IOptions<Detectio
 
     internal sealed record Fit(int Count, double SpanMinutes, double SlopePerMinute, double R2, double Start, double End);
 
-    private static bool Consistent(Fit fit, double minimumFit = MinimumFit) =>
-        fit.Count >= MinimumSamples && fit.SpanMinutes >= MinimumSpanMinutes && fit.R2 >= minimumFit;
+    private static List<(DateTime At, double Value)> Points(IEnumerable<Sample> samples, Func<Sample, double?> pick) =>
+        samples.Where(s => pick(s).HasValue).Select(s => (s.At, pick(s)!.Value)).ToList();
+
+    private static bool RecentlyAtOrOver(IReadOnlyList<Sample> samples, Func<Sample, double?> pick, double threshold) =>
+        samples.Select(pick).Where(v => v.HasValue).TakeLast(3).Any(v => v >= threshold);
+
+    /// <summary>
+    /// A rising trend that is safe to extrapolate: enough samples over enough time, a good overall fit,
+    /// AND rising at a comparable rate in both halves of the window. A good fit alone is not enough - a
+    /// step change in workload (flat, then flat at a higher level) fits a line well but is not climbing.
+    /// </summary>
+    internal static Fit? Steady(List<(DateTime At, double Value)> points, double minimumFit = MinimumFit)
+    {
+        if (Trend(points) is not { } fit || fit.Count < MinimumSamples || fit.SpanMinutes < MinimumSpanMinutes
+            || fit.R2 < minimumFit || fit.SlopePerMinute <= 0) return null;
+        var middle = points[0].At.AddMinutes(fit.SpanMinutes / 2);
+        if (Trend(points.Where(p => p.At <= middle).ToList()) is not { } early
+            || Trend(points.Where(p => p.At > middle).ToList()) is not { } late) return null;
+        if (early.SlopePerMinute <= 0 || late.SlopePerMinute <= 0) return null;
+        var ratio = late.SlopePerMinute / early.SlopePerMinute;
+        return ratio is >= 1.0 / 3 and <= 3 ? fit : null;
+    }
 
     /// <summary>Least-squares line through (minutes, value); Start/End are the fitted values at the
     /// window's ends, so one noisy sample cannot make the trend look steeper than it is.</summary>
-    internal static Fit? Trend(IReadOnlyList<Sample> samples, Func<Sample, double?> pick)
+    internal static Fit? Trend(List<(DateTime At, double Value)> points)
     {
-        var points = samples.Where(s => pick(s).HasValue).Select(s => (s.At, Value: pick(s)!.Value)).ToList();
         if (points.Count < 3) return null;
         var t0 = points[0].At;
         var xs = points.Select(p => (p.At - t0).TotalMinutes).ToArray();

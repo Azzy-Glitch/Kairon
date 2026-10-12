@@ -212,7 +212,7 @@ public class IncidentQueryService : IIncidentQueryService
                 SignalOnsets = assessment.SignalOnsets.Select(o => new SignalOnsetViewDto
                 {
                     Metric = o.Metric, Label = o.Label, FirstBreachAt = o.FirstBreachAt, SecondsBeforeDetection = o.SecondsBeforeDetection,
-                    Peak = o.Peak, Threshold = o.Threshold, Unit = o.Unit
+                    Peak = o.Peak, Threshold = o.Threshold, Unit = o.Unit, BreachedBeforeWindow = o.BreachedBeforeWindow
                 }).ToList(),
                 OfferedActions = assessment.OfferedActions,
                 ConsideredActions = assessment.ConsideredActions

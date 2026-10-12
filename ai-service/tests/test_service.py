@@ -38,10 +38,12 @@ class TestMockMode:
     async def test_investigation_maps_evidence_to_diagnosis(self, mock_config, retry_storm_evidence):
         result = await AiService(mock_config).investigate(retry_storm_evidence)
 
-        # Retries plus downstream-timeout errors: a failing dependency the retry loop amplifies.
-        assert "retries" in result.root_cause.lower()
-        assert "downstream" in result.root_cause.lower()
-        assert result.confidence >= 0.6
+        # Measured CPU saturation together with retries and downstream-timeout errors: the measured
+        # signal leads, and because the retry/dependency explanation is nearly as strong, the
+        # diagnosis is qualified and names it as an alternative rather than picking one blindly.
+        assert "cpu" in result.root_cause.lower()
+        assert result.root_cause_certainty == "possible"
+        assert any("downstream" in a.lower() for a in result.alternative_explanations)
         assert result.severity == "high"
 
     async def test_mock_is_deterministic(self, mock_config, retry_storm_evidence):

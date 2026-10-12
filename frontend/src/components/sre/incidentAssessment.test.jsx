@@ -199,3 +199,21 @@ describe('Evidence-grounded diagnosis', () => {
     expect(screen.getByText('CPU back under 80%.')).toBeInTheDocument();
   });
 });
+
+describe('Onsets that began before the evidence window', () => {
+  it('does not list a metric already over threshold at the window start as having crossed at a known time', () => {
+    render(
+      <AiInvestigationPanel
+        diagnosis={{ rootCause: 'CPU saturation', confidence: 0.6 }}
+        assessment={{ rootCauseCertainty: 'possible', nextSteps: [], consideredActions: [], offeredActions: [], signalOnsets: [
+          { metric: 'cpu', label: 'CPU', threshold: 80, unit: '%', secondsBeforeDetection: 180, peak: 95, breachedBeforeWindow: true },
+          { metric: 'errorRate', label: 'Error rate', threshold: 10, unit: '%', secondsBeforeDetection: 60, peak: 25 }
+        ] }}
+      />
+    );
+
+    expect(screen.getByText(/CPU was already over 80% when the evidence window starts/)).toBeInTheDocument();
+    expect(screen.queryByText(/CPU crossed 80%/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Error rate crossed 10% 60s before detection/)).toBeInTheDocument();
+  });
+});

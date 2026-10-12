@@ -183,6 +183,8 @@ class SignalOnset(BaseModel):
     peak: float = 0.0
     threshold: float = 0.0
     unit: str = ""
+    # Already over the threshold at the window's first sample: when it crossed is unknown.
+    breached_before_window: bool = False
 
 
 class DependencySummary(BaseModel):

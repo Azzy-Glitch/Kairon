@@ -35,10 +35,12 @@ public sealed class IncidentLifecycleRegressionTests : IDisposable
         return incident;
     }
 
-    private void SeedPaymentFailures()
+    // cpu: what the app's latest samples show for CPU while the payment failures happen - 10% means an
+    // earlier overload has stopped, 95% that it is still going on.
+    private void SeedPaymentFailures(double cpu = 10)
     {
         for (var i = 0; i < 4; i++)
-            _h.SeedMetric(DateTime.UtcNow.AddSeconds(-30 + i * 8), cpu: 10, latency: 120, requests: 10, errors: 6);
+            _h.SeedMetric(DateTime.UtcNow.AddSeconds(-30 + i * 8), cpu: cpu, latency: 120, requests: 10, errors: 6);
     }
 
     // --- A new fault after the earlier incident went quiet --------------------------------------
@@ -66,7 +68,7 @@ public sealed class IncidentLifecycleRegressionTests : IDisposable
     public async Task ANewKindOfFaultWhileTheIncidentIsStillActiveIsInvestigatedAgainAutomatically()
     {
         var active = SeedOpenIncident("cpu", DateTime.UtcNow.AddSeconds(-40));
-        SeedPaymentFailures();
+        SeedPaymentFailures(cpu: 95);   // the overload is still measurably going on
 
         await _h.CreateOrchestrator().DetectAndCorrelateAsync(_h.ProjectId, _h.Environment, _h.Service);
 
@@ -87,7 +89,7 @@ public sealed class IncidentLifecycleRegressionTests : IDisposable
         snapshots[0].LastSeenAt = DateTime.UtcNow.AddSeconds(-30);
         overload.CorrelatedMetricsJson = SreJson.Serialize(snapshots);
         _h.Db.SaveChanges();
-        SeedPaymentFailures();
+        SeedPaymentFailures(cpu: 95);   // and the samples confirm the overload is still going on
 
         await _h.CreateOrchestrator().DetectAndCorrelateAsync(_h.ProjectId, _h.Environment, _h.Service);
 

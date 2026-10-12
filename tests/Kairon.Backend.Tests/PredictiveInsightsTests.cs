@@ -128,4 +128,92 @@ public sealed class PredictiveInsightsTests : IDisposable
         Assert.Equal("cpu", recurring.Component);
         Assert.Contains("3 incidents", recurring.Observation);
     }
+
+    // --- Audit: forecasts must not extrapolate from inadequate or stale data ---------------------
+
+    [Fact]
+    public async Task ATrendThatEndedLongAgoIsStaleNotAForecast()
+    {
+        // A steady memory climb - but the app stopped reporting 40 minutes ago.
+        var start = DateTime.UtcNow.AddMinutes(-58);
+        for (var i = 0; i < 18; i++)
+            _h.SeedMetric(start.AddMinutes(i), cpu: 20, memory: 50 + i * 1.5, requests: 20);
+
+        var risks = await Service().GetEmergingRisksAsync(null);
+
+        Assert.Empty(risks.Risks);
+        Assert.Contains("stale", Assert.Single(risks.InsufficientData).Reason);
+    }
+
+    [Fact]
+    public async Task AStepChangeInWorkloadIsNotExtrapolatedAsASteadyClimb()
+    {
+        // Flat at 30%, then flat at 65% - a workload change, not a trend toward 80%.
+        SeedSeries(30, i => (i < 15 ? 30 : 65, null, 150, 0, null));
+
+        var risks = await Service().GetEmergingRisksAsync(null);
+
+        Assert.DoesNotContain(risks.Risks, r => r.Component == "cpu");
+    }
+
+    [Fact]
+    public async Task IrregularIntervalsAndMissingSamplesUseRealTimestamps()
+    {
+        // 25 samples spread unevenly over 40 minutes, a few without a memory reading.
+        var start = DateTime.UtcNow.AddMinutes(-40);
+        var minute = 0.0;
+        for (var i = 0; i < 25; i++)
+        {
+            minute += i % 3 == 0 ? 2.5 : 1.0;
+            _h.SeedMetric(start.AddMinutes(minute), cpu: 20, memory: i % 7 == 3 ? null : 40 + minute * 0.8, requests: 20);
+        }
+
+        var risks = await Service().GetEmergingRisksAsync(null);
+
+        var memory = Assert.Single(risks.Risks, r => r.Component == "memory");
+        Assert.Contains("+48%/hour", memory.Observation); // 0.8 %/minute, measured on real time, not sample index
+    }
+
+    [Fact]
+    public async Task ALatestReadingAlreadyOverTheThresholdIsNotForecastEvenIfTheFittedLineIsBelowIt()
+    {
+        // Climbing 50% -> 79% and then the last reading jumps to 90%: a current problem, not a forecast.
+        SeedSeries(30, i => (20, i == 29 ? 90 : 50 + i, 150, 0, null));
+
+        var risks = await Service().GetEmergingRisksAsync(null);
+
+        Assert.DoesNotContain(risks.Risks, r => r.Component == "memory");
+    }
+
+    [Fact]
+    public async Task RetriesAreJudgedPerMinuteAgainstAPerMinuteThreshold()
+    {
+        // One sample per minute, retries climbing 0 -> 29 per sample = per minute; threshold 30/min.
+        var start = DateTime.UtcNow.AddMinutes(-30);
+        for (var i = 0; i < 30; i++)
+            _h.SeedMetric(start.AddMinutes(i), cpu: 20, latency: 150, requests: 20, retries: i);
+
+        var risks = await Service().GetEmergingRisksAsync(null);
+
+        var retries = Assert.Single(risks.Risks, r => r.Component == "retries");
+        Assert.Contains("/min", retries.Observation);
+        Assert.DoesNotContain("/sample", retries.Observation);
+    }
+
+    [Fact]
+    public async Task AShortLivedSpikeIsNotATrend()
+    {
+        SeedSeries(30, i => (i is 20 or 21 ? 78 : 30, null, 150, 0, null));
+
+        Assert.Empty((await Service().GetEmergingRisksAsync(null)).Risks);
+    }
+
+    [Fact]
+    public async Task ARiseThatHasAlreadyReversedIsNotExtrapolated()
+    {
+        // Climbed for 20 minutes, falling for the last 10: the workload changed.
+        SeedSeries(30, i => (20, i < 20 ? 40 + i * 1.5 : 70 - (i - 20) * 1.5, 150, 0, null));
+
+        Assert.DoesNotContain((await Service().GetEmergingRisksAsync(null)).Risks, r => r.Component == "memory");
+    }
 }

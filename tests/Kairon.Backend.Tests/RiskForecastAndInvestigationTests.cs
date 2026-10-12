@@ -139,7 +139,8 @@ public sealed class RiskForecastAndInvestigationTests : IDisposable
         Assert.Equal("not_recommended", restart.Verdict);
         Assert.Contains("code path", restart.Reason);
         Assert.Contains("KeyError", result.RootCause);
-        Assert.Contains("CPU, memory and its dependencies look normal", result.RootCause);
+        // Unmeasured is not healthy: the evidence has no dependency data, so it must not be called normal.
+        Assert.Contains("dependency calls are not measured", result.RootCause);
         Assert.Contains(result.NextSteps, s => s.Contains("KeyError") && s.Contains("stack trace"));
         Assert.NotEmpty(result.AlternativeExplanations);
         Assert.NotEmpty(result.VerificationSteps);
